@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DeepSeek Chat Demo</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="hero">
+        <p class="eyebrow">Chat Demo</p>
+        <h1>DeepSeek 对话示例</h1>
+        <p class="subtitle">
+          输入内容后由本地 Node 服务转发到 DeepSeek API，避免把 key 暴露在前端。
+        </p>
+      </section>
+
+      <section class="chat-card">
+        <div class="toolbar">
+          <div class="model-picker">
+            <label for="model-select">选择模型</label>
+            <select id="model-select" name="model"></select>
+          </div>
+          <div class="model-status">
+            <p id="model-description" class="model-description"></p>
+            <p id="active-model" class="active-model"></p>
+          </div>
+        </div>
+
+        <div id="messages" class="messages">
+          <article class="message assistant">
+            <p class="role">助手</p>
+            <p>你好，我已经准备好了。你可以选择模型后开始提问。</p>
+          </article>
+        </div>
+
+        <form id="chat-form" class="composer">
+          <label for="message" class="sr-only">输入你的问题</label>
+          <textarea
+            id="message"
+            name="message"
+            rows="4"
+            placeholder="比如：帮我写一段介绍 DeepSeek 的文案"
+            required
+          ></textarea>
+          <div class="composer-actions">
+            <p class="hint">请先在项目根目录创建 `.env` 并配置 `DEEPSEEK_API_KEY`。</p>
+            <button id="submit-button" type="submit">发送</button>
+          </div>
+        </form>
+      </section>
+    </main>
+
+    <script src="/script.js"></script>
+  </body>
+</html>

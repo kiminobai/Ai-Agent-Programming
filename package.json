@@ -1,0 +1,29 @@
+{
+  "name": "multi-model-chat-demo",
+  "version": "1.0.0",
+  "description": "A scalable TypeScript chat demo with multiple model providers",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "dev": "tsc --watch",
+    "dev:serve": "node --watch dist/server.js"
+  },
+  "keywords": [
+    "typescript",
+    "chat",
+    "demo",
+    "ai"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "dotenv": "^16.6.1",
+    "express": "^4.21.2"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.3",
+    "@types/node": "^24.0.15",
+    "typescript": "^5.9.2"
+  }
+}
