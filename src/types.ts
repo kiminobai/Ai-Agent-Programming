@@ -14,9 +14,17 @@ export interface ChatMessage {
   content: string;
 }
 
+export interface PromptRole {
+  id: string;
+  label: string;
+  summary: string;
+  systemPrompt: string;
+}
+
 export interface ChatRequestPayload {
   modelId: string;
   message: string;
+  roleId: string;
 }
 
 export interface ChatResponsePayload {
@@ -25,6 +33,7 @@ export interface ChatResponsePayload {
     provider: ProviderId;
     modelId: string;
     modelLabel: string;
+    roleId: string;
   };
 }
 
@@ -36,5 +45,5 @@ export interface ProviderConfig {
 export interface ChatProvider {
   id: ProviderId;
   isAvailable(): boolean;
-  sendChat(modelId: string, message: string): Promise<string>;
+  sendChat(modelId: string, message: string, systemPrompt: string): Promise<string>;
 }

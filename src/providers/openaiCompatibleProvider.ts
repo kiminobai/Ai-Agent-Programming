@@ -21,7 +21,11 @@ export class OpenAICompatibleProvider implements ChatProvider {
     return Boolean(this.config.apiKey);
   }
 
-  async sendChat(modelId: string, message: string): Promise<string> {
+  async sendChat(
+    modelId: string,
+    message: string,
+    systemPrompt: string
+  ): Promise<string> {
     if (!this.config.apiKey) {
       throw new Error(`${this.id} 尚未配置 API Key。`);
     }
@@ -37,7 +41,7 @@ export class OpenAICompatibleProvider implements ChatProvider {
         messages: [
           {
             role: "system",
-            content: "你是一个友好的 AI 助手，请尽量清晰、简洁地回答用户问题。"
+            content: systemPrompt
           },
           {
             role: "user",
