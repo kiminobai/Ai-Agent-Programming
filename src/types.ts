@@ -14,11 +14,17 @@ export interface ChatMessage {
   content: string;
 }
 
+export interface FewShotExample {
+  user: string;
+  assistant: string;
+}
+
 export interface PromptRole {
   id: string;
   label: string;
   summary: string;
   systemPrompt: string;
+  fewShotExamples?: FewShotExample[];
 }
 
 export interface ChatRequestPayload {
@@ -45,5 +51,10 @@ export interface ProviderConfig {
 export interface ChatProvider {
   id: ProviderId;
   isAvailable(): boolean;
-  sendChat(modelId: string, message: string, systemPrompt: string): Promise<string>;
+  sendChat(
+    modelId: string,
+    message: string,
+    systemPrompt: string,
+    fewShotExamples?: FewShotExample[]
+  ): Promise<string>;
 }

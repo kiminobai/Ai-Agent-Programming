@@ -1,4 +1,9 @@
-import { ChatProvider, ProviderConfig, ProviderId } from "../types";
+import {
+  ChatProvider,
+  FewShotExample,
+  ProviderConfig,
+  ProviderId
+} from "../types";
 
 interface OpenAICompatibleResponse {
   choices?: Array<{
@@ -24,11 +29,23 @@ export class OpenAICompatibleProvider implements ChatProvider {
   async sendChat(
     modelId: string,
     message: string,
-    systemPrompt: string
+    systemPrompt: string,
+    fewShotExamples: FewShotExample[] = []
   ): Promise<string> {
     if (!this.config.apiKey) {
       throw new Error(`${this.id} 尚未配置 API Key。`);
     }
+
+    const exampleMessages = fewShotExamples.flatMap((example) => [
+      {
+        role: "user" as const,
+        content: example.user
+      },
+      {
+        role: "assistant" as const,
+        content: example.assistant
+      }
+    ]);
 
     const response = await fetch(this.config.apiUrl, {
       method: "POST",
@@ -43,6 +60,7 @@ export class OpenAICompatibleProvider implements ChatProvider {
             role: "system",
             content: systemPrompt
           },
+          ...exampleMessages,
           {
             role: "user",
             content: message

@@ -86,7 +86,8 @@ const chatHandler: RequestHandler<
     const reply = await provider.sendChat(
       model.id,
       userMessage,
-      role.systemPrompt
+      role.systemPrompt,
+      role.fewShotExamples
     );
 
     res.json({
