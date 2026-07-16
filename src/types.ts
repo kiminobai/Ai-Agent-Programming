@@ -1,5 +1,7 @@
 export type ProviderId = "deepseek" | "openai" | "siliconflow";
 
+export type ReasoningEffort = "minimal" | "low" | "medium" | "high";
+
 export interface ModelOption {
   id: string;
   label: string;
@@ -31,6 +33,7 @@ export interface ChatRequestPayload {
   modelId: string;
   message: string;
   roleId: string;
+  reasoningEffort?: ReasoningEffort;
 }
 
 export interface ChatResponsePayload {
@@ -46,6 +49,7 @@ export interface ChatResponsePayload {
 export interface ProviderConfig {
   apiKey: string;
   apiUrl: string;
+  reasoningEffort?: ReasoningEffort;
 }
 
 export interface ChatProvider {
@@ -55,13 +59,15 @@ export interface ChatProvider {
     modelId: string,
     message: string,
     systemPrompt: string,
-    fewShotExamples?: FewShotExample[]
+    fewShotExamples?: FewShotExample[],
+    reasoningEffort?: ReasoningEffort
   ): Promise<string>;
   streamChat(
     modelId: string,
     message: string,
     systemPrompt: string,
     onDelta: (chunk: string) => void,
-    fewShotExamples?: FewShotExample[]
+    fewShotExamples?: FewShotExample[],
+    reasoningEffort?: ReasoningEffort
   ): Promise<string>;
 }

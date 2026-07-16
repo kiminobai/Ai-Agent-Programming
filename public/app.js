@@ -21476,6 +21476,7 @@
     const [roles, setRoles] = (0, import_react.useState)([]);
     const [modelId, setModelId] = (0, import_react.useState)("");
     const [roleId, setRoleId] = (0, import_react.useState)("");
+    const [reasoningEffort, setReasoningEffort] = (0, import_react.useState)("low");
     const [message, setMessage] = (0, import_react.useState)("");
     const [entries, setEntries] = (0, import_react.useState)([
       {
@@ -21569,7 +21570,8 @@
           body: JSON.stringify({
             modelId,
             roleId,
-            message: trimmedMessage
+            message: trimmedMessage,
+            reasoningEffort: currentModel?.provider === "openai" ? reasoningEffort : void 0
           })
         });
         if (!response.ok) {
@@ -21688,7 +21690,18 @@
       },
       /* @__PURE__ */ import_react.default.createElement("span", { className: "role-option-name" }, role.label),
       /* @__PURE__ */ import_react.default.createElement("span", { className: "role-option-summary" }, role.summary)
-    )))), /* @__PURE__ */ import_react.default.createElement("section", { className: "sidebar-panel sidebar-status" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "status-row" }, /* @__PURE__ */ import_react.default.createElement("span", null, "Current role"), /* @__PURE__ */ import_react.default.createElement("strong", null, currentRole?.label || "Not selected")), /* @__PURE__ */ import_react.default.createElement("div", { className: "status-row" }, /* @__PURE__ */ import_react.default.createElement("span", null, "Current model"), /* @__PURE__ */ import_react.default.createElement("strong", null, currentModel?.label || "Not selected")))), /* @__PURE__ */ import_react.default.createElement("main", { className: "chat-layout" }, /* @__PURE__ */ import_react.default.createElement("header", { className: "chat-header" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-header-left" }, /* @__PURE__ */ import_react.default.createElement(
+    )))), currentModel?.provider === "openai" ? /* @__PURE__ */ import_react.default.createElement("section", { className: "sidebar-panel" }, /* @__PURE__ */ import_react.default.createElement("label", { className: "sidebar-label", htmlFor: "reasoning-effort" }, "Reasoning"), /* @__PURE__ */ import_react.default.createElement(
+      "select",
+      {
+        id: "reasoning-effort",
+        value: reasoningEffort,
+        onChange: (event) => setReasoningEffort(event.target.value)
+      },
+      /* @__PURE__ */ import_react.default.createElement("option", { value: "minimal" }, "minimal"),
+      /* @__PURE__ */ import_react.default.createElement("option", { value: "low" }, "low"),
+      /* @__PURE__ */ import_react.default.createElement("option", { value: "medium" }, "medium"),
+      /* @__PURE__ */ import_react.default.createElement("option", { value: "high" }, "high")
+    ), /* @__PURE__ */ import_react.default.createElement("p", { className: "sidebar-help" }, "This only applies to OpenAI Responses API requests.")) : null, /* @__PURE__ */ import_react.default.createElement("section", { className: "sidebar-panel sidebar-status" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "status-row" }, /* @__PURE__ */ import_react.default.createElement("span", null, "Current role"), /* @__PURE__ */ import_react.default.createElement("strong", null, currentRole?.label || "Not selected")), /* @__PURE__ */ import_react.default.createElement("div", { className: "status-row" }, /* @__PURE__ */ import_react.default.createElement("span", null, "Current model"), /* @__PURE__ */ import_react.default.createElement("strong", null, currentModel?.label || "Not selected")))), /* @__PURE__ */ import_react.default.createElement("main", { className: "chat-layout" }, /* @__PURE__ */ import_react.default.createElement("header", { className: "chat-header" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-header-left" }, /* @__PURE__ */ import_react.default.createElement(
       "button",
       {
         type: "button",
@@ -21706,7 +21719,7 @@
         rows: 1,
         required: true
       }
-    ), /* @__PURE__ */ import_react.default.createElement("div", { className: "composer-actions" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "composer-hint" }, "Role: ", currentRole?.label || "Not selected", " | Model:", " ", currentModel?.label || "Not selected"), /* @__PURE__ */ import_react.default.createElement("button", { className: "send-button", type: "submit", disabled: !canSubmit }, isSubmitting ? "Streaming..." : "Send"))))));
+    ), /* @__PURE__ */ import_react.default.createElement("div", { className: "composer-actions" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "composer-hint" }, "Role: ", currentRole?.label || "Not selected", " | Model:", " ", currentModel?.label || "Not selected", currentModel?.provider === "openai" ? ` | Reasoning: ${reasoningEffort}` : ""), /* @__PURE__ */ import_react.default.createElement("button", { className: "send-button", type: "submit", disabled: !canSubmit }, isSubmitting ? "Streaming..." : "Send"))))));
   }
   (0, import_client.createRoot)(document.getElementById("root")).render(/* @__PURE__ */ import_react.default.createElement(App, null));
 })();

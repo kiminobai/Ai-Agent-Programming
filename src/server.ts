@@ -20,7 +20,13 @@ app.get("/api/models", (_req: Request, res: Response) => {
 
 app.get(
   "/api/roles",
-  (_req: Request, res: Response<{ roles: Array<Omit<PromptRole, "systemPrompt">>; defaultRoleId: string }>) => {
+  (
+    _req: Request,
+    res: Response<{
+      roles: Array<Omit<PromptRole, "systemPrompt">>;
+      defaultRoleId: string;
+    }>
+  ) => {
     res.json({
       roles: promptRoles.map(({ systemPrompt, ...role }) => role),
       defaultRoleId: appConfig.defaultRoleId
@@ -39,6 +45,7 @@ const chatHandler: RequestHandler<
   const userMessage = req.body?.message?.trim();
   const modelId = req.body?.modelId?.trim();
   const roleId = req.body?.roleId?.trim() || appConfig.defaultRoleId;
+  const reasoningEffort = req.body?.reasoningEffort;
 
   if (!userMessage) {
     res.status(400).json({ error: "message is required." });
@@ -92,7 +99,8 @@ const chatHandler: RequestHandler<
       (chunk) => {
         res.write(`data: ${JSON.stringify({ type: "delta", chunk })}\n\n`);
       },
-      role.fewShotExamples
+      role.fewShotExamples,
+      model.provider === "openai" ? reasoningEffort : undefined
     );
 
     res.write(`data: ${JSON.stringify({ type: "done", reply, meta })}\n\n`);

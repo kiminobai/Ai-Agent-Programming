@@ -19,7 +19,14 @@ const providerConfigs: Record<ProviderId, ProviderConfig> = {
     apiKey: process.env.OPENAI_API_KEY || "",
     apiUrl:
       process.env.OPENAI_API_URL ||
-      "https://api.openai.com/v1/chat/completions"
+      "https://api.openai.com/v1/responses",
+    reasoningEffort:
+      (process.env.OPENAI_REASONING_EFFORT as
+        | "minimal"
+        | "low"
+        | "medium"
+        | "high"
+        | undefined) || "low"
   },
   siliconflow: {
     apiKey: process.env.SILICONFLOW_API_KEY || "",

@@ -2,6 +2,7 @@ import React, { FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState }
 import { createRoot } from "react-dom/client";
 
 type ProviderId = "deepseek" | "openai" | "siliconflow";
+type ReasoningEffort = "minimal" | "low" | "medium" | "high";
 
 type ModelOption = {
   id: string;
@@ -65,6 +66,7 @@ function App() {
   const [roles, setRoles] = useState<PromptRole[]>([]);
   const [modelId, setModelId] = useState("");
   const [roleId, setRoleId] = useState("");
+  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("low");
   const [message, setMessage] = useState("");
   const [entries, setEntries] = useState<ChatEntry[]>([
     {
@@ -177,7 +179,8 @@ function App() {
         body: JSON.stringify({
           modelId,
           roleId,
-          message: trimmedMessage
+          message: trimmedMessage,
+          reasoningEffort: currentModel?.provider === "openai" ? reasoningEffort : undefined
         })
       });
 
@@ -344,6 +347,29 @@ function App() {
           </div>
         </section>
 
+        {currentModel?.provider === "openai" ? (
+          <section className="sidebar-panel">
+            <label className="sidebar-label" htmlFor="reasoning-effort">
+              Reasoning
+            </label>
+            <select
+              id="reasoning-effort"
+              value={reasoningEffort}
+              onChange={(event) =>
+                setReasoningEffort(event.target.value as ReasoningEffort)
+              }
+            >
+              <option value="minimal">minimal</option>
+              <option value="low">low</option>
+              <option value="medium">medium</option>
+              <option value="high">high</option>
+            </select>
+            <p className="sidebar-help">
+              This only applies to OpenAI Responses API requests.
+            </p>
+          </section>
+        ) : null}
+
         <section className="sidebar-panel sidebar-status">
           <div className="status-row">
             <span>Current role</span>
@@ -416,6 +442,9 @@ function App() {
               <div className="composer-hint">
                 Role: {currentRole?.label || "Not selected"} | Model:{" "}
                 {currentModel?.label || "Not selected"}
+                {currentModel?.provider === "openai"
+                  ? ` | Reasoning: ${reasoningEffort}`
+                  : ""}
               </div>
               <button className="send-button" type="submit" disabled={!canSubmit}>
                 {isSubmitting ? "Streaming..." : "Send"}
