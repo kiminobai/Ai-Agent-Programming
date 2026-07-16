@@ -1,11 +1,4 @@
-import React, {
-  FormEvent,
-  KeyboardEvent,
-  useEffect,
-  useMemo,
-  useRef,
-  useState
-} from "react";
+import React, { FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 
 type ProviderId = "deepseek" | "openai" | "siliconflow";
@@ -32,15 +25,38 @@ type ChatEntry = {
   meta?: string;
 };
 
+type StreamMeta = {
+  provider: ProviderId;
+  modelId: string;
+  modelLabel: string;
+  roleId: string;
+};
+
+type StreamEvent =
+  | { type: "meta"; meta: StreamMeta }
+  | { type: "delta"; chunk: string }
+  | { type: "done"; reply: string; meta: StreamMeta }
+  | { type: "error"; error: string };
+
 async function readJsonResponse(response: Response, apiName: string) {
   const text = await response.text();
 
   try {
     return JSON.parse(text);
   } catch {
-    throw new Error(
-      `${apiName} 返回了非 JSON 内容，请确认后端已重启并加载最新代码。`
-    );
+    throw new Error(`${apiName} returned non-JSON content. Please restart the backend with the latest code.`);
+  }
+}
+
+function applyStreamEvent(rawEvent: string, onEvent: (event: StreamEvent) => void) {
+  const lines = rawEvent
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice(5).trim())
+    .filter(Boolean);
+
+  for (const line of lines) {
+    onEvent(JSON.parse(line) as StreamEvent);
   }
 }
 
@@ -54,8 +70,7 @@ function App() {
     {
       id: "welcome",
       role: "assistant",
-      content:
-        "欢迎使用角色对话。先在左侧选择模型和角色，然后像 ChatGPT 一样直接开始提问。"
+      content: "Welcome. Choose a model and role, then start chatting."
     }
   ]);
   const [isLoading, setIsLoading] = useState(true);
@@ -76,11 +91,11 @@ function App() {
         const rolesData = await readJsonResponse(rolesResponse, "/api/roles");
 
         if (!modelsResponse.ok) {
-          throw new Error(modelsData.error || "加载模型失败。");
+          throw new Error(modelsData.error || "Failed to load models.");
         }
 
         if (!rolesResponse.ok) {
-          throw new Error(rolesData.error || "加载角色失败。");
+          throw new Error(rolesData.error || "Failed to load roles.");
         }
 
         const enabledModels = (modelsData.models || []).filter(
@@ -92,16 +107,12 @@ function App() {
         setRoles(availableRoles);
         setModelId(enabledModels[0]?.id || "");
         setRoleId(
-          availableRoles.some(
-            (item: PromptRole) => item.id === rolesData.defaultRoleId
-          )
+          availableRoles.some((item: PromptRole) => item.id === rolesData.defaultRoleId)
             ? rolesData.defaultRoleId
             : availableRoles[0]?.id || ""
         );
       } catch (loadError) {
-        setError(
-          loadError instanceof Error ? loadError.message : "初始化页面时发生错误。"
-        );
+        setError(loadError instanceof Error ? loadError.message : "Failed to initialize.");
       } finally {
         setIsLoading(false);
       }
@@ -124,9 +135,7 @@ function App() {
     [roles, roleId]
   );
 
-  const canSubmit = Boolean(
-    !isSubmitting && !isLoading && modelId && roleId && message.trim()
-  );
+  const canSubmit = Boolean(!isSubmitting && !isLoading && modelId && roleId && message.trim());
 
   async function handleSubmit(event?: FormEvent<HTMLFormElement>) {
     event?.preventDefault();
@@ -139,6 +148,7 @@ function App() {
     setError("");
     setIsSubmitting(true);
 
+    const assistantEntryId = `assistant-${Date.now()}`;
     const userEntry: ChatEntry = {
       id: `user-${Date.now()}`,
       role: "user",
@@ -146,7 +156,16 @@ function App() {
       meta: `${currentRole?.label || roleId} · ${currentModel?.label || modelId}`
     };
 
-    setEntries((prev) => [...prev, userEntry]);
+    setEntries((prev) => [
+      ...prev,
+      userEntry,
+      {
+        id: assistantEntryId,
+        role: "assistant",
+        content: "",
+        meta: `${currentRole?.label || roleId} · ${currentModel?.label || modelId}`
+      }
+    ]);
     setMessage("");
 
     try {
@@ -162,35 +181,94 @@ function App() {
         })
       });
 
-      const data = await readJsonResponse(response, "/api/chat");
       if (!response.ok) {
-        throw new Error(data.error || "请求失败，请稍后重试。");
+        const data = await readJsonResponse(response, "/api/chat");
+        throw new Error(data.error || "Request failed. Please try again.");
       }
 
-      setEntries((prev) => [
-        ...prev,
-        {
-          id: `assistant-${Date.now()}`,
-          role: "assistant",
-          content: data.reply || "模型没有返回内容。",
-          meta: data.meta
-            ? `${currentRole?.label || data.meta.roleId} · ${data.meta.modelId}`
-            : undefined
+      if (!response.body) {
+        throw new Error("Streaming response is unavailable.");
+      }
+
+      const updateAssistantEntry = (updater: (entry: ChatEntry) => ChatEntry) => {
+        setEntries((prev) =>
+          prev.map((entry) => (entry.id === assistantEntryId ? updater(entry) : entry))
+        );
+      };
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let finalReply = "";
+
+      const handleEvent = (streamEvent: StreamEvent) => {
+        if (streamEvent.type === "meta") {
+          updateAssistantEntry((entry) => ({
+            ...entry,
+            meta: `${currentRole?.label || streamEvent.meta.roleId} · ${streamEvent.meta.modelId}`
+          }));
+          return;
         }
-      ]);
+
+        if (streamEvent.type === "delta") {
+          finalReply += streamEvent.chunk;
+          updateAssistantEntry((entry) => ({
+            ...entry,
+            content: entry.content + streamEvent.chunk
+          }));
+          return;
+        }
+
+        if (streamEvent.type === "done") {
+          finalReply = streamEvent.reply || finalReply;
+          updateAssistantEntry((entry) => ({
+            ...entry,
+            content: finalReply || "Model returned no content.",
+            meta: `${currentRole?.label || streamEvent.meta.roleId} · ${streamEvent.meta.modelId}`
+          }));
+          return;
+        }
+
+        throw new Error(streamEvent.error || "Streaming request failed.");
+      };
+
+      while (true) {
+        const { done, value } = await reader.read();
+        buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+
+        let eventEnd = buffer.indexOf("\n\n");
+        while (eventEnd !== -1) {
+          const rawEvent = buffer.slice(0, eventEnd);
+          buffer = buffer.slice(eventEnd + 2);
+          if (rawEvent.trim()) {
+            applyStreamEvent(rawEvent, handleEvent);
+          }
+          eventEnd = buffer.indexOf("\n\n");
+        }
+
+        if (done) {
+          break;
+        }
+      }
+
+      if (buffer.trim()) {
+        applyStreamEvent(buffer, handleEvent);
+      }
     } catch (submitError) {
       const messageText =
-        submitError instanceof Error ? submitError.message : "发送消息时发生错误。";
+        submitError instanceof Error ? submitError.message : "An error occurred while sending the message.";
 
       setError(messageText);
-      setEntries((prev) => [
-        ...prev,
-        {
-          id: `assistant-error-${Date.now()}`,
-          role: "assistant",
-          content: `请求失败：${messageText}`
-        }
-      ]);
+      setEntries((prev) =>
+        prev.map((entry) =>
+          entry.id === assistantEntryId
+            ? {
+                ...entry,
+                content: entry.content || `Request failed: ${messageText}`
+              }
+            : entry
+        )
+      );
     } finally {
       setIsSubmitting(false);
     }
@@ -211,7 +289,7 @@ function App() {
         <div className="sidebar-header">
           <div>
             <p className="sidebar-kicker">Role Chat</p>
-            <h1>对话设置</h1>
+            <h1>Chat Settings</h1>
           </div>
           <button
             type="button"
@@ -224,7 +302,7 @@ function App() {
 
         <section className="sidebar-panel">
           <label className="sidebar-label" htmlFor="model-select">
-            模型
+            Model
           </label>
           <select
             id="model-select"
@@ -232,7 +310,7 @@ function App() {
             onChange={(event) => setModelId(event.target.value)}
             disabled={!models.length || isLoading}
           >
-            {models.length ? null : <option value="">没有可用模型</option>}
+            {models.length ? null : <option value="">No available model</option>}
             {models.map((model) => (
               <option key={model.id} value={model.id}>
                 {model.label}
@@ -242,12 +320,12 @@ function App() {
           <p className="sidebar-help">
             {currentModel
               ? `${currentModel.label} · ${currentModel.description}`
-              : "请先配置至少一个可用模型。"}
+              : "Please configure at least one available model."}
           </p>
         </section>
 
         <section className="sidebar-panel">
-          <div className="sidebar-label">角色</div>
+          <div className="sidebar-label">Role</div>
           <div className="role-list">
             {roles.map((role) => (
               <button
@@ -268,12 +346,12 @@ function App() {
 
         <section className="sidebar-panel sidebar-status">
           <div className="status-row">
-            <span>当前角色</span>
-            <strong>{currentRole?.label || "未选择"}</strong>
+            <span>Current role</span>
+            <strong>{currentRole?.label || "Not selected"}</strong>
           </div>
           <div className="status-row">
-            <span>当前模型</span>
-            <strong>{currentModel?.label || "未选择"}</strong>
+            <span>Current model</span>
+            <strong>{currentModel?.label || "Not selected"}</strong>
           </div>
         </section>
       </aside>
@@ -291,8 +369,7 @@ function App() {
             <div>
               <div className="chat-header-title">Role ChatGPT UI</div>
               <div className="chat-header-subtitle">
-                {currentRole?.label || "未选择角色"} ·{" "}
-                {currentModel?.label || "未选择模型"}
+                {currentRole?.label || "No role"} · {currentModel?.label || "No model"}
               </div>
             </div>
           </div>
@@ -303,42 +380,24 @@ function App() {
         <section className="conversation">
           {isLoading ? (
             <div className="empty-state">
-              <div className="empty-state-title">正在加载配置</div>
-              <div className="empty-state-copy">正在读取模型和角色，请稍候。</div>
+              <div className="empty-state-title">Loading configuration</div>
+              <div className="empty-state-copy">Fetching models and roles.</div>
             </div>
           ) : null}
 
           {!isLoading &&
             entries.map((entry) => (
               <div key={entry.id} className={`chat-row ${entry.role}`}>
-                <div className="chat-avatar">{entry.role === "user" ? "你" : "AI"}</div>
+                <div className="chat-avatar">{entry.role === "user" ? "You" : "AI"}</div>
                 <div className="chat-bubble-wrap">
                   <div className="chat-bubble-header">
-                    <span>
-                      {entry.role === "user" ? "你" : currentRole?.label || "助手"}
-                    </span>
+                    <span>{entry.role === "user" ? "You" : currentRole?.label || "Assistant"}</span>
                     {entry.meta ? <span className="chat-meta">{entry.meta}</span> : null}
                   </div>
                   <div className={`chat-bubble ${entry.role}`}>{entry.content}</div>
                 </div>
               </div>
             ))}
-
-          {isSubmitting ? (
-            <div className="chat-row assistant">
-              <div className="chat-avatar">AI</div>
-              <div className="chat-bubble-wrap">
-                <div className="chat-bubble-header">
-                  <span>{currentRole?.label || "助手"}</span>
-                </div>
-                <div className="chat-bubble assistant typing">
-                  <span />
-                  <span />
-                  <span />
-                </div>
-              </div>
-            </div>
-          ) : null}
 
           <div ref={messageEndRef} />
         </section>
@@ -349,17 +408,17 @@ function App() {
               value={message}
               onChange={(event) => setMessage(event.target.value)}
               onKeyDown={handleTextareaKeyDown}
-              placeholder="给当前角色发送消息。Enter 发送，Shift + Enter 换行。"
+              placeholder="Send a message. Enter to send, Shift+Enter for a new line."
               rows={1}
               required
             />
             <div className="composer-actions">
               <div className="composer-hint">
-                角色：{currentRole?.label || "未选择"} | 模型：
-                {currentModel?.label || "未选择"}
+                Role: {currentRole?.label || "Not selected"} | Model:{" "}
+                {currentModel?.label || "Not selected"}
               </div>
               <button className="send-button" type="submit" disabled={!canSubmit}>
-                {isSubmitting ? "发送中..." : "发送"}
+                {isSubmitting ? "Streaming..." : "Send"}
               </button>
             </div>
           </form>

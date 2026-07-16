@@ -4,7 +4,7 @@ import { appConfig } from "./config";
 import { getModelById, getPublicModels } from "./modelRegistry";
 import { getPromptRoleById, promptRoles } from "./prompts";
 import { createProviderRegistry } from "./providerRegistry";
-import { ChatRequestPayload, ChatResponsePayload, PromptRole } from "./types";
+import { ChatRequestPayload, PromptRole } from "./types";
 
 const app = express();
 const providers = createProviderRegistry();
@@ -30,80 +30,84 @@ app.get(
 
 const chatHandler: RequestHandler<
   Record<string, string>,
-  ChatResponsePayload | { error: string },
+  { error: string },
   ChatRequestPayload
 > = async (
-  req: Request<
-    Record<string, string>,
-    ChatResponsePayload | { error: string },
-    ChatRequestPayload
-  >,
-  res: Response<ChatResponsePayload | { error: string }>
+  req: Request<Record<string, string>, { error: string }, ChatRequestPayload>,
+  res: Response<{ error: string }>
 ): Promise<void> => {
   const userMessage = req.body?.message?.trim();
   const modelId = req.body?.modelId?.trim();
   const roleId = req.body?.roleId?.trim() || appConfig.defaultRoleId;
 
   if (!userMessage) {
-    res.status(400).json({
-      error: "message 不能为空。"
-    });
+    res.status(400).json({ error: "message is required." });
     return;
   }
 
   if (!modelId) {
-    res.status(400).json({
-      error: "modelId 不能为空。"
-    });
+    res.status(400).json({ error: "modelId is required." });
     return;
   }
 
   const model = getModelById(modelId);
   if (!model) {
-    res.status(404).json({
-      error: "未找到对应模型，请重新选择。"
-    });
+    res.status(404).json({ error: "Model was not found." });
     return;
   }
 
   const role = getPromptRoleById(roleId);
   if (!role) {
-    res.status(404).json({
-      error: "未找到对应角色，请重新选择。"
-    });
+    res.status(404).json({ error: "Role was not found." });
     return;
   }
 
   const provider = providers.get(model.provider);
   if (!provider || !provider.isAvailable()) {
     res.status(400).json({
-      error: `${model.label} 当前不可用，请检查对应的 API Key 是否已配置。`
+      error: `${model.label} is not available. Check the related API key configuration.`
     });
     return;
   }
 
   try {
-    const reply = await provider.sendChat(
+    res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("Connection", "keep-alive");
+    res.flushHeaders();
+
+    const meta = {
+      provider: model.provider,
+      modelId: model.id,
+      modelLabel: model.label,
+      roleId: role.id
+    };
+
+    res.write(`data: ${JSON.stringify({ type: "meta", meta })}\n\n`);
+
+    const reply = await provider.streamChat(
       model.id,
       userMessage,
       role.systemPrompt,
+      (chunk) => {
+        res.write(`data: ${JSON.stringify({ type: "delta", chunk })}\n\n`);
+      },
       role.fewShotExamples
     );
 
-    res.json({
-      reply,
-      meta: {
-        provider: model.provider,
-        modelId: model.id,
-        modelLabel: model.label,
-        roleId: role.id
-      }
-    });
+    res.write(`data: ${JSON.stringify({ type: "done", reply, meta })}\n\n`);
+    res.end();
   } catch (error) {
-    res.status(500).json({
-      error:
-        error instanceof Error ? error.message : "请求模型时发生未知异常。"
-    });
+    const message =
+      error instanceof Error ? error.message : "Unknown error while requesting the model.";
+
+    if (!res.headersSent) {
+      res.status(500).json({ error: message });
+      return;
+    }
+
+    res.write(`data: ${JSON.stringify({ type: "error", error: message })}\n\n`);
+    res.end();
   }
 };
 

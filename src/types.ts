@@ -57,4 +57,11 @@ export interface ChatProvider {
     systemPrompt: string,
     fewShotExamples?: FewShotExample[]
   ): Promise<string>;
+  streamChat(
+    modelId: string,
+    message: string,
+    systemPrompt: string,
+    onDelta: (chunk: string) => void,
+    fewShotExamples?: FewShotExample[]
+  ): Promise<string>;
 }

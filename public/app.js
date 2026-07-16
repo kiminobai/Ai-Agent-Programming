@@ -21462,9 +21462,13 @@
     try {
       return JSON.parse(text);
     } catch {
-      throw new Error(
-        `${apiName} \u8FD4\u56DE\u4E86\u975E JSON \u5185\u5BB9\uFF0C\u8BF7\u786E\u8BA4\u540E\u7AEF\u5DF2\u91CD\u542F\u5E76\u52A0\u8F7D\u6700\u65B0\u4EE3\u7801\u3002`
-      );
+      throw new Error(`${apiName} returned non-JSON content. Please restart the backend with the latest code.`);
+    }
+  }
+  function applyStreamEvent(rawEvent, onEvent) {
+    const lines = rawEvent.split(/\r?\n/).filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trim()).filter(Boolean);
+    for (const line of lines) {
+      onEvent(JSON.parse(line));
     }
   }
   function App() {
@@ -21477,7 +21481,7 @@
       {
         id: "welcome",
         role: "assistant",
-        content: "\u6B22\u8FCE\u4F7F\u7528\u89D2\u8272\u5BF9\u8BDD\u3002\u5148\u5728\u5DE6\u4FA7\u9009\u62E9\u6A21\u578B\u548C\u89D2\u8272\uFF0C\u7136\u540E\u50CF ChatGPT \u4E00\u6837\u76F4\u63A5\u5F00\u59CB\u63D0\u95EE\u3002"
+        content: "Welcome. Choose a model and role, then start chatting."
       }
     ]);
     const [isLoading, setIsLoading] = (0, import_react.useState)(true);
@@ -21495,10 +21499,10 @@
           const modelsData = await readJsonResponse(modelsResponse, "/api/models");
           const rolesData = await readJsonResponse(rolesResponse, "/api/roles");
           if (!modelsResponse.ok) {
-            throw new Error(modelsData.error || "\u52A0\u8F7D\u6A21\u578B\u5931\u8D25\u3002");
+            throw new Error(modelsData.error || "Failed to load models.");
           }
           if (!rolesResponse.ok) {
-            throw new Error(rolesData.error || "\u52A0\u8F7D\u89D2\u8272\u5931\u8D25\u3002");
+            throw new Error(rolesData.error || "Failed to load roles.");
           }
           const enabledModels = (modelsData.models || []).filter(
             (item) => item.enabled
@@ -21508,14 +21512,10 @@
           setRoles(availableRoles);
           setModelId(enabledModels[0]?.id || "");
           setRoleId(
-            availableRoles.some(
-              (item) => item.id === rolesData.defaultRoleId
-            ) ? rolesData.defaultRoleId : availableRoles[0]?.id || ""
+            availableRoles.some((item) => item.id === rolesData.defaultRoleId) ? rolesData.defaultRoleId : availableRoles[0]?.id || ""
           );
         } catch (loadError) {
-          setError(
-            loadError instanceof Error ? loadError.message : "\u521D\u59CB\u5316\u9875\u9762\u65F6\u53D1\u751F\u9519\u8BEF\u3002"
-          );
+          setError(loadError instanceof Error ? loadError.message : "Failed to initialize.");
         } finally {
           setIsLoading(false);
         }
@@ -21533,9 +21533,7 @@
       () => roles.find((item) => item.id === roleId),
       [roles, roleId]
     );
-    const canSubmit = Boolean(
-      !isSubmitting && !isLoading && modelId && roleId && message.trim()
-    );
+    const canSubmit = Boolean(!isSubmitting && !isLoading && modelId && roleId && message.trim());
     async function handleSubmit(event) {
       event?.preventDefault();
       const trimmedMessage = message.trim();
@@ -21544,13 +21542,23 @@
       }
       setError("");
       setIsSubmitting(true);
+      const assistantEntryId = `assistant-${Date.now()}`;
       const userEntry = {
         id: `user-${Date.now()}`,
         role: "user",
         content: trimmedMessage,
         meta: `${currentRole?.label || roleId} \xB7 ${currentModel?.label || modelId}`
       };
-      setEntries((prev) => [...prev, userEntry]);
+      setEntries((prev) => [
+        ...prev,
+        userEntry,
+        {
+          id: assistantEntryId,
+          role: "assistant",
+          content: "",
+          meta: `${currentRole?.label || roleId} \xB7 ${currentModel?.label || modelId}`
+        }
+      ]);
       setMessage("");
       try {
         const response = await fetch("/api/chat", {
@@ -21564,30 +21572,79 @@
             message: trimmedMessage
           })
         });
-        const data = await readJsonResponse(response, "/api/chat");
         if (!response.ok) {
-          throw new Error(data.error || "\u8BF7\u6C42\u5931\u8D25\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5\u3002");
+          const data = await readJsonResponse(response, "/api/chat");
+          throw new Error(data.error || "Request failed. Please try again.");
         }
-        setEntries((prev) => [
-          ...prev,
-          {
-            id: `assistant-${Date.now()}`,
-            role: "assistant",
-            content: data.reply || "\u6A21\u578B\u6CA1\u6709\u8FD4\u56DE\u5185\u5BB9\u3002",
-            meta: data.meta ? `${currentRole?.label || data.meta.roleId} \xB7 ${data.meta.modelId}` : void 0
+        if (!response.body) {
+          throw new Error("Streaming response is unavailable.");
+        }
+        const updateAssistantEntry = (updater) => {
+          setEntries(
+            (prev) => prev.map((entry) => entry.id === assistantEntryId ? updater(entry) : entry)
+          );
+        };
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let finalReply = "";
+        const handleEvent = (streamEvent) => {
+          if (streamEvent.type === "meta") {
+            updateAssistantEntry((entry) => ({
+              ...entry,
+              meta: `${currentRole?.label || streamEvent.meta.roleId} \xB7 ${streamEvent.meta.modelId}`
+            }));
+            return;
           }
-        ]);
+          if (streamEvent.type === "delta") {
+            finalReply += streamEvent.chunk;
+            updateAssistantEntry((entry) => ({
+              ...entry,
+              content: entry.content + streamEvent.chunk
+            }));
+            return;
+          }
+          if (streamEvent.type === "done") {
+            finalReply = streamEvent.reply || finalReply;
+            updateAssistantEntry((entry) => ({
+              ...entry,
+              content: finalReply || "Model returned no content.",
+              meta: `${currentRole?.label || streamEvent.meta.roleId} \xB7 ${streamEvent.meta.modelId}`
+            }));
+            return;
+          }
+          throw new Error(streamEvent.error || "Streaming request failed.");
+        };
+        while (true) {
+          const { done, value } = await reader.read();
+          buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+          let eventEnd = buffer.indexOf("\n\n");
+          while (eventEnd !== -1) {
+            const rawEvent = buffer.slice(0, eventEnd);
+            buffer = buffer.slice(eventEnd + 2);
+            if (rawEvent.trim()) {
+              applyStreamEvent(rawEvent, handleEvent);
+            }
+            eventEnd = buffer.indexOf("\n\n");
+          }
+          if (done) {
+            break;
+          }
+        }
+        if (buffer.trim()) {
+          applyStreamEvent(buffer, handleEvent);
+        }
       } catch (submitError) {
-        const messageText = submitError instanceof Error ? submitError.message : "\u53D1\u9001\u6D88\u606F\u65F6\u53D1\u751F\u9519\u8BEF\u3002";
+        const messageText = submitError instanceof Error ? submitError.message : "An error occurred while sending the message.";
         setError(messageText);
-        setEntries((prev) => [
-          ...prev,
-          {
-            id: `assistant-error-${Date.now()}`,
-            role: "assistant",
-            content: `\u8BF7\u6C42\u5931\u8D25\uFF1A${messageText}`
-          }
-        ]);
+        setEntries(
+          (prev) => prev.map(
+            (entry) => entry.id === assistantEntryId ? {
+              ...entry,
+              content: entry.content || `Request failed: ${messageText}`
+            } : entry
+          )
+        );
       } finally {
         setIsSubmitting(false);
       }
@@ -21600,7 +21657,7 @@
         }
       }
     }
-    return /* @__PURE__ */ import_react.default.createElement("div", { className: "chatgpt-shell" }, /* @__PURE__ */ import_react.default.createElement("aside", { className: `sidebar ${sidebarOpen ? "open" : ""}` }, /* @__PURE__ */ import_react.default.createElement("div", { className: "sidebar-header" }, /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("p", { className: "sidebar-kicker" }, "Role Chat"), /* @__PURE__ */ import_react.default.createElement("h1", null, "\u5BF9\u8BDD\u8BBE\u7F6E")), /* @__PURE__ */ import_react.default.createElement(
+    return /* @__PURE__ */ import_react.default.createElement("div", { className: "chatgpt-shell" }, /* @__PURE__ */ import_react.default.createElement("aside", { className: `sidebar ${sidebarOpen ? "open" : ""}` }, /* @__PURE__ */ import_react.default.createElement("div", { className: "sidebar-header" }, /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("p", { className: "sidebar-kicker" }, "Role Chat"), /* @__PURE__ */ import_react.default.createElement("h1", null, "Chat Settings")), /* @__PURE__ */ import_react.default.createElement(
       "button",
       {
         type: "button",
@@ -21608,7 +21665,7 @@
         onClick: () => setSidebarOpen(false)
       },
       "\xD7"
-    )), /* @__PURE__ */ import_react.default.createElement("section", { className: "sidebar-panel" }, /* @__PURE__ */ import_react.default.createElement("label", { className: "sidebar-label", htmlFor: "model-select" }, "\u6A21\u578B"), /* @__PURE__ */ import_react.default.createElement(
+    )), /* @__PURE__ */ import_react.default.createElement("section", { className: "sidebar-panel" }, /* @__PURE__ */ import_react.default.createElement("label", { className: "sidebar-label", htmlFor: "model-select" }, "Model"), /* @__PURE__ */ import_react.default.createElement(
       "select",
       {
         id: "model-select",
@@ -21616,9 +21673,9 @@
         onChange: (event) => setModelId(event.target.value),
         disabled: !models.length || isLoading
       },
-      models.length ? null : /* @__PURE__ */ import_react.default.createElement("option", { value: "" }, "\u6CA1\u6709\u53EF\u7528\u6A21\u578B"),
+      models.length ? null : /* @__PURE__ */ import_react.default.createElement("option", { value: "" }, "No available model"),
       models.map((model) => /* @__PURE__ */ import_react.default.createElement("option", { key: model.id, value: model.id }, model.label))
-    ), /* @__PURE__ */ import_react.default.createElement("p", { className: "sidebar-help" }, currentModel ? `${currentModel.label} \xB7 ${currentModel.description}` : "\u8BF7\u5148\u914D\u7F6E\u81F3\u5C11\u4E00\u4E2A\u53EF\u7528\u6A21\u578B\u3002")), /* @__PURE__ */ import_react.default.createElement("section", { className: "sidebar-panel" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "sidebar-label" }, "\u89D2\u8272"), /* @__PURE__ */ import_react.default.createElement("div", { className: "role-list" }, roles.map((role) => /* @__PURE__ */ import_react.default.createElement(
+    ), /* @__PURE__ */ import_react.default.createElement("p", { className: "sidebar-help" }, currentModel ? `${currentModel.label} \xB7 ${currentModel.description}` : "Please configure at least one available model.")), /* @__PURE__ */ import_react.default.createElement("section", { className: "sidebar-panel" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "sidebar-label" }, "Role"), /* @__PURE__ */ import_react.default.createElement("div", { className: "role-list" }, roles.map((role) => /* @__PURE__ */ import_react.default.createElement(
       "button",
       {
         key: role.id,
@@ -21631,7 +21688,7 @@
       },
       /* @__PURE__ */ import_react.default.createElement("span", { className: "role-option-name" }, role.label),
       /* @__PURE__ */ import_react.default.createElement("span", { className: "role-option-summary" }, role.summary)
-    )))), /* @__PURE__ */ import_react.default.createElement("section", { className: "sidebar-panel sidebar-status" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "status-row" }, /* @__PURE__ */ import_react.default.createElement("span", null, "\u5F53\u524D\u89D2\u8272"), /* @__PURE__ */ import_react.default.createElement("strong", null, currentRole?.label || "\u672A\u9009\u62E9")), /* @__PURE__ */ import_react.default.createElement("div", { className: "status-row" }, /* @__PURE__ */ import_react.default.createElement("span", null, "\u5F53\u524D\u6A21\u578B"), /* @__PURE__ */ import_react.default.createElement("strong", null, currentModel?.label || "\u672A\u9009\u62E9")))), /* @__PURE__ */ import_react.default.createElement("main", { className: "chat-layout" }, /* @__PURE__ */ import_react.default.createElement("header", { className: "chat-header" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-header-left" }, /* @__PURE__ */ import_react.default.createElement(
+    )))), /* @__PURE__ */ import_react.default.createElement("section", { className: "sidebar-panel sidebar-status" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "status-row" }, /* @__PURE__ */ import_react.default.createElement("span", null, "Current role"), /* @__PURE__ */ import_react.default.createElement("strong", null, currentRole?.label || "Not selected")), /* @__PURE__ */ import_react.default.createElement("div", { className: "status-row" }, /* @__PURE__ */ import_react.default.createElement("span", null, "Current model"), /* @__PURE__ */ import_react.default.createElement("strong", null, currentModel?.label || "Not selected")))), /* @__PURE__ */ import_react.default.createElement("main", { className: "chat-layout" }, /* @__PURE__ */ import_react.default.createElement("header", { className: "chat-header" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-header-left" }, /* @__PURE__ */ import_react.default.createElement(
       "button",
       {
         type: "button",
@@ -21639,17 +21696,17 @@
         onClick: () => setSidebarOpen((value) => !value)
       },
       "\u2630"
-    ), /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-header-title" }, "Role ChatGPT UI"), /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-header-subtitle" }, currentRole?.label || "\u672A\u9009\u62E9\u89D2\u8272", " \xB7", " ", currentModel?.label || "\u672A\u9009\u62E9\u6A21\u578B")))), error ? /* @__PURE__ */ import_react.default.createElement("div", { className: "top-error" }, error) : null, /* @__PURE__ */ import_react.default.createElement("section", { className: "conversation" }, isLoading ? /* @__PURE__ */ import_react.default.createElement("div", { className: "empty-state" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "empty-state-title" }, "\u6B63\u5728\u52A0\u8F7D\u914D\u7F6E"), /* @__PURE__ */ import_react.default.createElement("div", { className: "empty-state-copy" }, "\u6B63\u5728\u8BFB\u53D6\u6A21\u578B\u548C\u89D2\u8272\uFF0C\u8BF7\u7A0D\u5019\u3002")) : null, !isLoading && entries.map((entry) => /* @__PURE__ */ import_react.default.createElement("div", { key: entry.id, className: `chat-row ${entry.role}` }, /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-avatar" }, entry.role === "user" ? "\u4F60" : "AI"), /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-bubble-wrap" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-bubble-header" }, /* @__PURE__ */ import_react.default.createElement("span", null, entry.role === "user" ? "\u4F60" : currentRole?.label || "\u52A9\u624B"), entry.meta ? /* @__PURE__ */ import_react.default.createElement("span", { className: "chat-meta" }, entry.meta) : null), /* @__PURE__ */ import_react.default.createElement("div", { className: `chat-bubble ${entry.role}` }, entry.content)))), isSubmitting ? /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-row assistant" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-avatar" }, "AI"), /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-bubble-wrap" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-bubble-header" }, /* @__PURE__ */ import_react.default.createElement("span", null, currentRole?.label || "\u52A9\u624B")), /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-bubble assistant typing" }, /* @__PURE__ */ import_react.default.createElement("span", null), /* @__PURE__ */ import_react.default.createElement("span", null), /* @__PURE__ */ import_react.default.createElement("span", null)))) : null, /* @__PURE__ */ import_react.default.createElement("div", { ref: messageEndRef })), /* @__PURE__ */ import_react.default.createElement("footer", { className: "composer-shell" }, /* @__PURE__ */ import_react.default.createElement("form", { className: "composer-card", onSubmit: handleSubmit }, /* @__PURE__ */ import_react.default.createElement(
+    ), /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-header-title" }, "Role ChatGPT UI"), /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-header-subtitle" }, currentRole?.label || "No role", " \xB7 ", currentModel?.label || "No model")))), error ? /* @__PURE__ */ import_react.default.createElement("div", { className: "top-error" }, error) : null, /* @__PURE__ */ import_react.default.createElement("section", { className: "conversation" }, isLoading ? /* @__PURE__ */ import_react.default.createElement("div", { className: "empty-state" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "empty-state-title" }, "Loading configuration"), /* @__PURE__ */ import_react.default.createElement("div", { className: "empty-state-copy" }, "Fetching models and roles.")) : null, !isLoading && entries.map((entry) => /* @__PURE__ */ import_react.default.createElement("div", { key: entry.id, className: `chat-row ${entry.role}` }, /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-avatar" }, entry.role === "user" ? "You" : "AI"), /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-bubble-wrap" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-bubble-header" }, /* @__PURE__ */ import_react.default.createElement("span", null, entry.role === "user" ? "You" : currentRole?.label || "Assistant"), entry.meta ? /* @__PURE__ */ import_react.default.createElement("span", { className: "chat-meta" }, entry.meta) : null), /* @__PURE__ */ import_react.default.createElement("div", { className: `chat-bubble ${entry.role}` }, entry.content)))), /* @__PURE__ */ import_react.default.createElement("div", { ref: messageEndRef })), /* @__PURE__ */ import_react.default.createElement("footer", { className: "composer-shell" }, /* @__PURE__ */ import_react.default.createElement("form", { className: "composer-card", onSubmit: handleSubmit }, /* @__PURE__ */ import_react.default.createElement(
       "textarea",
       {
         value: message,
         onChange: (event) => setMessage(event.target.value),
         onKeyDown: handleTextareaKeyDown,
-        placeholder: "\u7ED9\u5F53\u524D\u89D2\u8272\u53D1\u9001\u6D88\u606F\u3002Enter \u53D1\u9001\uFF0CShift + Enter \u6362\u884C\u3002",
+        placeholder: "Send a message. Enter to send, Shift+Enter for a new line.",
         rows: 1,
         required: true
       }
-    ), /* @__PURE__ */ import_react.default.createElement("div", { className: "composer-actions" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "composer-hint" }, "\u89D2\u8272\uFF1A", currentRole?.label || "\u672A\u9009\u62E9", " | \u6A21\u578B\uFF1A", currentModel?.label || "\u672A\u9009\u62E9"), /* @__PURE__ */ import_react.default.createElement("button", { className: "send-button", type: "submit", disabled: !canSubmit }, isSubmitting ? "\u53D1\u9001\u4E2D..." : "\u53D1\u9001"))))));
+    ), /* @__PURE__ */ import_react.default.createElement("div", { className: "composer-actions" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "composer-hint" }, "Role: ", currentRole?.label || "Not selected", " | Model:", " ", currentModel?.label || "Not selected"), /* @__PURE__ */ import_react.default.createElement("button", { className: "send-button", type: "submit", disabled: !canSubmit }, isSubmitting ? "Streaming..." : "Send"))))));
   }
   (0, import_client.createRoot)(document.getElementById("root")).render(/* @__PURE__ */ import_react.default.createElement(App, null));
 })();
