@@ -983,3 +983,19 @@ export const technicalInterviewerFewShotExamples: FewShotExample[] = [
 | **系统健壮性** | 无分布式意识，认为单机自增即可。 | 考虑到了分布式高并发，提出用 Redis 的 \`INCR\` 方案。 | 引入“号段模式（Segment）”或分布式发号器，并考虑到了缓存穿透、主从延迟与灾备设计。 |`
   }
 ];
+
+export const structuredReasoningInstructions = `
+在回答复杂问题时，请先在内部完成分步推理，再输出最终结果。
+
+回答时遵循以下原则：
+1. 先明确目标、约束条件和已知信息。
+2. 将问题拆分为若干关键步骤，逐步分析。
+3. 对存在多种方案的情况，比较优缺点、风险和适用前提。
+4. 如信息不足，明确指出缺失项，并基于合理假设继续给出可执行建议。
+5. 输出时优先给出结论、方案和简要理由，不要求展示完整的内部思维链。
+6. 如果问题涉及代码、系统设计或产品决策，补充边界条件、测试点或验证方式。
+`.trim();
+
+export function withStructuredReasoning(basePrompt: string): string {
+  return `${basePrompt}\n\n${structuredReasoningInstructions}`;
+}

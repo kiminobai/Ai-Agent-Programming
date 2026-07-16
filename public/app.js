@@ -21462,7 +21462,9 @@
     try {
       return JSON.parse(text);
     } catch {
-      throw new Error(`${apiName} \u8FD4\u56DE\u4E86\u975E JSON \u5185\u5BB9\uFF0C\u8BF7\u786E\u8BA4\u540E\u7AEF\u5DF2\u91CD\u542F\u5E76\u52A0\u8F7D\u6700\u65B0\u4EE3\u7801\u3002`);
+      throw new Error(
+        `${apiName} \u8FD4\u56DE\u4E86\u975E JSON \u5185\u5BB9\uFF0C\u8BF7\u786E\u8BA4\u540E\u7AEF\u5DF2\u91CD\u542F\u5E76\u52A0\u8F7D\u6700\u65B0\u4EE3\u7801\u3002`
+      );
     }
   }
   function App() {
@@ -21475,12 +21477,14 @@
       {
         id: "welcome",
         role: "assistant",
-        content: "\u5DF2\u7ECF\u51C6\u5907\u597D\u4E86\u3002\u8BF7\u9009\u62E9\u6A21\u578B\u4E0E\u89D2\u8272\uFF0C\u7136\u540E\u5F00\u59CB\u5BF9\u8BDD\u3002"
+        content: "\u6B22\u8FCE\u4F7F\u7528\u89D2\u8272\u5BF9\u8BDD\u3002\u5148\u5728\u5DE6\u4FA7\u9009\u62E9\u6A21\u578B\u548C\u89D2\u8272\uFF0C\u7136\u540E\u50CF ChatGPT \u4E00\u6837\u76F4\u63A5\u5F00\u59CB\u63D0\u95EE\u3002"
       }
     ]);
     const [isLoading, setIsLoading] = (0, import_react.useState)(true);
     const [isSubmitting, setIsSubmitting] = (0, import_react.useState)(false);
     const [error, setError] = (0, import_react.useState)("");
+    const [sidebarOpen, setSidebarOpen] = (0, import_react.useState)(false);
+    const messageEndRef = (0, import_react.useRef)(null);
     (0, import_react.useEffect)(() => {
       async function bootstrap() {
         try {
@@ -21504,7 +21508,9 @@
           setRoles(availableRoles);
           setModelId(enabledModels[0]?.id || "");
           setRoleId(
-            availableRoles.some((item) => item.id === rolesData.defaultRoleId) ? rolesData.defaultRoleId : availableRoles[0]?.id || ""
+            availableRoles.some(
+              (item) => item.id === rolesData.defaultRoleId
+            ) ? rolesData.defaultRoleId : availableRoles[0]?.id || ""
           );
         } catch (loadError) {
           setError(
@@ -21516,6 +21522,9 @@
       }
       void bootstrap();
     }, []);
+    (0, import_react.useEffect)(() => {
+      messageEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    }, [entries, isSubmitting]);
     const currentModel = (0, import_react.useMemo)(
       () => models.find((item) => item.id === modelId),
       [models, modelId]
@@ -21524,8 +21533,11 @@
       () => roles.find((item) => item.id === roleId),
       [roles, roleId]
     );
+    const canSubmit = Boolean(
+      !isSubmitting && !isLoading && modelId && roleId && message.trim()
+    );
     async function handleSubmit(event) {
-      event.preventDefault();
+      event?.preventDefault();
       const trimmedMessage = message.trim();
       if (!trimmedMessage || !modelId || !roleId) {
         return;
@@ -21536,7 +21548,7 @@
         id: `user-${Date.now()}`,
         role: "user",
         content: trimmedMessage,
-        meta: `${currentModel?.provider || ""} / ${modelId} \xB7 ${currentRole?.label || roleId}`
+        meta: `${currentRole?.label || roleId} \xB7 ${currentModel?.label || modelId}`
       };
       setEntries((prev) => [...prev, userEntry]);
       setMessage("");
@@ -21562,7 +21574,7 @@
             id: `assistant-${Date.now()}`,
             role: "assistant",
             content: data.reply || "\u6A21\u578B\u6CA1\u6709\u8FD4\u56DE\u5185\u5BB9\u3002",
-            meta: data.meta ? `${data.meta.provider} / ${data.meta.modelId} \xB7 ${currentRole?.label || data.meta.roleId}` : void 0
+            meta: data.meta ? `${currentRole?.label || data.meta.roleId} \xB7 ${data.meta.modelId}` : void 0
           }
         ]);
       } catch (submitError) {
@@ -21580,7 +21592,23 @@
         setIsSubmitting(false);
       }
     }
-    return /* @__PURE__ */ import_react.default.createElement("main", { className: "app-shell" }, /* @__PURE__ */ import_react.default.createElement("section", { className: "hero" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "hero-copy" }, /* @__PURE__ */ import_react.default.createElement("p", { className: "eyebrow" }, "Role Based Chat"), /* @__PURE__ */ import_react.default.createElement("h1", null, "\u6309\u89D2\u8272\u5207\u6362\u7684 React \u5BF9\u8BDD\u524D\u7AEF"), /* @__PURE__ */ import_react.default.createElement("p", { className: "subtitle" }, "\u9009\u62E9\u6A21\u578B\uFF0C\u518D\u5207\u6362\u7CFB\u7EDF\u89D2\u8272\u3002\u6BCF\u4E2A\u89D2\u8272\u90FD\u6765\u81EA\u72EC\u7ACB\u7684\u540E\u7AEF Prompt \u6587\u4EF6\uFF0C\u524D\u7AEF\u901A\u8FC7 React \u9A71\u52A8\u6574\u4E2A\u5BF9\u8BDD\u754C\u9762\u3002")), /* @__PURE__ */ import_react.default.createElement("div", { className: "hero-badge" }, /* @__PURE__ */ import_react.default.createElement("strong", null, "\u5F53\u524D\u89D2\u8272"), /* @__PURE__ */ import_react.default.createElement("span", null, currentRole?.label || "\u5C1A\u672A\u9009\u62E9"))), /* @__PURE__ */ import_react.default.createElement("section", { className: "chat-card" }, isLoading ? /* @__PURE__ */ import_react.default.createElement("div", { className: "loading-state" }, "\u6B63\u5728\u52A0\u8F7D\u6A21\u578B\u4E0E\u89D2\u8272\u914D\u7F6E...") : null, error ? /* @__PURE__ */ import_react.default.createElement("div", { className: "error-banner" }, error) : null, /* @__PURE__ */ import_react.default.createElement("div", { className: "topbar" }, /* @__PURE__ */ import_react.default.createElement("section", { className: "panel" }, /* @__PURE__ */ import_react.default.createElement("h2", null, "\u6A21\u578B\u8BBE\u7F6E"), /* @__PURE__ */ import_react.default.createElement("div", { className: "field" }, /* @__PURE__ */ import_react.default.createElement("label", { htmlFor: "model-select" }, "\u9009\u62E9\u6A21\u578B"), /* @__PURE__ */ import_react.default.createElement(
+    function handleTextareaKeyDown(event) {
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        if (canSubmit) {
+          void handleSubmit();
+        }
+      }
+    }
+    return /* @__PURE__ */ import_react.default.createElement("div", { className: "chatgpt-shell" }, /* @__PURE__ */ import_react.default.createElement("aside", { className: `sidebar ${sidebarOpen ? "open" : ""}` }, /* @__PURE__ */ import_react.default.createElement("div", { className: "sidebar-header" }, /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("p", { className: "sidebar-kicker" }, "Role Chat"), /* @__PURE__ */ import_react.default.createElement("h1", null, "\u5BF9\u8BDD\u8BBE\u7F6E")), /* @__PURE__ */ import_react.default.createElement(
+      "button",
+      {
+        type: "button",
+        className: "sidebar-close",
+        onClick: () => setSidebarOpen(false)
+      },
+      "\xD7"
+    )), /* @__PURE__ */ import_react.default.createElement("section", { className: "sidebar-panel" }, /* @__PURE__ */ import_react.default.createElement("label", { className: "sidebar-label", htmlFor: "model-select" }, "\u6A21\u578B"), /* @__PURE__ */ import_react.default.createElement(
       "select",
       {
         id: "model-select",
@@ -21589,34 +21617,39 @@
         disabled: !models.length || isLoading
       },
       models.length ? null : /* @__PURE__ */ import_react.default.createElement("option", { value: "" }, "\u6CA1\u6709\u53EF\u7528\u6A21\u578B"),
-      models.map((model) => /* @__PURE__ */ import_react.default.createElement("option", { key: model.id, value: model.id }, model.label, " (", model.provider, ")"))
-    )), /* @__PURE__ */ import_react.default.createElement("p", { className: "meta-copy" }, currentModel ? `${currentModel.label} \xB7 ${currentModel.description}` : "\u8BF7\u5148\u914D\u7F6E\u81F3\u5C11\u4E00\u4E2A\u53EF\u7528\u6A21\u578B\u3002")), /* @__PURE__ */ import_react.default.createElement("section", { className: "panel" }, /* @__PURE__ */ import_react.default.createElement("h2", null, "\u7CFB\u7EDF\u89D2\u8272"), /* @__PURE__ */ import_react.default.createElement("div", { className: "role-grid" }, roles.map((role) => /* @__PURE__ */ import_react.default.createElement(
+      models.map((model) => /* @__PURE__ */ import_react.default.createElement("option", { key: model.id, value: model.id }, model.label))
+    ), /* @__PURE__ */ import_react.default.createElement("p", { className: "sidebar-help" }, currentModel ? `${currentModel.label} \xB7 ${currentModel.description}` : "\u8BF7\u5148\u914D\u7F6E\u81F3\u5C11\u4E00\u4E2A\u53EF\u7528\u6A21\u578B\u3002")), /* @__PURE__ */ import_react.default.createElement("section", { className: "sidebar-panel" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "sidebar-label" }, "\u89D2\u8272"), /* @__PURE__ */ import_react.default.createElement("div", { className: "role-list" }, roles.map((role) => /* @__PURE__ */ import_react.default.createElement(
       "button",
       {
         key: role.id,
         type: "button",
-        className: `role-card ${role.id === roleId ? "active" : ""}`,
-        onClick: () => setRoleId(role.id)
+        className: `role-option ${role.id === roleId ? "active" : ""}`,
+        onClick: () => {
+          setRoleId(role.id);
+          setSidebarOpen(false);
+        }
       },
-      /* @__PURE__ */ import_react.default.createElement("div", { className: "role-card-title" }, /* @__PURE__ */ import_react.default.createElement("span", null, role.label), /* @__PURE__ */ import_react.default.createElement("span", { className: "role-chip" }, role.id)),
-      /* @__PURE__ */ import_react.default.createElement("p", { className: "role-summary" }, role.summary)
-    ))))), /* @__PURE__ */ import_react.default.createElement("div", { className: "messages" }, entries.map((entry) => /* @__PURE__ */ import_react.default.createElement("article", { key: entry.id, className: `message ${entry.role}` }, /* @__PURE__ */ import_react.default.createElement("p", { className: "message-role" }, entry.role === "user" ? "\u4F60" : "\u52A9\u624B"), entry.meta ? /* @__PURE__ */ import_react.default.createElement("p", { className: "message-meta" }, entry.meta) : null, /* @__PURE__ */ import_react.default.createElement("p", null, entry.content)))), /* @__PURE__ */ import_react.default.createElement("form", { className: "composer", onSubmit: handleSubmit }, /* @__PURE__ */ import_react.default.createElement(
+      /* @__PURE__ */ import_react.default.createElement("span", { className: "role-option-name" }, role.label),
+      /* @__PURE__ */ import_react.default.createElement("span", { className: "role-option-summary" }, role.summary)
+    )))), /* @__PURE__ */ import_react.default.createElement("section", { className: "sidebar-panel sidebar-status" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "status-row" }, /* @__PURE__ */ import_react.default.createElement("span", null, "\u5F53\u524D\u89D2\u8272"), /* @__PURE__ */ import_react.default.createElement("strong", null, currentRole?.label || "\u672A\u9009\u62E9")), /* @__PURE__ */ import_react.default.createElement("div", { className: "status-row" }, /* @__PURE__ */ import_react.default.createElement("span", null, "\u5F53\u524D\u6A21\u578B"), /* @__PURE__ */ import_react.default.createElement("strong", null, currentModel?.label || "\u672A\u9009\u62E9")))), /* @__PURE__ */ import_react.default.createElement("main", { className: "chat-layout" }, /* @__PURE__ */ import_react.default.createElement("header", { className: "chat-header" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-header-left" }, /* @__PURE__ */ import_react.default.createElement(
+      "button",
+      {
+        type: "button",
+        className: "menu-button",
+        onClick: () => setSidebarOpen((value) => !value)
+      },
+      "\u2630"
+    ), /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-header-title" }, "Role ChatGPT UI"), /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-header-subtitle" }, currentRole?.label || "\u672A\u9009\u62E9\u89D2\u8272", " \xB7", " ", currentModel?.label || "\u672A\u9009\u62E9\u6A21\u578B")))), error ? /* @__PURE__ */ import_react.default.createElement("div", { className: "top-error" }, error) : null, /* @__PURE__ */ import_react.default.createElement("section", { className: "conversation" }, isLoading ? /* @__PURE__ */ import_react.default.createElement("div", { className: "empty-state" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "empty-state-title" }, "\u6B63\u5728\u52A0\u8F7D\u914D\u7F6E"), /* @__PURE__ */ import_react.default.createElement("div", { className: "empty-state-copy" }, "\u6B63\u5728\u8BFB\u53D6\u6A21\u578B\u548C\u89D2\u8272\uFF0C\u8BF7\u7A0D\u5019\u3002")) : null, !isLoading && entries.map((entry) => /* @__PURE__ */ import_react.default.createElement("div", { key: entry.id, className: `chat-row ${entry.role}` }, /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-avatar" }, entry.role === "user" ? "\u4F60" : "AI"), /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-bubble-wrap" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-bubble-header" }, /* @__PURE__ */ import_react.default.createElement("span", null, entry.role === "user" ? "\u4F60" : currentRole?.label || "\u52A9\u624B"), entry.meta ? /* @__PURE__ */ import_react.default.createElement("span", { className: "chat-meta" }, entry.meta) : null), /* @__PURE__ */ import_react.default.createElement("div", { className: `chat-bubble ${entry.role}` }, entry.content)))), isSubmitting ? /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-row assistant" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-avatar" }, "AI"), /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-bubble-wrap" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-bubble-header" }, /* @__PURE__ */ import_react.default.createElement("span", null, currentRole?.label || "\u52A9\u624B")), /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-bubble assistant typing" }, /* @__PURE__ */ import_react.default.createElement("span", null), /* @__PURE__ */ import_react.default.createElement("span", null), /* @__PURE__ */ import_react.default.createElement("span", null)))) : null, /* @__PURE__ */ import_react.default.createElement("div", { ref: messageEndRef })), /* @__PURE__ */ import_react.default.createElement("footer", { className: "composer-shell" }, /* @__PURE__ */ import_react.default.createElement("form", { className: "composer-card", onSubmit: handleSubmit }, /* @__PURE__ */ import_react.default.createElement(
       "textarea",
       {
         value: message,
         onChange: (event) => setMessage(event.target.value),
-        placeholder: "\u8F93\u5165\u4F60\u7684\u95EE\u9898\uFF0C\u6BD4\u5982\uFF1A\u8BF7\u4EE5\u5F53\u524D\u89D2\u8272\u8EAB\u4EFD\u5206\u6790\u8FD9\u4E2A\u9700\u6C42\u3002",
+        onKeyDown: handleTextareaKeyDown,
+        placeholder: "\u7ED9\u5F53\u524D\u89D2\u8272\u53D1\u9001\u6D88\u606F\u3002Enter \u53D1\u9001\uFF0CShift + Enter \u6362\u884C\u3002",
+        rows: 1,
         required: true
       }
-    ), /* @__PURE__ */ import_react.default.createElement("div", { className: "composer-footer" }, /* @__PURE__ */ import_react.default.createElement("span", { className: "helper-text" }, "\u672C\u6B21\u5C06\u4F7F\u7528 ", currentRole?.label || "\u672A\u9009\u62E9\u89D2\u8272", " \u4E0E", " ", currentModel?.label || "\u672A\u9009\u62E9\u6A21\u578B", " \u5BF9\u8BDD\u3002"), /* @__PURE__ */ import_react.default.createElement(
-      "button",
-      {
-        className: "primary-btn",
-        type: "submit",
-        disabled: isSubmitting || !modelId || !roleId || isLoading
-      },
-      isSubmitting ? "\u53D1\u9001\u4E2D..." : "\u53D1\u9001"
-    )))));
+    ), /* @__PURE__ */ import_react.default.createElement("div", { className: "composer-actions" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "composer-hint" }, "\u89D2\u8272\uFF1A", currentRole?.label || "\u672A\u9009\u62E9", " | \u6A21\u578B\uFF1A", currentModel?.label || "\u672A\u9009\u62E9"), /* @__PURE__ */ import_react.default.createElement("button", { className: "send-button", type: "submit", disabled: !canSubmit }, isSubmitting ? "\u53D1\u9001\u4E2D..." : "\u53D1\u9001"))))));
   }
   (0, import_client.createRoot)(document.getElementById("root")).render(/* @__PURE__ */ import_react.default.createElement(App, null));
 })();

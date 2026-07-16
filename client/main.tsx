@@ -1,4 +1,11 @@
-import React, { FormEvent, useEffect, useMemo, useState } from "react";
+import React, {
+  FormEvent,
+  KeyboardEvent,
+  useEffect,
+  useMemo,
+  useRef,
+  useState
+} from "react";
 import { createRoot } from "react-dom/client";
 
 type ProviderId = "deepseek" | "openai" | "siliconflow";
@@ -31,7 +38,9 @@ async function readJsonResponse(response: Response, apiName: string) {
   try {
     return JSON.parse(text);
   } catch {
-    throw new Error(`${apiName} 返回了非 JSON 内容，请确认后端已重启并加载最新代码。`);
+    throw new Error(
+      `${apiName} 返回了非 JSON 内容，请确认后端已重启并加载最新代码。`
+    );
   }
 }
 
@@ -45,12 +54,15 @@ function App() {
     {
       id: "welcome",
       role: "assistant",
-      content: "已经准备好了。请选择模型与角色，然后开始对话。"
+      content:
+        "欢迎使用角色对话。先在左侧选择模型和角色，然后像 ChatGPT 一样直接开始提问。"
     }
   ]);
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState("");
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const messageEndRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     async function bootstrap() {
@@ -80,7 +92,9 @@ function App() {
         setRoles(availableRoles);
         setModelId(enabledModels[0]?.id || "");
         setRoleId(
-          availableRoles.some((item: PromptRole) => item.id === rolesData.defaultRoleId)
+          availableRoles.some(
+            (item: PromptRole) => item.id === rolesData.defaultRoleId
+          )
             ? rolesData.defaultRoleId
             : availableRoles[0]?.id || ""
         );
@@ -96,6 +110,10 @@ function App() {
     void bootstrap();
   }, []);
 
+  useEffect(() => {
+    messageEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [entries, isSubmitting]);
+
   const currentModel = useMemo(
     () => models.find((item) => item.id === modelId),
     [models, modelId]
@@ -106,8 +124,12 @@ function App() {
     [roles, roleId]
   );
 
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  const canSubmit = Boolean(
+    !isSubmitting && !isLoading && modelId && roleId && message.trim()
+  );
+
+  async function handleSubmit(event?: FormEvent<HTMLFormElement>) {
+    event?.preventDefault();
 
     const trimmedMessage = message.trim();
     if (!trimmedMessage || !modelId || !roleId) {
@@ -121,7 +143,7 @@ function App() {
       id: `user-${Date.now()}`,
       role: "user",
       content: trimmedMessage,
-      meta: `${currentModel?.provider || ""} / ${modelId} · ${currentRole?.label || roleId}`
+      meta: `${currentRole?.label || roleId} · ${currentModel?.label || modelId}`
     };
 
     setEntries((prev) => [...prev, userEntry]);
@@ -152,7 +174,7 @@ function App() {
           role: "assistant",
           content: data.reply || "模型没有返回内容。",
           meta: data.meta
-            ? `${data.meta.provider} / ${data.meta.modelId} · ${currentRole?.label || data.meta.roleId}`
+            ? `${currentRole?.label || data.meta.roleId} · ${data.meta.modelId}`
             : undefined
         }
       ]);
@@ -174,107 +196,176 @@ function App() {
     }
   }
 
+  function handleTextareaKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      if (canSubmit) {
+        void handleSubmit();
+      }
+    }
+  }
+
   return (
-    <main className="app-shell">
-      <section className="hero">
-        <div className="hero-copy">
-          <p className="eyebrow">Role Based Chat</p>
-          <h1>按角色切换的 React 对话前端</h1>
-          <p className="subtitle">
-            选择模型，再切换系统角色。每个角色都来自独立的后端 Prompt 文件，前端通过
-            React 驱动整个对话界面。
-          </p>
-        </div>
-        <div className="hero-badge">
-          <strong>当前角色</strong>
-          <span>{currentRole?.label || "尚未选择"}</span>
-        </div>
-      </section>
-
-      <section className="chat-card">
-        {isLoading ? <div className="loading-state">正在加载模型与角色配置...</div> : null}
-        {error ? <div className="error-banner">{error}</div> : null}
-
-        <div className="topbar">
-          <section className="panel">
-            <h2>模型设置</h2>
-            <div className="field">
-              <label htmlFor="model-select">选择模型</label>
-              <select
-                id="model-select"
-                value={modelId}
-                onChange={(event) => setModelId(event.target.value)}
-                disabled={!models.length || isLoading}
-              >
-                {models.length ? null : <option value="">没有可用模型</option>}
-                {models.map((model) => (
-                  <option key={model.id} value={model.id}>
-                    {model.label} ({model.provider})
-                  </option>
-                ))}
-              </select>
-            </div>
-            <p className="meta-copy">
-              {currentModel
-                ? `${currentModel.label} · ${currentModel.description}`
-                : "请先配置至少一个可用模型。"}
-            </p>
-          </section>
-
-          <section className="panel">
-            <h2>系统角色</h2>
-            <div className="role-grid">
-              {roles.map((role) => (
-                <button
-                  key={role.id}
-                  type="button"
-                  className={`role-card ${role.id === roleId ? "active" : ""}`}
-                  onClick={() => setRoleId(role.id)}
-                >
-                  <div className="role-card-title">
-                    <span>{role.label}</span>
-                    <span className="role-chip">{role.id}</span>
-                  </div>
-                  <p className="role-summary">{role.summary}</p>
-                </button>
-              ))}
-            </div>
-          </section>
-        </div>
-
-        <div className="messages">
-          {entries.map((entry) => (
-            <article key={entry.id} className={`message ${entry.role}`}>
-              <p className="message-role">{entry.role === "user" ? "你" : "助手"}</p>
-              {entry.meta ? <p className="message-meta">{entry.meta}</p> : null}
-              <p>{entry.content}</p>
-            </article>
-          ))}
-        </div>
-
-        <form className="composer" onSubmit={handleSubmit}>
-          <textarea
-            value={message}
-            onChange={(event) => setMessage(event.target.value)}
-            placeholder="输入你的问题，比如：请以当前角色身份分析这个需求。"
-            required
-          />
-          <div className="composer-footer">
-            <span className="helper-text">
-              本次将使用 {currentRole?.label || "未选择角色"} 与{" "}
-              {currentModel?.label || "未选择模型"} 对话。
-            </span>
-            <button
-              className="primary-btn"
-              type="submit"
-              disabled={isSubmitting || !modelId || !roleId || isLoading}
-            >
-              {isSubmitting ? "发送中..." : "发送"}
-            </button>
+    <div className="chatgpt-shell">
+      <aside className={`sidebar ${sidebarOpen ? "open" : ""}`}>
+        <div className="sidebar-header">
+          <div>
+            <p className="sidebar-kicker">Role Chat</p>
+            <h1>对话设置</h1>
           </div>
-        </form>
-      </section>
-    </main>
+          <button
+            type="button"
+            className="sidebar-close"
+            onClick={() => setSidebarOpen(false)}
+          >
+            ×
+          </button>
+        </div>
+
+        <section className="sidebar-panel">
+          <label className="sidebar-label" htmlFor="model-select">
+            模型
+          </label>
+          <select
+            id="model-select"
+            value={modelId}
+            onChange={(event) => setModelId(event.target.value)}
+            disabled={!models.length || isLoading}
+          >
+            {models.length ? null : <option value="">没有可用模型</option>}
+            {models.map((model) => (
+              <option key={model.id} value={model.id}>
+                {model.label}
+              </option>
+            ))}
+          </select>
+          <p className="sidebar-help">
+            {currentModel
+              ? `${currentModel.label} · ${currentModel.description}`
+              : "请先配置至少一个可用模型。"}
+          </p>
+        </section>
+
+        <section className="sidebar-panel">
+          <div className="sidebar-label">角色</div>
+          <div className="role-list">
+            {roles.map((role) => (
+              <button
+                key={role.id}
+                type="button"
+                className={`role-option ${role.id === roleId ? "active" : ""}`}
+                onClick={() => {
+                  setRoleId(role.id);
+                  setSidebarOpen(false);
+                }}
+              >
+                <span className="role-option-name">{role.label}</span>
+                <span className="role-option-summary">{role.summary}</span>
+              </button>
+            ))}
+          </div>
+        </section>
+
+        <section className="sidebar-panel sidebar-status">
+          <div className="status-row">
+            <span>当前角色</span>
+            <strong>{currentRole?.label || "未选择"}</strong>
+          </div>
+          <div className="status-row">
+            <span>当前模型</span>
+            <strong>{currentModel?.label || "未选择"}</strong>
+          </div>
+        </section>
+      </aside>
+
+      <main className="chat-layout">
+        <header className="chat-header">
+          <div className="chat-header-left">
+            <button
+              type="button"
+              className="menu-button"
+              onClick={() => setSidebarOpen((value) => !value)}
+            >
+              ☰
+            </button>
+            <div>
+              <div className="chat-header-title">Role ChatGPT UI</div>
+              <div className="chat-header-subtitle">
+                {currentRole?.label || "未选择角色"} ·{" "}
+                {currentModel?.label || "未选择模型"}
+              </div>
+            </div>
+          </div>
+        </header>
+
+        {error ? <div className="top-error">{error}</div> : null}
+
+        <section className="conversation">
+          {isLoading ? (
+            <div className="empty-state">
+              <div className="empty-state-title">正在加载配置</div>
+              <div className="empty-state-copy">正在读取模型和角色，请稍候。</div>
+            </div>
+          ) : null}
+
+          {!isLoading &&
+            entries.map((entry) => (
+              <div key={entry.id} className={`chat-row ${entry.role}`}>
+                <div className="chat-avatar">{entry.role === "user" ? "你" : "AI"}</div>
+                <div className="chat-bubble-wrap">
+                  <div className="chat-bubble-header">
+                    <span>
+                      {entry.role === "user" ? "你" : currentRole?.label || "助手"}
+                    </span>
+                    {entry.meta ? <span className="chat-meta">{entry.meta}</span> : null}
+                  </div>
+                  <div className={`chat-bubble ${entry.role}`}>{entry.content}</div>
+                </div>
+              </div>
+            ))}
+
+          {isSubmitting ? (
+            <div className="chat-row assistant">
+              <div className="chat-avatar">AI</div>
+              <div className="chat-bubble-wrap">
+                <div className="chat-bubble-header">
+                  <span>{currentRole?.label || "助手"}</span>
+                </div>
+                <div className="chat-bubble assistant typing">
+                  <span />
+                  <span />
+                  <span />
+                </div>
+              </div>
+            </div>
+          ) : null}
+
+          <div ref={messageEndRef} />
+        </section>
+
+        <footer className="composer-shell">
+          <form className="composer-card" onSubmit={handleSubmit}>
+            <textarea
+              value={message}
+              onChange={(event) => setMessage(event.target.value)}
+              onKeyDown={handleTextareaKeyDown}
+              placeholder="给当前角色发送消息。Enter 发送，Shift + Enter 换行。"
+              rows={1}
+              required
+            />
+            <div className="composer-actions">
+              <div className="composer-hint">
+                角色：{currentRole?.label || "未选择"} | 模型：
+                {currentModel?.label || "未选择"}
+              </div>
+              <button className="send-button" type="submit" disabled={!canSubmit}>
+                {isSubmitting ? "发送中..." : "发送"}
+              </button>
+            </div>
+          </form>
+        </footer>
+      </main>
+    </div>
   );
 }
 
