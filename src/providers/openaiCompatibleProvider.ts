@@ -6,8 +6,9 @@ import {
   ReasoningEffort
 } from "../types";
 import {
-  executeGetWeather,
-  getWeatherTool
+  executeTool,
+  isSupportedToolName,
+  toolSchemas
 } from "../tools";
 
 interface OpenAICompatibleResponse {
@@ -239,7 +240,7 @@ export class OpenAICompatibleProvider implements ChatProvider {
       model: modelId,
       instructions: systemPrompt,
       input: this.buildResponsesInput(message, fewShotExamples),
-      tools: [getWeatherTool],
+      tools: toolSchemas,
       tool_choice: "auto",
       parallel_tool_calls: false,
       reasoning: selectedEffort ? { effort: selectedEffort } : undefined,
@@ -263,7 +264,7 @@ export class OpenAICompatibleProvider implements ChatProvider {
       model: modelId,
       instructions: systemPrompt,
       input,
-      tools: [getWeatherTool],
+      tools: toolSchemas,
       tool_choice: "none",
       parallel_tool_calls: false,
       reasoning: selectedEffort ? { effort: selectedEffort } : undefined,
@@ -285,41 +286,47 @@ export class OpenAICompatibleProvider implements ChatProvider {
     return reasoningEffort || this.config.reasoningEffort;
   }
 
-  private getWeatherToolCall(
+  private getResponsesToolCalls(
     outputItems: OpenAIResponsesOutputItem[]
-  ): OpenAIResponsesOutputItem | undefined {
-    return outputItems.find(
+  ): OpenAIResponsesOutputItem[] {
+    return outputItems.filter(
       (item) =>
         item.type === "function_call" &&
-        item.name === getWeatherTool.name &&
+        Boolean(item.name) &&
+        isSupportedToolName(item.name || "") &&
         Boolean(item.call_id)
     );
   }
 
-  private async executeWeatherToolCall(
+  private async executeResponsesToolCall(
     toolCall: OpenAIResponsesOutputItem
   ): Promise<string> {
-    return this.executeWeatherArguments(toolCall.arguments);
+    return this.executeToolArguments(
+      toolCall.name || "",
+      toolCall.arguments
+    );
   }
 
-  private async executeWeatherArguments(
+  private async executeToolArguments(
+    name: string,
     argumentsJson?: string
   ): Promise<string> {
     try {
+      if (!isSupportedToolName(name)) {
+        throw new Error(`Unsupported tool: "${name}".`);
+      }
+
       const args = JSON.parse(argumentsJson || "{}") as unknown;
-      console.info("[tool:get_weather] call", args);
-      const result = await executeGetWeather(args);
-      console.info("[tool:get_weather] success", {
-        location: result.location.resolved,
-        observedAt: result.current.observedAt
-      });
+      console.info(`[tool:${name}] call`, args);
+      const result = await executeTool(name, args);
+      console.info(`[tool:${name}] success`);
       return JSON.stringify({
         success: true,
         data: result
       });
     } catch (error) {
       console.error(
-        "[tool:get_weather] failed",
+        `[tool:${name || "unknown"}] failed`,
         error instanceof Error ? error.message : error
       );
       return JSON.stringify({
@@ -327,7 +334,7 @@ export class OpenAICompatibleProvider implements ChatProvider {
         error:
           error instanceof Error
             ? error.message
-            : "Unknown error while executing get_weather."
+            : `Unknown error while executing ${name || "tool"}.`
       });
     }
   }
@@ -343,26 +350,24 @@ export class OpenAICompatibleProvider implements ChatProvider {
     };
   }
 
-  private buildDeepSeekWeatherTools() {
-    return [
-      {
+  private buildDeepSeekTools() {
+    return toolSchemas.map((tool) => ({
         type: "function",
         function: {
-          name: getWeatherTool.name,
-          description: getWeatherTool.description,
-          parameters: getWeatherTool.parameters
+          name: tool.name,
+          description: tool.description,
+          parameters: tool.parameters
         }
-      }
-    ] as const;
+      }));
   }
 
-  private getDeepSeekWeatherCall(
+  private getDeepSeekToolCalls(
     toolCalls?: CompatibleToolCall[]
-  ): CompatibleToolCall | undefined {
-    return toolCalls?.find(
+  ): CompatibleToolCall[] {
+    return (toolCalls || []).filter(
       (toolCall) =>
         toolCall.type === "function" &&
-        toolCall.function.name === getWeatherTool.name
+        isSupportedToolName(toolCall.function.name)
     );
   }
 
@@ -377,7 +382,7 @@ export class OpenAICompatibleProvider implements ChatProvider {
       systemPrompt,
       fewShotExamples
     );
-    const tools = this.buildDeepSeekWeatherTools();
+    const tools = this.buildDeepSeekTools();
 
     const initialResponse = await fetch(this.config.apiUrl, {
       method: "POST",
@@ -403,15 +408,22 @@ export class OpenAICompatibleProvider implements ChatProvider {
     }
 
     const assistant = initialData.choices?.[0]?.message;
-    const toolCall = this.getDeepSeekWeatherCall(assistant?.tool_calls);
-    if (!assistant || !toolCall) {
+    const toolCalls = this.getDeepSeekToolCalls(assistant?.tool_calls);
+    if (!assistant || toolCalls.length === 0) {
       return (
         assistant?.content?.trim() || "Model returned no content."
       );
     }
 
-    const toolOutput = await this.executeWeatherArguments(
-      toolCall.function.arguments
+    const toolMessages = await Promise.all(
+      toolCalls.map(async (toolCall) => ({
+        role: "tool" as const,
+        tool_call_id: toolCall.id,
+        content: await this.executeToolArguments(
+          toolCall.function.name,
+          toolCall.function.arguments
+        )
+      }))
     );
     const continuationMessages = [
       ...messages,
@@ -421,11 +433,7 @@ export class OpenAICompatibleProvider implements ChatProvider {
         reasoning_content: assistant.reasoning_content || undefined,
         tool_calls: assistant.tool_calls
       },
-      {
-        role: "tool" as const,
-        tool_call_id: toolCall.id,
-        content: toolOutput
-      }
+      ...toolMessages
     ];
 
     const finalResponse = await fetch(this.config.apiUrl, {
@@ -471,7 +479,7 @@ export class OpenAICompatibleProvider implements ChatProvider {
       body: JSON.stringify({
         model: modelId,
         messages,
-        tools: this.buildDeepSeekWeatherTools(),
+        tools: this.buildDeepSeekTools(),
         tool_choice: toolChoice,
         stream: true
       })
@@ -615,25 +623,28 @@ export class OpenAICompatibleProvider implements ChatProvider {
       "auto",
       onDelta
     );
-    const toolCall = this.getDeepSeekWeatherCall(
+    const toolCalls = this.getDeepSeekToolCalls(
       initialResult.assistantMessage.tool_calls
     );
 
-    if (!toolCall) {
+    if (toolCalls.length === 0) {
       return initialResult.text.trim() || "Model returned no content.";
     }
 
-    const toolOutput = await this.executeWeatherArguments(
-      toolCall.function.arguments
+    const toolMessages = await Promise.all(
+      toolCalls.map(async (toolCall) => ({
+        role: "tool" as const,
+        tool_call_id: toolCall.id,
+        content: await this.executeToolArguments(
+          toolCall.function.name,
+          toolCall.function.arguments
+        )
+      }))
     );
     const continuationMessages = [
       ...messages,
       initialResult.assistantMessage,
-      {
-        role: "tool" as const,
-        tool_call_id: toolCall.id,
-        content: toolOutput
-      }
+      ...toolMessages
     ];
 
     if (initialResult.text) {
@@ -834,18 +845,25 @@ export class OpenAICompatibleProvider implements ChatProvider {
       );
     }
 
-    const toolCall = this.getWeatherToolCall(initialData.output || []);
-    if (!toolCall) {
+    const toolCalls = this.getResponsesToolCalls(initialData.output || []);
+    if (toolCalls.length === 0) {
       return (
         initialData.output_text?.trim() || "Model returned no content."
       );
     }
 
-    const toolOutput = await this.executeWeatherToolCall(toolCall);
+    const functionCallOutputs = await Promise.all(
+      toolCalls.map(async (toolCall) =>
+        this.createFunctionCallOutput(
+          toolCall,
+          await this.executeResponsesToolCall(toolCall)
+        )
+      )
+    );
     const continuationInput = [
       ...initialInput,
       ...(initialData.output || []),
-      this.createFunctionCallOutput(toolCall, toolOutput)
+      ...functionCallOutputs
     ];
 
     const finalResponse = await fetch(this.config.apiUrl, {
@@ -995,16 +1013,25 @@ export class OpenAICompatibleProvider implements ChatProvider {
       onDelta
     );
 
-    const toolCall = this.getWeatherToolCall(initialResult.outputItems);
-    if (!toolCall) {
+    const toolCalls = this.getResponsesToolCalls(
+      initialResult.outputItems
+    );
+    if (toolCalls.length === 0) {
       return initialResult.text.trim() || "Model returned no content.";
     }
 
-    const toolOutput = await this.executeWeatherToolCall(toolCall);
+    const functionCallOutputs = await Promise.all(
+      toolCalls.map(async (toolCall) =>
+        this.createFunctionCallOutput(
+          toolCall,
+          await this.executeResponsesToolCall(toolCall)
+        )
+      )
+    );
     const continuationInput = [
       ...initialInput,
       ...initialResult.outputItems,
-      this.createFunctionCallOutput(toolCall, toolOutput)
+      ...functionCallOutputs
     ];
 
     if (initialResult.text) {
