@@ -1,6 +1,8 @@
 /**
- * 将 LangChainToolAgent 适配为项目统一的 ChatProvider 接口。
- * HTTP 层只依赖 ChatProvider，因此可以在 LangChain 与原生 SDK 间切换。
+ * LangChain.js 版 AI Assistant Provider。
+ *
+ * DeepSeek、OpenAI、SiliconFlow 都通过此适配器进入同一套 LangChain
+ * 模型、消息、工具循环与 LangGraph 短期记忆。
  */
 import {
   LangChainToolAgent,
@@ -10,17 +12,23 @@ import {
   ChatProvider,
   FewShotExample,
   ProviderConfig,
+  ProviderId,
   ReasoningEffort
 } from "../types";
 
 export class LangChainProvider implements ChatProvider {
-  readonly id = "deepseek" as const;
+  readonly id: ProviderId;
   // Agent 必须长期复用，其内部 MemorySaver 才不会随请求结束而丢失。
   private readonly agents = new Map<string, LangChainToolAgent>();
   // 记录已开始的线程，防止每一轮都重复写入 Few-shot 示例。
   private readonly initializedThreads = new Set<string>();
 
-  constructor(private readonly config: ProviderConfig) {}
+  constructor(
+    providerId: ProviderId,
+    private readonly config: ProviderConfig
+  ) {
+    this.id = providerId;
+  }
 
   isAvailable(): boolean {
     return Boolean(this.config.apiKey);
@@ -31,15 +39,24 @@ export class LangChainProvider implements ChatProvider {
     message: string,
     systemPrompt: string,
     fewShotExamples: FewShotExample[] = [],
-    _reasoningEffort?: ReasoningEffort,
+    reasoningEffort?: ReasoningEffort,
     threadId = crypto.randomUUID()
   ): Promise<string> {
-    // 步骤 1：请求模型前确认 DeepSeek Key 已配置。
+    // 步骤 1：请求模型前确认当前 Provider 的 API Key 已配置。
     this.requireApiKey();
 
     // 步骤 2：按本次选择的模型和角色 Prompt 创建 Tool Agent。
-    const agent = this.getOrCreateToolAgent(modelId, systemPrompt);
-    const memoryKey = this.createMemoryKey(modelId, systemPrompt, threadId);
+    const agent = this.getOrCreateToolAgent(
+      modelId,
+      systemPrompt,
+      reasoningEffort
+    );
+    const memoryKey = this.createMemoryKey(
+      modelId,
+      systemPrompt,
+      threadId,
+      reasoningEffort
+    );
     const includeFewShot = !this.initializedThreads.has(memoryKey);
 
     // 步骤 3：组装 Few-shot + 用户问题，执行非流式 Agent Loop。
@@ -57,15 +74,24 @@ export class LangChainProvider implements ChatProvider {
     systemPrompt: string,
     onDelta: (chunk: string) => void,
     fewShotExamples: FewShotExample[] = [],
-    _reasoningEffort?: ReasoningEffort,
+    reasoningEffort?: ReasoningEffort,
     threadId = crypto.randomUUID()
   ): Promise<string> {
     // 步骤 1：流式请求同样先检查服务端密钥。
     this.requireApiKey();
 
     // 步骤 2：创建 Agent；onDelta 会由 Agent 逐 Token 回调。
-    const agent = this.getOrCreateToolAgent(modelId, systemPrompt);
-    const memoryKey = this.createMemoryKey(modelId, systemPrompt, threadId);
+    const agent = this.getOrCreateToolAgent(
+      modelId,
+      systemPrompt,
+      reasoningEffort
+    );
+    const memoryKey = this.createMemoryKey(
+      modelId,
+      systemPrompt,
+      threadId,
+      reasoningEffort
+    );
     const includeFewShot = !this.initializedThreads.has(memoryKey);
 
     // 步骤 3：Provider 不执行工具循环，createAgent 会自动完成。
@@ -78,8 +104,21 @@ export class LangChainProvider implements ChatProvider {
     return reply;
   }
 
-  private getOrCreateToolAgent(modelId: string, systemPrompt: string) {
-    const agentKey = `${modelId}\u0000${systemPrompt}`;
+  private getOrCreateToolAgent(
+    modelId: string,
+    systemPrompt: string,
+    reasoningEffort?: ReasoningEffort
+  ) {
+    const effectiveReasoningEffort =
+      this.id === "openai"
+        ? reasoningEffort ?? this.config.reasoningEffort
+        : undefined;
+    const agentKey = [
+      this.id,
+      modelId,
+      systemPrompt,
+      effectiveReasoningEffort ?? ""
+    ].join("\u0000");
     const existingAgent = this.agents.get(agentKey);
     if (existingAgent) {
       return existingAgent;
@@ -87,10 +126,12 @@ export class LangChainProvider implements ChatProvider {
 
     // 首次使用某个“模型 + 角色”组合时创建 Agent，后续请求复用。
     const agent = new LangChainToolAgent({
+      providerId: this.id,
       apiKey: this.config.apiKey,
       apiUrl: this.config.apiUrl,
       modelId,
-      systemPrompt
+      systemPrompt,
+      reasoningEffort: effectiveReasoningEffort
     });
     this.agents.set(agentKey, agent);
     return agent;
@@ -99,10 +140,17 @@ export class LangChainProvider implements ChatProvider {
   private createMemoryKey(
     modelId: string,
     systemPrompt: string,
-    threadId: string
+    threadId: string,
+    reasoningEffort?: ReasoningEffort
   ): string {
     // 相同浏览器线程在不同模型或角色之间切换时，记忆保持隔离。
-    return `${modelId}\u0000${systemPrompt}\u0000${threadId}`;
+    return [
+      this.id,
+      modelId,
+      systemPrompt,
+      reasoningEffort ?? "",
+      threadId
+    ].join("\u0000");
   }
 
   private buildMessages(
@@ -135,7 +183,7 @@ export class LangChainProvider implements ChatProvider {
 
   private requireApiKey(): void {
     if (!this.config.apiKey) {
-      throw new Error("deepseek has no API key configured.");
+      throw new Error(`${this.id} has no API key configured.`);
     }
   }
 }

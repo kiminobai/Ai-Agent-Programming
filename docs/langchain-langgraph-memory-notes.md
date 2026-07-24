@@ -1,5 +1,7 @@
 # AI Agent 核心概念学习笔记
 
+![LangChain.js AI Assistant 架构图](./langchain-ai-assistant.png)
+
 ## 1. 学习路线与整体关系
 
 本笔记按照《AI Agent 学习手册》的主线组织：
@@ -34,6 +36,233 @@ RAG：从外部知识库检索事实
 LangGraph：编排复杂、有状态、可恢复的工作流
 Multi-Agent：让多个专业 Agent 分工协作
 ```
+
+---
+
+## 1.1 核心术语速查
+
+这一节先用不依赖其他术语的方式解释后文会反复出现的名字。
+
+### 基础开发术语
+
+| 名词 | 简单解释 | 当前项目中的例子 |
+| --- | --- | --- |
+| Framework（框架） | 规定应用如何组织和运行的一套代码与约定。框架通常会主动调用开发者写的代码 | LangChain、LangGraph、Express、React |
+| Library（库） | 提供可主动调用的函数或类，不一定规定整个程序结构 | Zod |
+| SDK | 某个平台为了方便开发者调用其 API 而提供的软件包 | `openai` npm 包 |
+| API | 两个软件系统之间约定好的调用接口 | DeepSeek Chat Completions API |
+| Provider | 提供模型 API 服务的平台或厂商 | DeepSeek、OpenAI、SiliconFlow |
+| Model | 接收输入并生成结果的具体模型 | `deepseek-chat`、`gpt-4o-mini` |
+| Integration（集成） | 把某个外部模型或服务适配成框架能统一使用的组件 | `@langchain/openai` |
+| Adapter（适配器） | 转换两套不同接口，使调用方不需要理解底层差异 | 项目的 `LangChainProvider` |
+
+框架和 SDK 的区别：
+
+```text
+使用 SDK：
+你的代码主动调用 SDK，并自己控制消息、循环、错误和工具。
+
+使用 Agent 框架：
+你的代码提供模型、工具和配置，框架控制标准执行循环。
+```
+
+### 模型与消息术语
+
+| 名词 | 简单解释 |
+| --- | --- |
+| Message | 一条带角色和内容的模型输入或输出，不只是普通字符串 |
+| `SystemMessage` | 定义模型角色、规则和行为边界的消息 |
+| `HumanMessage` | 用户或 Few-shot 用户示例对应的消息 |
+| `AIMessage` | 模型回复；也可能携带 Tool Calls |
+| `ToolMessage` | 工具执行结果，必须通过 `tool_call_id` 对应到某次 Tool Call |
+| Prompt | 交给模型的全部指令与上下文，不只等于用户当前问题 |
+| System Prompt | 优先级较高的角色和规则说明 |
+| Dynamic Prompt | 根据当前状态、用户或环境临时生成的 Prompt |
+| Structured Output | 要求模型按指定字段结构返回结果，而不是任意自然语言 |
+| Schema | 对数据字段、类型和约束的正式描述 |
+| Zod | TypeScript 运行时 Schema 校验库；可以验证模型生成的工具参数 |
+
+一次真实模型输入可能由这些部分组成：
+
+```text
+SystemMessage
++ Few-shot Messages
++ 当前线程历史 Messages
++ 当前 HumanMessage
++ Tool Schemas
++ 动态上下文
+= 本次模型可见的 Context
+```
+
+### Agent 与工具术语
+
+| 名词 | 简单解释 |
+| --- | --- |
+| Agent | 能让模型根据情况选择行动，并根据行动结果继续处理的应用系统 |
+| Agent Loop | “调用模型 → 选择工具 → 执行工具 → 把结果交回模型”的循环 |
+| `createAgent` | LangChain 的高层 Agent 工厂；传入模型、工具、Prompt 等配置后返回可运行 Agent |
+| Compiled Agent | 已经组装和编译完成，可以调用 `invoke()` 或 `stream()` 的 Agent |
+| Tool | 暴露给模型的一项能力，由名称、描述、参数 Schema 和执行函数组成 |
+| Tool Call | 模型产生的“要调用哪个工具、传什么参数”的结构化请求 |
+| Tool Executor | 真正执行函数、API 或数据库操作的应用代码 |
+| Tool Node | LangGraph 中负责执行 Tool Call 的节点 |
+| Multiple Tools | 一个 Agent 注册多个工具，由模型自动选择一个、多个或不调用 |
+| Parallel Tool Calls | 模型在同一步请求多个互不依赖的工具，运行时可以并行执行 |
+| ReAct | 让 Agent 在判断、行动、观察结果之间循环的方法；不等于公开隐藏思维链 |
+| Agent Harness | 包围 Agent 的完整应用环境，例如 UI、权限、文件、日志、记忆和审批 |
+
+`createAgent`、Agent 和 Harness 的关系：
+
+```text
+Harness：完整产品运行环境
+└── Agent：能够判断和行动的执行单元
+    └── createAgent：创建标准 Agent 的函数
+        └── LangGraph Runtime：实际运行 Agent 图
+```
+
+### State、Runtime 与 Context
+
+这三个词最容易混淆：
+
+| 名词 | 会不会变化 | 会不会被 Checkpointer 保存 | 用途 |
+| --- | --- | --- | --- |
+| State | 会随图执行不断更新 | 会 | 保存消息、工具结果和任务进度 |
+| Runtime | 每次执行时由框架提供 | Runtime 本身不会 | 提供 State、Context、Store、流写入器和执行信息的访问入口 |
+| Context | 一次调用期间通常只读 | 默认不会 | 传入用户 ID、权限、数据库连接等调用环境 |
+
+可以把它们理解为：
+
+```text
+State   = 这次任务已经发生了什么
+Context = 这次任务在什么身份和环境下运行
+Runtime = 节点、工具和 Middleware 访问运行信息的入口
+```
+
+更多相关名词：
+
+| 名词 | 简单解释 |
+| --- | --- |
+| State Schema | 声明 State 允许有哪些字段以及各字段的数据类型 |
+| Channel | LangGraph 内部管理某个 State 字段更新方式的通道 |
+| Reducer | 多次或并行更新同一 State 字段时，决定如何合并旧值和新值的函数 |
+| `MessagesValue` | LangGraph 为消息列表提供的预定义 State 字段与合并规则 |
+| `ReducedValue` | 允许开发者给自定义字段配置 Reducer 的 State 定义 |
+| `ToolRuntime` | 工具执行时收到的 Runtime；可读取 State、Context 和当前 Tool Call |
+| `Command` | 节点或工具向 LangGraph 返回的控制对象，可更新 State 或改变流程 |
+| Immutable Context | 调用期间不应被工具修改的上下文配置 |
+
+项目中的工具状态更新：
+
+```text
+ToolRuntime.state
+      ↓ 读取
+toolContextHistory
+      ↓ 工具执行
+Command({ update: ... })
+      ↓ Reducer 合并
+新的 toolContextHistory + ToolMessage
+```
+
+### LangGraph 执行术语
+
+| 名词 | 简单解释 |
+| --- | --- |
+| Graph | 用节点和边描述的执行流程 |
+| Node | 一个执行步骤，可以调用模型、工具或普通函数 |
+| Edge | 从一个节点到下一个节点的固定连线 |
+| Conditional Edge | 根据 State 或节点结果动态选择下一条路径 |
+| `START` / `END` | 图的入口和结束标记，不是业务节点 |
+| StateGraph | 使用共享 State 构建的 LangGraph 图 |
+| Compile | 检查并组装图，生成真正可执行的对象 |
+| Run | 对 Agent 或 Graph 的一次 `invoke` / `stream` 执行 |
+| Step | 图执行中的一个逻辑步骤 |
+| Super-step | 同一轮中所有可并行节点共同组成的执行批次 |
+| Subgraph | 被另一个图作为节点或子流程调用的图 |
+| Routing | 根据条件决定下一节点 |
+| Interrupt | 主动暂停图，等待人工输入或审批后恢复 |
+| Resume | 从已保存的 State 和执行位置继续运行 |
+
+### Memory 与持久化术语
+
+| 名词 | 简单解释 |
+| --- | --- |
+| Memory | Agent 保存并在以后重新使用信息的能力总称 |
+| Short-term Memory | 只属于某个对话线程的状态，通常包括消息和当前任务数据 |
+| Long-term Memory | 可以跨线程、跨会话使用的用户或应用知识 |
+| Thread | 多次 Run 共享的一条状态时间线 |
+| `thread_id` | Checkpointer 保存和恢复某个 Thread 时使用的主键 |
+| Checkpoint | 某一执行时刻的完整 State 快照 |
+| Checkpointer | 负责写入和读取 Checkpoint 的存储适配器 |
+| `MemorySaver` | 把 Checkpoint 保存在当前 Node.js 进程内存中的实验性 Checkpointer |
+| Store | 保存跨 Thread 长期记忆的键值文档存储接口 |
+| Namespace | Store 中用于隔离用户、应用或记忆类别的路径 |
+| Key | Namespace 内某条长期记忆的唯一标识 |
+| Semantic Memory | 用户事实和知识，例如偏好、姓名 |
+| Episodic Memory | 过去发生过的任务或事件 |
+| Procedural Memory | Agent 应遵守的规则、流程和经验 |
+
+Checkpointer 和 Store 不是一回事：
+
+```text
+Checkpointer
+└── 按 thread_id 保存整个 Graph State
+    └── 适合短期记忆、暂停恢复和故障恢复
+
+Store
+└── 按 namespace + key 保存独立 JSON 文档
+    └── 适合跨线程长期记忆
+```
+
+### Middleware 术语
+
+Middleware 是插入 Agent 执行过程的扩展层，不是另一个独立运行时。
+
+| 名词 | 执行位置与用途 |
+| --- | --- |
+| `beforeAgent` | 整次 Agent Run 开始前 |
+| `afterAgent` | 整次 Agent Run 完成后 |
+| `beforeModel` | 每次调用模型之前 |
+| `afterModel` | 每次模型返回之后 |
+| `wrapModelCall` | 包围模型调用，可修改模型、消息、Prompt 或实现重试 |
+| `wrapToolCall` | 包围工具执行，可做权限、日志、错误处理和重试 |
+| Summarization Middleware | 历史过长时把旧消息压缩成摘要 |
+| Dynamic Prompt Middleware | 根据 State 或 Runtime Context 动态调整 System Prompt |
+| Human-in-the-loop Middleware | 高风险工具执行前暂停并请求人工审批 |
+
+“before”和“wrap”的区别：
+
+```text
+beforeModel：模型调用前执行一次逻辑
+
+wrapModelCall：
+    调用前逻辑
+    → handler(request) 真正调用模型
+    → 调用后逻辑
+```
+
+### Streaming 与服务端术语
+
+| 名词 | 简单解释 |
+| --- | --- |
+| Streaming | 模型生成一部分就发送一部分，而不是等待完整答案 |
+| Chunk / Delta | 流式响应中的一个增量片段 |
+| SSE | Server-Sent Events，服务端通过一个 HTTP 长连接持续向浏览器发送事件 |
+| Backpressure | 消费速度跟不上生成速度时，需要控制数据流的机制 |
+| Metadata | 与文本一起返回的模型、节点、工具等附加信息 |
+
+### RAG 术语
+
+| 名词 | 简单解释 |
+| --- | --- |
+| RAG | 先检索外部资料，再让模型依据资料回答 |
+| Document | 带正文和元数据的一份知识对象 |
+| Loader | 从 PDF、网页、数据库等来源读取 Document |
+| Chunk | 为便于检索而切分出的较小文本片段 |
+| Embedding | 把文本转换为表达语义位置的数字向量 |
+| Vector Store | 保存向量并支持相似度搜索的存储 |
+| Retriever | 根据查询找出相关 Document 或 Chunk 的统一接口 |
+| Similarity Search | 查找与查询向量距离最近的内容 |
+| Reranking | 对初步检索结果再次排序，提高最相关内容的位置 |
 
 ---
 
@@ -1118,28 +1347,27 @@ Engineer Agent
 
 ## 10. 与当前 ChatDemo 项目的对应关系
 
-当前项目已经具备 LangChain Agent 的部分基础能力，但采用的是原生 SDK 手动实现：
+当前项目已经完成 LangChain.js AI Assistant 迁移，默认运行链路如下：
 
 | 当前项目能力 | 对应概念 |
 | --- | --- |
-| `openaiCompatibleProvider.ts` | Model 调用与手写 Agent Loop |
-| `toolSchemas` | Tool 定义 |
-| `toolExecutor.ts` | 工具执行节点 |
+| `langChainProvider.ts` | 多 Provider 的 LangChain 适配层 |
+| `langChainToolAgent.ts` | `ChatOpenAI`、`createAgent` 与流式 Agent Loop |
+| `tools/langchain/*.ts` | LangChain Tools 与 Zod Schema |
+| `toolMemoryState.ts` | `messages` 与 `toolContextHistory` State |
+| `dynamicMemoryPromptMiddleware.ts` | 根据 State 创建动态 System Prompt |
+| `MemorySaver` | 按 `thread_id` 保存短期记忆 |
+| `summarizationMiddleware` | 长对话摘要 |
 | Prompt 角色文件 | System Prompt |
 | React 对话页面 | Agent Harness UI |
 | SSE Streaming | 流式响应 |
-| 前端消息数组 | 临时的短期记忆 |
 
-当前项目的消息主要由前端保存并随请求发送。页面刷新或服务重启后能否恢复，取决于是否另外使用了浏览器存储或后端数据库。
+前端只发送当前用户消息与稳定的 `threadId`。后端 LangGraph 根据
+`thread_id` 恢复完整消息和工具状态，不再依赖前端重复提交全部历史。
 
-如果要加入正式 Memory，可以按下面顺序学习：
-
-1. 给每个对话生成唯一 `thread_id`。
-2. 在后端保存每个线程的消息历史。
-3. 限制历史长度并加入摘要策略。
-4. 保存用户偏好等长期记忆。
-5. 每次请求只检索并注入相关记忆。
-6. 最后再考虑迁移到 LangGraph Checkpointer 和 Store。
+当前 `MemorySaver` 只保存在 Node.js 进程内存中，服务重启后状态会丢失。
+生产环境可以换成 PostgreSQL、MongoDB、Redis 等持久化 Checkpointer。
+跨线程的用户偏好目前尚未实现，后续应使用 LangGraph Store，而不是继续扩大 Thread State。
 
 ---
 
@@ -1147,7 +1375,7 @@ Engineer Agent
 
 ### 只使用原生 DeepSeek SDK
 
-适合学习底层原理，所有 Tool Calling、循环和 Memory 都需要自己实现。当前 ChatDemo 就接近这种方式。
+适合学习底层原理，所有 Tool Calling、循环和 Memory 都需要自己实现。当前项目保留了原生实现文件作为第三阶段学习对照，但默认运行链路不再使用它。
 
 ### 使用 LangChain
 
@@ -1165,6 +1393,9 @@ Engineer Agent
 LangChain：模型、工具、Prompt、createAgent
 LangGraph：状态、流程、持久化、Memory
 ```
+
+当前 ChatDemo 使用的就是这个组合：LangChain `createAgent` 提供标准
+Tool Agent，底层 LangGraph 负责状态、工具节点和 Checkpointer。
 
 建议的学习顺序：
 
@@ -1208,6 +1439,11 @@ Multi-Agent：让多个职责明确的 Agent 分工、协作和相互审查。
 
 - [LangChain 官方概览](https://docs.langchain.com/oss/javascript/langchain/overview)
 - [LangChain Agents](https://docs.langchain.com/oss/javascript/langchain/agents)
+- [LangChain Tools](https://docs.langchain.com/oss/javascript/langchain/tools)
+- [LangChain Runtime](https://docs.langchain.com/oss/javascript/langchain/runtime)
+- [LangChain Middleware](https://docs.langchain.com/oss/javascript/langchain/middleware/overview)
+- [LangChain Short-term Memory](https://docs.langchain.com/oss/javascript/langchain/short-term-memory)
+- [LangChain Long-term Memory](https://docs.langchain.com/oss/javascript/langchain/long-term-memory)
 - [LangGraph 官方概览](https://docs.langchain.com/oss/javascript/langgraph/overview)
 - [Memory 官方概览](https://docs.langchain.com/oss/javascript/concepts/memory)
 - [LangGraph Persistence](https://docs.langchain.com/oss/javascript/langgraph/persistence)

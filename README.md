@@ -1,11 +1,13 @@
 # Multi-Model Chat Demo
 
-这是一个适合学习的多模型聊天示例项目，使用 `TypeScript + Node.js + Express` 搭建。
+这是一个适合学习的 LangChain.js 多模型 AI Assistant 项目，使用
+`React + TypeScript + Node.js + Express` 搭建。
 
 它解决了两个很常见的问题：
 
 - 前端页面如何安全地调用大模型，而不把 `API Key` 暴露到浏览器里
 - 如何把“只支持一个模型”的 Demo，整理成“可扩展的多模型架构”
+- 如何用 LangChain 统一管理模型、消息、工具调用和短期上下文
 
 当前项目已经支持：
 
@@ -41,8 +43,11 @@
 - `Node.js`
 - `Express`
 - `TypeScript`
+- `React`
+- `LangChain.js`
+- `LangGraph`
+- `Zod`
 - `dotenv`
-- 原生 `HTML / CSS / JavaScript`
 
 ## 功能说明
 
@@ -55,6 +60,11 @@
 - 仅显示已配置、可实际调用的模型
 - 页面顶部显示“当前将调用的模型”
 - 聊天消息里显示“本次实际调用的模型”
+- SSE 流式输出
+- Weather、Calculator、Current Time 自动工具选择
+- 基于 `thread_id` 的对话短期记忆
+- 对话过长时自动摘要
+- 基于消息和工具状态的动态 System Prompt
 
 ## 当前支持的模型
 
@@ -76,11 +86,20 @@
 .
 ├── public/
 │   ├── index.html
-│   ├── script.js
+│   ├── app.js
 │   └── styles.css
+├── client/
+│   └── main.tsx
 ├── src/
+│   ├── agents/
+│   │   ├── langChainToolAgent.ts
+│   │   ├── toolMemoryState.ts
+│   │   └── dynamicMemoryPromptMiddleware.ts
 │   ├── providers/
+│   │   ├── langChainProvider.ts
 │   │   └── openaiCompatibleProvider.ts
+│   ├── tools/
+│   │   └── langchain/
 │   ├── config.ts
 │   ├── modelRegistry.ts
 │   ├── providerRegistry.ts
@@ -130,15 +149,19 @@
 
 你可以把它理解成“模型平台清单”。
 
-### `src/providers/openaiCompatibleProvider.ts`
+### `src/providers/langChainProvider.ts`
 
-这是一个通用 provider 实现。
+这是当前实际运行的 LangChain.js AI Assistant Provider。
 
 它的作用是：
 
-- 把 DeepSeek、OpenAI、SiliconFlow 这类兼容 OpenAI Chat Completions 格式的平台，用统一方式调用起来
+- 把 DeepSeek、OpenAI、SiliconFlow 统一适配到 LangChain
+- 使用 LangChain Message 表达 Few-shot 和用户消息
+- 复用 Agent 与 LangGraph Checkpointer
+- 统一提供普通调用和流式调用
 
-也就是说，只要某个平台接口格式兼容 OpenAI 风格，很多时候就不需要单独写一套逻辑。
+`openaiCompatibleProvider.ts` 保留为第三阶段原生 Tool Calling 的学习资料，
+默认聊天运行链路不再使用它。
 
 ### `src/modelRegistry.ts`
 

@@ -9,11 +9,7 @@ dotenv.config();
 export const appConfig = {
   host: process.env.HOST || "127.0.0.1",
   port: Number(process.env.PORT || 3000),
-  defaultRoleId: process.env.DEFAULT_ROLE_ID || "python-engineer",
-  deepSeekAgentEngine:
-    process.env.DEEPSEEK_AGENT_ENGINE === "native"
-      ? ("native" as const)
-      : ("langchain" as const)
+  defaultRoleId: process.env.DEFAULT_ROLE_ID || "python-engineer"
 };
 
 const providerConfigs: Record<ProviderId, ProviderConfig> = {

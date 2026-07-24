@@ -1,7 +1,7 @@
 /**
  * LangChain 版 Tool Agent。
  *
- * 负责把 DeepSeek 模型、System Prompt 和三个 LangChain Tool 交给
+ * 负责把 OpenAI 兼容模型、System Prompt 和三个 LangChain Tool 交给
  * createAgent 组装成完整的“模型判断 -> 工具执行 -> 再次判断”循环。
  */
 import { ChatOpenAI } from "@langchain/openai";
@@ -12,6 +12,7 @@ import {
   summarizationMiddleware
 } from "langchain";
 import { langChainTools } from "../tools/langchain";
+import { ProviderId, ReasoningEffort } from "../types";
 import { dynamicMemoryPromptMiddleware } from "./dynamicMemoryPromptMiddleware";
 import { ToolMemoryState } from "./toolMemoryState";
 
@@ -21,10 +22,12 @@ export interface ToolAgentMessage {
 }
 
 export interface LangChainToolAgentOptions {
+  providerId: ProviderId;
   apiKey: string;
   apiUrl: string;
   modelId: string;
   systemPrompt: string;
+  reasoningEffort?: ReasoningEffort;
 }
 
 export class LangChainToolAgent {
@@ -41,12 +44,16 @@ export class LangChainToolAgent {
 
   constructor(options: LangChainToolAgentOptions) {
     // 步骤 1：把项目模型配置转换为 LangChain ChatOpenAI 实例。
-    // DeepSeek 提供 OpenAI 兼容接口，所以只需替换 baseURL 和 API Key。
+    // 三个平台都提供 OpenAI 兼容接口，由 LangChain 统一管理模型调用。
     const model = new ChatOpenAI({
       apiKey: options.apiKey,
       model: options.modelId,
       temperature: 0,
       streamUsage: false,
+      reasoning:
+        options.providerId === "openai"
+          ? { effort: options.reasoningEffort }
+          : undefined,
       configuration: {
         baseURL: this.getBaseUrl(options.apiUrl)
       }
@@ -203,10 +210,11 @@ export class LangChainToolAgent {
   }
 
   private getBaseUrl(apiUrl: string): string {
-    // ChatOpenAI 需要 API 根地址，而配置允许填写完整的 chat/completions 地址。
+    // ChatOpenAI 会自行追加 /chat/completions，因此只移除配置中的接口尾路径。
+    // 保留 /v1：OpenAI 和 SiliconFlow 的兼容 Base URL 都需要这一层路径。
     const url = new URL(apiUrl);
     url.pathname = url.pathname.replace(
-      /\/(?:v1\/)?chat\/completions\/?$/,
+      /\/(?:chat\/completions|responses)\/?$/,
       ""
     );
     return url.toString().replace(/\/$/, "");
