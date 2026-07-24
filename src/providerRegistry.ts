@@ -1,13 +1,17 @@
-import { getProviderConfig } from "./config";
+import { appConfig, getProviderConfig } from "./config";
+import { LangChainProvider } from "./providers/langChainProvider";
 import { OpenAICompatibleProvider } from "./providers/openaiCompatibleProvider";
 import { ChatProvider, ProviderId } from "./types";
 
 export function createProviderRegistry(): Map<ProviderId, ChatProvider> {
+  const deepSeekConfig = getProviderConfig("deepseek");
+  const deepSeekProvider =
+    appConfig.deepSeekAgentEngine === "langchain"
+      ? new LangChainProvider(deepSeekConfig)
+      : new OpenAICompatibleProvider("deepseek", deepSeekConfig);
+
   return new Map<ProviderId, ChatProvider>([
-    [
-      "deepseek",
-      new OpenAICompatibleProvider("deepseek", getProviderConfig("deepseek"))
-    ],
+    ["deepseek", deepSeekProvider],
     [
       "openai",
       new OpenAICompatibleProvider("openai", getProviderConfig("openai"))
