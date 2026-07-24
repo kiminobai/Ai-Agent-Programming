@@ -6,7 +6,7 @@ import {
   ProviderConfig,
   ReasoningEffort
 } from "../types";
-import { langChainTools } from "../tools/langChainTools";
+import { langChainTools } from "../tools/langchain";
 
 type AgentMessage = {
   role: "user" | "assistant";
