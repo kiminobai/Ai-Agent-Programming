@@ -1,3 +1,7 @@
+/**
+ * Weather 的真实执行器。
+ * 先解析地点坐标，再从 Open-Meteo 查询当前天气。
+ */
 import {
   GetWeatherArguments,
   WeatherUnit
@@ -96,10 +100,12 @@ const WEATHER_CODE_DESCRIPTIONS: Record<number, string> = {
 };
 
 function parseArguments(argumentsValue: unknown): GetWeatherArguments {
+  // 步骤 1：确认 Tool arguments 是对象。
   if (!argumentsValue || typeof argumentsValue !== "object") {
     throw new Error("get_weather arguments must be an object.");
   }
 
+  // 步骤 2：提取地点与单位，并分别检查空值和枚举范围。
   const candidate = argumentsValue as Partial<GetWeatherArguments>;
   const location = candidate.location?.trim();
   const unit = candidate.unit;
@@ -116,6 +122,7 @@ function parseArguments(argumentsValue: unknown): GetWeatherArguments {
 }
 
 async function fetchJson<T>(url: URL, errorPrefix: string): Promise<T> {
+  // 通用请求步骤：设置 JSON Accept 和 10 秒超时，避免 Agent 永久等待。
   const response = await fetch(url, {
     headers: {
       Accept: "application/json"
@@ -123,6 +130,7 @@ async function fetchJson<T>(url: URL, errorPrefix: string): Promise<T> {
     signal: AbortSignal.timeout(10_000)
   });
 
+  // 第三方可能返回非 JSON 错误页，因此解析失败时统一转为 null。
   const data = (await response.json().catch(() => null)) as T | null;
   if (!response.ok || !data) {
     throw new Error(`${errorPrefix} (${response.status}).`);
@@ -139,6 +147,7 @@ function buildResolvedLocation(location: GeocodingResult): string {
 }
 
 function buildLocationCandidates(location: string): string[] {
+  // 步骤 3：为“中国北京”生成去国家前缀、后缀等多个候选形式。
   const commaParts = location
     .split(/[,，]/)
     .map((part) => part.trim())
@@ -164,6 +173,7 @@ function buildLocationCandidates(location: string): string[] {
 async function resolveLocation(
   requestedLocation: string
 ): Promise<GeocodingResult | undefined> {
+  // 步骤 4：逐个调用 Geocoding API，首个命中结果用于天气查询。
   for (const candidate of buildLocationCandidates(requestedLocation)) {
     const geocodingUrl = new URL(
       "https://geocoding-api.open-meteo.com/v1/search"
@@ -191,13 +201,16 @@ async function resolveLocation(
 export async function executeGetWeather(
   argumentsValue: unknown
 ): Promise<WeatherToolResult> {
+  // 步骤 5：校验模型生成的 Tool arguments。
   const { location, unit } = parseArguments(argumentsValue);
+  // 步骤 6：把自然语言地点解析为经纬度与标准时区。
   const resolvedLocation = await resolveLocation(location);
 
   if (!resolvedLocation) {
     throw new Error(`No weather location matched "${location}".`);
   }
 
+  // 步骤 7：按经纬度组装 Open-Meteo 当前天气请求。
   const weatherUrl = new URL("https://api.open-meteo.com/v1/forecast");
   weatherUrl.search = new URLSearchParams({
     latitude: String(resolvedLocation.latitude),
@@ -215,6 +228,7 @@ export async function executeGetWeather(
     timezone: "auto"
   }).toString();
 
+  // 步骤 8：请求真实数据并验证 current 字段存在。
   const weather = await fetchJson<WeatherResponse>(
     weatherUrl,
     "Current weather lookup failed"
@@ -224,6 +238,7 @@ export async function executeGetWeather(
     throw new Error(`No current weather was returned for "${location}".`);
   }
 
+  // 步骤 9：转换为项目稳定结构，隔离第三方字段变化。
   return {
     source: "Open-Meteo",
     location: {

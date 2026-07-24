@@ -1,3 +1,7 @@
+/**
+ * React 单页聊天界面。
+ * 负责模型/角色选择、SSE 增量解析和对话状态展示。
+ */
 import React, { FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 
@@ -50,6 +54,7 @@ async function readJsonResponse(response: Response, apiName: string) {
 }
 
 function applyStreamEvent(rawEvent: string, onEvent: (event: StreamEvent) => void) {
+  // 一个 SSE 数据块可能包含多行，只解析 data: 开头的有效负载。
   const lines = rawEvent
     .split(/\r?\n/)
     .filter((line) => line.startsWith("data:"))
@@ -62,6 +67,7 @@ function applyStreamEvent(rawEvent: string, onEvent: (event: StreamEvent) => voi
 }
 
 function App() {
+  // 模型和角色由服务端驱动，API Key 永远不会进入浏览器状态。
   const [models, setModels] = useState<ModelOption[]>([]);
   const [roles, setRoles] = useState<PromptRole[]>([]);
   const [modelId, setModelId] = useState("");
@@ -140,6 +146,7 @@ function App() {
   const canSubmit = Boolean(!isSubmitting && !isLoading && modelId && roleId && message.trim());
 
   async function handleSubmit(event?: FormEvent<HTMLFormElement>) {
+    // 步骤 1：阻止表单刷新页面，并读取当前输入。
     event?.preventDefault();
 
     const trimmedMessage = message.trim();
@@ -147,9 +154,11 @@ function App() {
       return;
     }
 
+    // 步骤 2：锁定提交状态，防止用户重复发送。
     setError("");
     setIsSubmitting(true);
 
+    // 步骤 3：先在 UI 插入用户消息与空助手消息，提供即时反馈。
     const assistantEntryId = `assistant-${Date.now()}`;
     const userEntry: ChatEntry = {
       id: `user-${Date.now()}`,
@@ -171,6 +180,7 @@ function App() {
     setMessage("");
 
     try {
+      // 步骤 4：向后端发送模型、角色和本次用户消息。
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: {
@@ -184,6 +194,7 @@ function App() {
         })
       });
 
+      // 步骤 5：普通 HTTP 错误在进入 SSE 读取前处理。
       if (!response.ok) {
         const data = await readJsonResponse(response, "/api/chat");
         throw new Error(data.error || "Request failed. Please try again.");
@@ -193,17 +204,20 @@ function App() {
         throw new Error("Streaming response is unavailable.");
       }
 
+      // 步骤 6：所有流式事件只更新本次请求对应的助手消息。
       const updateAssistantEntry = (updater: (entry: ChatEntry) => ChatEntry) => {
         setEntries((prev) =>
           prev.map((entry) => (entry.id === assistantEntryId ? updater(entry) : entry))
         );
       };
 
+      // 步骤 7：Reader 获取二进制块，Decoder 将其增量转换为 UTF-8 文本。
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
       let finalReply = "";
 
+      // 步骤 8：按 meta、delta、done、error 四种事件更新状态。
       const handleEvent = (streamEvent: StreamEvent) => {
         if (streamEvent.type === "meta") {
           updateAssistantEntry((entry) => ({
@@ -214,6 +228,7 @@ function App() {
         }
 
         if (streamEvent.type === "delta") {
+          // delta 到达一次就追加一次，形成逐字输出效果。
           finalReply += streamEvent.chunk;
           updateAssistantEntry((entry) => ({
             ...entry,
@@ -223,6 +238,7 @@ function App() {
         }
 
         if (streamEvent.type === "done") {
+          // done 携带服务端完整答案，用于纠正可能遗漏的最后一个分片。
           finalReply = streamEvent.reply || finalReply;
           updateAssistantEntry((entry) => ({
             ...entry,
@@ -235,10 +251,12 @@ function App() {
         throw new Error(streamEvent.error || "Streaming request failed.");
       };
 
+      // 步骤 9：持续读取网络块；一个块可能含半个或多个 SSE 事件。
       while (true) {
         const { done, value } = await reader.read();
         buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
 
+        // SSE 事件以空行分隔；不完整尾部继续留在 buffer 等待下个块。
         let eventEnd = buffer.indexOf("\n\n");
         while (eventEnd !== -1) {
           const rawEvent = buffer.slice(0, eventEnd);
@@ -254,10 +272,12 @@ function App() {
         }
       }
 
+      // 步骤 10：连接结束后处理 Decoder 缓冲区中的最后一个事件。
       if (buffer.trim()) {
         applyStreamEvent(buffer, handleEvent);
       }
     } catch (submitError) {
+      // 步骤 11：请求失败时保留已收到内容，并在空消息中展示错误。
       const messageText =
         submitError instanceof Error ? submitError.message : "An error occurred while sending the message.";
 
@@ -273,6 +293,7 @@ function App() {
         )
       );
     } finally {
+      // 步骤 12：无论成功失败都解除输入锁定。
       setIsSubmitting(false);
     }
   }

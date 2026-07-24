@@ -1,5 +1,6 @@
 ﻿Add-Type -AssemblyName System.Drawing
 
+# 本脚本离线绘制 Tool Calling 流程，区分 LLM 选择工具与应用执行工具。
 $scriptDirectory = if ($PSScriptRoot) { $PSScriptRoot } else { Join-Path (Get-Location) "scripts" }
 $outputPath = [System.IO.Path]::GetFullPath((Join-Path $scriptDirectory "..\docs\tool-calling-flow.png"))
 $width = 1600

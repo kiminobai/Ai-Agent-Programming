@@ -1,3 +1,6 @@
+/**
+ * 统一读取环境变量，并声明前端可选择的模型目录。
+ */
 import dotenv from "dotenv";
 import { ModelOption, ProviderConfig, ProviderId } from "./types";
 
@@ -14,6 +17,7 @@ export const appConfig = {
 };
 
 const providerConfigs: Record<ProviderId, ProviderConfig> = {
+  // API Key 只保存在服务端，不会通过模型列表接口返回前端。
   deepseek: {
     apiKey: process.env.DEEPSEEK_API_KEY || "",
     apiUrl:

@@ -1,3 +1,7 @@
+/**
+ * 原生 Tool Calling 的公共导出入口。
+ * Schema 会发送给模型，Executor 只在服务端执行。
+ */
 import { calculatorTool } from "./calculatorTool";
 import { currentTimeTool } from "./currentTimeTool";
 import { getWeatherTool } from "./getWeatherTool";
@@ -36,6 +40,7 @@ export {
 export type { SupportedToolName } from "./toolExecutor";
 
 export const toolSchemas = [
+  // auto 模式下，模型可从这三个 Schema 中选择一个或多个工具。
   getWeatherTool,
   calculatorTool,
   currentTimeTool

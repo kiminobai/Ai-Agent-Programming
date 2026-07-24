@@ -1,17 +1,17 @@
-import { ChatOpenAI } from "@langchain/openai";
-import { createAgent } from "langchain";
+/**
+ * 将 LangChainToolAgent 适配为项目统一的 ChatProvider 接口。
+ * HTTP 层只依赖 ChatProvider，因此可以在 LangChain 与原生 SDK 间切换。
+ */
+import {
+  LangChainToolAgent,
+  ToolAgentMessage
+} from "../agents/langChainToolAgent";
 import {
   ChatProvider,
   FewShotExample,
   ProviderConfig,
   ReasoningEffort
 } from "../types";
-import { langChainTools } from "../tools/langchain";
-
-type AgentMessage = {
-  role: "user" | "assistant";
-  content: string;
-};
 
 export class LangChainProvider implements ChatProvider {
   readonly id = "deepseek" as const;
@@ -29,13 +29,14 @@ export class LangChainProvider implements ChatProvider {
     fewShotExamples: FewShotExample[] = [],
     _reasoningEffort?: ReasoningEffort
   ): Promise<string> {
+    // 步骤 1：请求模型前确认 DeepSeek Key 已配置。
     this.requireApiKey();
-    const agent = this.createDeepSeekAgent(modelId, systemPrompt);
-    const result = await agent.invoke({
-      messages: this.buildMessages(message, fewShotExamples)
-    });
 
-    return this.extractFinalText(result.messages);
+    // 步骤 2：按本次选择的模型和角色 Prompt 创建 Tool Agent。
+    const agent = this.createToolAgent(modelId, systemPrompt);
+
+    // 步骤 3：组装 Few-shot + 用户问题，执行非流式 Agent Loop。
+    return agent.invoke(this.buildMessages(message, fewShotExamples));
   }
 
   async streamChat(
@@ -46,53 +47,22 @@ export class LangChainProvider implements ChatProvider {
     fewShotExamples: FewShotExample[] = [],
     _reasoningEffort?: ReasoningEffort
   ): Promise<string> {
+    // 步骤 1：流式请求同样先检查服务端密钥。
     this.requireApiKey();
-    const agent = this.createDeepSeekAgent(modelId, systemPrompt);
-    const stream = await agent.stream(
-      {
-        messages: this.buildMessages(message, fewShotExamples)
-      },
-      {
-        streamMode: "messages"
-      }
-    );
-    let fullText = "";
 
-    for await (const [token, metadata] of stream) {
-      if (metadata.langgraph_node === "tools") {
-        continue;
-      }
+    // 步骤 2：创建 Agent；onDelta 会由 Agent 逐 Token 回调。
+    const agent = this.createToolAgent(modelId, systemPrompt);
 
-      const delta = this.extractStreamTokenText(token);
-      if (!delta) {
-        continue;
-      }
-
-      fullText += delta;
-      onDelta(delta);
-    }
-
-    if (!fullText) {
-      throw new Error("LangChain agent returned an empty response.");
-    }
-
-    return fullText;
+    // 步骤 3：Provider 不执行工具循环，createAgent 会自动完成。
+    return agent.stream(this.buildMessages(message, fewShotExamples), onDelta);
   }
 
-  private createDeepSeekAgent(modelId: string, systemPrompt: string) {
-    const model = new ChatOpenAI({
+  private createToolAgent(modelId: string, systemPrompt: string) {
+    // 把 ProviderConfig 映射为可复用 Agent 的构造参数。
+    return new LangChainToolAgent({
       apiKey: this.config.apiKey,
-      model: modelId,
-      temperature: 0,
-      streamUsage: false,
-      configuration: {
-        baseURL: this.getBaseUrl(this.config.apiUrl)
-      }
-    });
-
-    return createAgent({
-      model,
-      tools: langChainTools,
+      apiUrl: this.config.apiUrl,
+      modelId,
       systemPrompt
     });
   }
@@ -100,89 +70,29 @@ export class LangChainProvider implements ChatProvider {
   private buildMessages(
     message: string,
     fewShotExamples: FewShotExample[]
-  ): AgentMessage[] {
-    const exampleMessages = fewShotExamples.flatMap<AgentMessage>((example) => [
-      {
-        role: "user",
-        content: example.user
-      },
-      {
-        role: "assistant",
-        content: example.assistant
-      }
-    ]);
+  ): ToolAgentMessage[] {
+    // 步骤 1：Few-shot 示例按 User/Assistant 成对展开。
+    const exampleMessages = fewShotExamples.flatMap<ToolAgentMessage>(
+      (example) => [
+        {
+          role: "user",
+          content: example.user
+        },
+        {
+          role: "assistant",
+          content: example.assistant
+        }
+      ]
+    );
 
     return [
+      // 步骤 2：示例在前，当前真实用户问题始终放在最后。
       ...exampleMessages,
       {
         role: "user",
         content: message
       }
     ];
-  }
-
-  private extractFinalText(messages: unknown[]): string {
-    for (let index = messages.length - 1; index >= 0; index -= 1) {
-      const candidate = messages[index] as { content?: unknown };
-      const text = this.extractMessageText(candidate.content);
-      if (text) {
-        return text;
-      }
-    }
-
-    throw new Error("LangChain agent returned an empty response.");
-  }
-
-  private extractMessageText(content: unknown): string {
-    if (typeof content === "string") {
-      return content;
-    }
-
-    if (!Array.isArray(content)) {
-      return "";
-    }
-
-    return content
-      .map((block) => {
-        if (
-          block &&
-          typeof block === "object" &&
-          "text" in block &&
-          typeof block.text === "string"
-        ) {
-          return block.text;
-        }
-
-        return "";
-      })
-      .join("");
-  }
-
-  private extractStreamTokenText(token: unknown): string {
-    if (!token || typeof token !== "object") {
-      return "";
-    }
-
-    const candidate = token as {
-      content?: unknown;
-      contentBlocks?: unknown;
-      text?: unknown;
-    };
-
-    return (
-      this.extractMessageText(candidate.content) ||
-      this.extractMessageText(candidate.contentBlocks) ||
-      (typeof candidate.text === "string" ? candidate.text : "")
-    );
-  }
-
-  private getBaseUrl(apiUrl: string): string {
-    const url = new URL(apiUrl);
-    url.pathname = url.pathname.replace(
-      /\/(?:v1\/)?chat\/completions\/?$/,
-      ""
-    );
-    return url.toString().replace(/\/$/, "");
   }
 
   private requireApiKey(): void {

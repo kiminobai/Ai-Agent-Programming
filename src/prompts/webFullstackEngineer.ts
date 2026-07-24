@@ -1,3 +1,6 @@
+/**
+ * Web 全栈工程师角色：覆盖前端、后端、接口、数据和部署边界。
+ */
 import { PromptRole } from "../types";
 import {
   webFullstackEngineerFewShotExamples,

@@ -1,3 +1,10 @@
+/**
+ * Prompt 模板资产库。
+ *
+ * 每个角色拥有独立的 Zero-shot Prompt 与 Few-shot Examples；
+ * 文件末尾的组合函数再统一追加 Structured Reasoning 和 ReAct 指令。
+ * 模板字符串中的代码属于学习示例，不会在本项目服务器中直接执行。
+ */
 import { FewShotExample } from "../types";
 
 export const pythonEngineerZeroShotPrompt = `
@@ -997,6 +1004,7 @@ export const structuredReasoningInstructions = `
 `.trim();
 
 export function withStructuredReasoning(basePrompt: string): string {
+  // 保留角色原始 Prompt，再追加一份可复用的推理约束。
   return `${basePrompt}\n\n${structuredReasoningInstructions}`;
 }
 
@@ -1016,6 +1024,7 @@ export const reactInstructions = `
 `.trim();
 
 export function withReAct(basePrompt: string): string {
+  // ReAct 约束放在最后，使复杂任务遵循“理解、行动、观察、回答”。
   return `${basePrompt}\n\n${reactInstructions}`;
 }
 

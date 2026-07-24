@@ -1,3 +1,6 @@
+/**
+ * 代码审查角色：优先识别缺陷、回归风险、安全问题和测试缺口。
+ */
 import { PromptRole } from "../types";
 import {
   codeReviewerFewShotExamples,

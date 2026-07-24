@@ -1,3 +1,7 @@
+/**
+ * 项目跨层共享的领域类型。
+ * Provider、服务端接口和 React 前端应以这里的契约为准。
+ */
 export type ProviderId = "deepseek" | "openai" | "siliconflow";
 
 export type ReasoningEffort = "minimal" | "low" | "medium" | "high";
@@ -53,6 +57,7 @@ export interface ProviderConfig {
 }
 
 export interface ChatProvider {
+  // 所有 Provider 都提供相同调用方式，Registry 才能按模型动态选择实现。
   id: ProviderId;
   isAvailable(): boolean;
   sendChat(

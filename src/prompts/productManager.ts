@@ -1,3 +1,6 @@
+/**
+ * 产品经理角色：聚焦需求分析、优先级、指标和落地风险。
+ */
 import { PromptRole } from "../types";
 import {
   productManagerFewShotExamples,

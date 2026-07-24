@@ -1,3 +1,6 @@
+/**
+ * 原生 OpenAI 兼容接口使用的 Weather JSON Schema。
+ */
 export type WeatherUnit = "celsius" | "fahrenheit";
 
 export interface GetWeatherArguments {

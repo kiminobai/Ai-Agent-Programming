@@ -1,3 +1,10 @@
+/**
+ * 原生 SDK / HTTP Provider。
+ *
+ * DeepSeek 使用兼容 Chat Completions，SiliconFlow 使用通用 HTTP，
+ * OpenAI 使用 Responses API。DeepSeek 默认由 LangChainProvider 接管，
+ * 本实现保留作原生 Tool Calling 学习和回退。
+ */
 import OpenAI from "openai";
 import {
   ChatProvider,
@@ -206,6 +213,7 @@ export class OpenAICompatibleProvider implements ChatProvider {
     systemPrompt: string,
     fewShotExamples: FewShotExample[]
   ) {
+    // Few-shot 示例位于真实用户问题之前，用来示范目标回答方式。
     const exampleMessages = fewShotExamples.flatMap((example) => [
       {
         role: "user" as const,
@@ -260,6 +268,7 @@ export class OpenAICompatibleProvider implements ChatProvider {
     stream: boolean,
     reasoningEffort?: ReasoningEffort
   ) {
+    // Responses API 直接接收扁平 tools；格式不同于 Chat Completions。
     const selectedEffort = this.getSupportedReasoningEffort(
       modelId,
       reasoningEffort
@@ -340,6 +349,7 @@ export class OpenAICompatibleProvider implements ChatProvider {
     name: string,
     argumentsJson?: string
   ): Promise<string> {
+    // 工具名必须通过白名单检查，参数也由各 Executor 再次校验。
     try {
       if (!isSupportedToolName(name)) {
         throw new Error(`Unsupported tool: "${name}".`);
@@ -380,6 +390,7 @@ export class OpenAICompatibleProvider implements ChatProvider {
   }
 
   private buildDeepSeekTools(): OpenAI.Chat.Completions.ChatCompletionTool[] {
+    // DeepSeek 兼容接口要求把通用 Schema 包在 function 字段中。
     return toolSchemas.map((tool) => ({
       type: "function",
       function: {
@@ -406,6 +417,7 @@ export class OpenAICompatibleProvider implements ChatProvider {
     systemPrompt: string,
     fewShotExamples: FewShotExample[]
   ): Promise<string> {
+    // 原生 Agent Loop：模型选工具、服务端执行、结果回填后再次调用模型。
     const messages = this.buildCompatibleMessages(
       message,
       systemPrompt,
@@ -475,6 +487,7 @@ export class OpenAICompatibleProvider implements ChatProvider {
     toolChoice: "auto" | "none",
     onDelta: (chunk: string) => void
   ): Promise<DeepSeekStreamResult> {
+    // 流式 Tool Call 的名称和 arguments 可能跨 chunk，必须按 index 拼接。
     const stream = await this.requireDeepSeekClient().chat.completions.create({
       model: modelId,
       messages:

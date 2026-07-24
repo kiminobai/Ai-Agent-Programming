@@ -1,3 +1,7 @@
+/**
+ * 角色 Prompt 注册入口。
+ * 新角色需要在这里加入 promptRoles，前端才会显示。
+ */
 import { codeReviewerRole } from "./codeReviewer";
 import { productManagerRole } from "./productManager";
 import { pythonEngineerRole } from "./pythonEngineer";

@@ -1,3 +1,6 @@
+/**
+ * Python 工程师角色：组合专属 Zero-shot、Few-shot、结构化推理与 ReAct。
+ */
 import { PromptRole } from "../types";
 import {
   pythonEngineerFewShotExamples,

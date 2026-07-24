@@ -1,3 +1,5 @@
+# 生成 createAgent、Agent Harness 与 LangGraph 的分层关系 PNG。
+# System.Drawing 负责离线绘制，不访问网络或修改其他项目资源。
 Add-Type -AssemblyName System.Drawing
 
 $width = 1600
@@ -40,6 +42,7 @@ $arrowPen = New-Object System.Drawing.Pen($accent, 4)
 $arrowPen.CustomEndCap = New-Object System.Drawing.Drawing2D.AdjustableArrowCap(6, 8)
 
 function Draw-RoundedBox {
+    # 统一绘制带边框的圆角容器。
     param(
         [float]$X,
         [float]$Y,
@@ -65,6 +68,7 @@ function Draw-RoundedBox {
 }
 
 function Draw-CenteredText {
+    # 在指定矩形内水平和垂直居中文本。
     param(
         [string]$Text,
         [System.Drawing.Font]$Font,
@@ -129,6 +133,7 @@ $graphics.DrawLine($arrowPen, 1170, 890, 1295, 942)
 $graphics.DrawString("包含", $smallFont, $accentBrush, 814, 595)
 $graphics.DrawString("运行时调用", $smallFont, $accentBrush, 700, 915)
 
+# 完成所有图层后一次性输出 PNG。
 $bitmap.Save($outputPath, [System.Drawing.Imaging.ImageFormat]::Png)
 
 $arrowPen.Dispose()

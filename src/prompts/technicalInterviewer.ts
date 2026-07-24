@@ -1,3 +1,6 @@
+/**
+ * 技术面试官角色：负责提问、追问、评分和能力反馈。
+ */
 import { PromptRole } from "../types";
 import {
   technicalInterviewerFewShotExamples,
