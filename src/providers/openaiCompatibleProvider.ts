@@ -157,7 +157,8 @@ export class OpenAICompatibleProvider implements ChatProvider {
     message: string,
     systemPrompt: string,
     fewShotExamples: FewShotExample[] = [],
-    reasoningEffort?: ReasoningEffort
+    reasoningEffort?: ReasoningEffort,
+    _threadId?: string
   ): Promise<string> {
     if (!this.config.apiKey) {
       throw new Error(`${this.id} has no API key configured.`);
@@ -182,7 +183,8 @@ export class OpenAICompatibleProvider implements ChatProvider {
     systemPrompt: string,
     onDelta: (chunk: string) => void,
     fewShotExamples: FewShotExample[] = [],
-    reasoningEffort?: ReasoningEffort
+    reasoningEffort?: ReasoningEffort,
+    _threadId?: string
   ): Promise<string> {
     if (!this.config.apiKey) {
       throw new Error(`${this.id} has no API key configured.`);

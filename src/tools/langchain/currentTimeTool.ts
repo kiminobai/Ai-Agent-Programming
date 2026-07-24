@@ -5,10 +5,20 @@ import { tool } from "langchain";
 import { z } from "zod";
 import { executeCurrentTime } from "../currentTimeExecutor";
 import { CURRENT_TIME_TOOL_DESCRIPTION } from "../currentTimeTool";
+import {
+  ToolMemoryRuntime,
+  writeToolContext
+} from "../../agents/toolMemoryState";
 
 export const currentTimeTool = tool(
   // 步骤 3：执行器使用系统时间，不让 LLM 根据训练知识猜测。
-  ({ timeZone }) => JSON.stringify(executeCurrentTime({ timeZone })),
+  ({ timeZone }, runtime: ToolMemoryRuntime) => {
+    const argumentsValue = { timeZone };
+    const result = executeCurrentTime(argumentsValue);
+
+    // 步骤 4：写入结构化短期状态，并返回与 Tool Call 配对的消息。
+    return writeToolContext(runtime, "current_time", argumentsValue, result);
+  },
   {
     // 步骤 1：description 告诉模型只在询问“当前时间”时调用。
     name: "current_time",

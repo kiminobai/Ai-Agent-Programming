@@ -5,18 +5,20 @@ import { tool } from "langchain";
 import { z } from "zod";
 import { executeCalculator } from "../calculatorExecutor";
 import { CALCULATOR_TOOL_DESCRIPTION } from "../calculatorTool";
+import {
+  ToolMemoryRuntime,
+  writeToolContext
+} from "../../agents/toolMemoryState";
 
 export const calculatorTool = tool(
   // 步骤 3：LangChain 已用 Zod 验证参数，再调用确定性 Executor。
-  ({ operation, leftOperand, rightOperand }) =>
-    // 步骤 4：结果序列化为 ToolMessage 内容，交回模型生成自然语言答案。
-    JSON.stringify(
-      executeCalculator({
-        operation,
-        leftOperand,
-        rightOperand
-      })
-    ),
+  ({ operation, leftOperand, rightOperand }, runtime: ToolMemoryRuntime) => {
+    const argumentsValue = { operation, leftOperand, rightOperand };
+    const result = executeCalculator(argumentsValue);
+
+    // 步骤 4：Command 写入 toolContextHistory，并生成配对 ToolMessage。
+    return writeToolContext(runtime, "calculator", argumentsValue, result);
+  },
   {
     // 步骤 1：name 和 description 帮助 LLM 判断何时选择本工具。
     name: "calculator",

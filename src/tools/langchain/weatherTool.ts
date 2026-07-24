@@ -5,12 +5,20 @@ import { tool } from "langchain";
 import { z } from "zod";
 import { executeGetWeather } from "../weatherExecutor";
 import { GET_WEATHER_TOOL_DESCRIPTION } from "../getWeatherTool";
+import {
+  ToolMemoryRuntime,
+  writeToolContext
+} from "../../agents/toolMemoryState";
 
 export const weatherTool = tool(
   // 步骤 3：Zod 校验成功后，调用真实 Open-Meteo Executor。
-  async ({ location, unit }) =>
-    // 步骤 4：结构化结果转为 JSON，作为 ToolMessage 回填给模型。
-    JSON.stringify(await executeGetWeather({ location, unit })),
+  async ({ location, unit }, runtime: ToolMemoryRuntime) => {
+    const argumentsValue = { location, unit };
+    const result = await executeGetWeather(argumentsValue);
+
+    // 步骤 4：Command 写入状态，并把结果作为 ToolMessage 回填给模型。
+    return writeToolContext(runtime, "get_weather", argumentsValue, result);
+  },
   {
     // 步骤 1：描述限定为“当前天气”，防止误用于预报或历史天气。
     name: "get_weather",

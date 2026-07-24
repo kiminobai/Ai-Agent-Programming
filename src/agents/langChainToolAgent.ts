@@ -6,8 +6,14 @@
  */
 import { ChatOpenAI } from "@langchain/openai";
 import { AIMessage, HumanMessage } from "@langchain/core/messages";
-import { createAgent } from "langchain";
+import { MemorySaver } from "@langchain/langgraph";
+import {
+  createAgent,
+  summarizationMiddleware
+} from "langchain";
 import { langChainTools } from "../tools/langchain";
+import { dynamicMemoryPromptMiddleware } from "./dynamicMemoryPromptMiddleware";
+import { ToolMemoryState } from "./toolMemoryState";
 
 export interface ToolAgentMessage {
   role: "user" | "assistant";
@@ -22,6 +28,14 @@ export interface LangChainToolAgentOptions {
 }
 
 export class LangChainToolAgent {
+  // 接近该 Token 数时触发摘要，避免完整历史无限进入模型上下文。
+  private static readonly SUMMARY_TRIGGER_TOKENS = 8_000;
+  // 摘要旧历史后仍保留最近消息，维持当前任务和 Tool Call 连贯性。
+  private static readonly SUMMARY_KEEP_MESSAGES = 12;
+
+  // MemorySaver 按 thread_id 保存 State，其中包含 User、AI、Tool Call 和 Tool Result。
+  private readonly checkpointer = new MemorySaver();
+
   // createAgent 返回的是一个已编译的 LangGraph Agent，可 invoke 或 stream。
   private readonly agent;
 
@@ -38,50 +52,79 @@ export class LangChainToolAgent {
       }
     });
 
-    // 步骤 2：createAgent 注册模型、System Prompt 和全部工具。
+    // 步骤 2：配置官方摘要 Middleware。
+    // Middleware 会在调用模型前检查历史长度，超限时把旧消息压缩为摘要。
+    const memorySummarizer = summarizationMiddleware({
+      model,
+      trigger: {
+        tokens: LangChainToolAgent.SUMMARY_TRIGGER_TOKENS
+      },
+      keep: {
+        messages: LangChainToolAgent.SUMMARY_KEEP_MESSAGES
+      }
+    });
+
+    // 步骤 3：createAgent 注册模型、System Prompt、工具与摘要 Middleware。
     // createAgent 内部会创建基于 LangGraph 的 Model Node 与 Tools Node 循环。
     this.agent = createAgent({
       model,
       tools: langChainTools,
-      systemPrompt: options.systemPrompt
+      systemPrompt: options.systemPrompt,
+      stateSchema: ToolMemoryState,
+      middleware: [memorySummarizer, dynamicMemoryPromptMiddleware],
+      checkpointer: this.checkpointer
     });
   }
 
-  async invoke(messages: ToolAgentMessage[]): Promise<string> {
-    // 步骤 3A：非流式调用等待整个 Agent Loop 完成。
+  async invoke(
+    messages: ToolAgentMessage[],
+    threadId: string
+  ): Promise<string> {
+    // 步骤 4A：非流式调用等待整个 Agent Loop 完成。
     // 模型若产生 Tool Call，createAgent 会自动执行工具并再次调用模型。
-    const result = await this.agent.invoke({
-      messages: this.toLangChainMessages(messages)
-    });
+    const result = await this.agent.invoke(
+      {
+        messages: this.toLangChainMessages(messages)
+      },
+      {
+        // 步骤 4A.1：LangGraph 用 thread_id 找到并合并上一轮 State。
+        configurable: { thread_id: threadId }
+      }
+    );
 
-    // 步骤 4A：从最终 State 的消息列表中提取最后一条有效文本。
+    // 步骤 5A：从最终 State 的消息列表中提取最后一条有效文本。
     return this.extractFinalText(result.messages);
   }
 
   async stream(
     messages: ToolAgentMessage[],
+    threadId: string,
     onDelta: (chunk: string) => void
   ): Promise<string> {
-    // 步骤 3B：messages 模式逐个返回模型 Token 与 ToolMessage。
+    // 步骤 4B：messages 模式逐个返回模型 Token 与 ToolMessage。
     const stream = await this.agent.stream(
       { messages: this.toLangChainMessages(messages) },
-      { streamMode: "messages" }
+      {
+        streamMode: "messages",
+        // 步骤 4B.1：相同 thread_id 会恢复刚才的 Tool Call 与 Tool Result。
+        configurable: { thread_id: threadId }
+      }
     );
     let fullText = "";
 
     for await (const [token, metadata] of stream) {
-      // 步骤 4B：工具 JSON 只用于模型观察，不能直接显示在聊天 UI。
+      // 步骤 5B：工具 JSON 只用于模型观察，不能直接显示在聊天 UI。
       if (metadata.langgraph_node === "tools") {
         continue;
       }
 
-      // 步骤 5B：兼容 content、contentBlocks 和 text 三种 Token 结构。
+      // 步骤 6B：兼容 content、contentBlocks 和 text 三种 Token 结构。
       const delta = this.extractStreamTokenText(token);
       if (!delta) {
         continue;
       }
 
-      // 步骤 6B：一份用于最终返回，一份即时推送给上层 SSE。
+      // 步骤 7B：一份用于最终返回，一份即时推送给上层 SSE。
       fullText += delta;
       onDelta(delta);
     }

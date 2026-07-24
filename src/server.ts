@@ -49,6 +49,7 @@ const chatHandler: RequestHandler<
   const userMessage = req.body?.message?.trim();
   const modelId = req.body?.modelId?.trim();
   const roleId = req.body?.roleId?.trim() || appConfig.defaultRoleId;
+  const threadId = req.body?.threadId?.trim();
   const reasoningEffort = req.body?.reasoningEffort;
 
   // 步骤 2：在调用任何模型之前验证必填输入。
@@ -59,6 +60,11 @@ const chatHandler: RequestHandler<
 
   if (!modelId) {
     res.status(400).json({ error: "modelId is required." });
+    return;
+  }
+
+  if (!threadId) {
+    res.status(400).json({ error: "threadId is required." });
     return;
   }
 
@@ -112,7 +118,8 @@ const chatHandler: RequestHandler<
         res.write(`data: ${JSON.stringify({ type: "delta", chunk })}\n\n`);
       },
       role.fewShotExamples,
-      model.provider === "openai" ? reasoningEffort : undefined
+      model.provider === "openai" ? reasoningEffort : undefined,
+      threadId
     );
 
     // 步骤 10：Agent 完成后发送完整答案并正常关闭连接。

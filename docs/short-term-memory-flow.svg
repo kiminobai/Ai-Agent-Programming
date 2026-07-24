@@ -1,0 +1,119 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1100" viewBox="0 0 1800 1100">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f5f1e8"/>
+      <stop offset="1" stop-color="#e8f0eb"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#19352d" flood-opacity=".13"/>
+    </filter>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 Z" fill="#42665b"/>
+    </marker>
+    <style>
+      .title { font: 700 46px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #173d34; }
+      .subtitle { font: 400 22px "Microsoft YaHei", sans-serif; fill: #587068; }
+      .step { font: 700 18px "Microsoft YaHei", sans-serif; fill: #b94b2f; letter-spacing: 1px; }
+      .heading { font: 700 25px "Microsoft YaHei", sans-serif; fill: #183c33; }
+      .body { font: 400 18px "Microsoft YaHei", sans-serif; fill: #435b54; }
+      .small { font: 400 16px "Microsoft YaHei", sans-serif; fill: #52675f; }
+      .state-heading { font: 700 25px "Microsoft YaHei", sans-serif; fill: #f4fbf8; }
+      .state-body { font: 400 16px "Microsoft YaHei", sans-serif; fill: #d3e7df; }
+      .state-accent { font: 400 16px "Microsoft YaHei", sans-serif; fill: #f1c58e; }
+      .arrow { stroke: #42665b; stroke-width: 4; fill: none; marker-end: url(#arrow); }
+      .dash { stroke: #b57d39; stroke-width: 3; stroke-dasharray: 10 9; fill: none; marker-end: url(#arrow); }
+    </style>
+  </defs>
+
+  <rect width="1800" height="1100" fill="url(#bg)"/>
+  <circle cx="1640" cy="90" r="210" fill="#d8a956" opacity=".12"/>
+  <circle cx="90" cy="1030" r="260" fill="#477f70" opacity=".10"/>
+
+  <text x="90" y="86" class="title">Agent 短期记忆：一次对话如何被记住</text>
+  <text x="92" y="124" class="subtitle">ChatDemo · LangChain createAgent + LangGraph State + MemorySaver</text>
+
+  <!-- Main flow -->
+  <g filter="url(#shadow)">
+    <rect x="80" y="190" width="270" height="170" rx="24" fill="#fffdf8" stroke="#d7cabb" stroke-width="2"/>
+    <text x="110" y="225" class="step">01 · REQUEST</text>
+    <text x="110" y="266" class="heading">用户发送消息</text>
+    <text x="110" y="302" class="body">React 携带稳定 threadId</text>
+    <text x="110" y="330" class="small">同一会话始终使用同一 ID</text>
+
+    <rect x="440" y="190" width="300" height="170" rx="24" fill="#edf6f1" stroke="#9bbcaf" stroke-width="2"/>
+    <text x="470" y="225" class="step">02 · RESTORE</text>
+    <text x="470" y="266" class="heading">恢复线程 State</text>
+    <text x="470" y="302" class="body">MemorySaver 按 thread_id</text>
+    <text x="470" y="330" class="small">加载上一轮 Checkpoint</text>
+
+    <rect x="830" y="190" width="350" height="170" rx="24" fill="#fff8e9" stroke="#d9b46e" stroke-width="2"/>
+    <text x="860" y="225" class="step">03 · CONTEXT</text>
+    <text x="860" y="266" class="heading">动态记忆 Middleware</text>
+    <text x="860" y="302" class="body">读取 messages + 自定义状态</text>
+    <text x="860" y="330" class="small">临时扩展 System Prompt</text>
+
+    <rect x="1280" y="190" width="420" height="170" rx="24" fill="#eaf1f7" stroke="#8ca9bd" stroke-width="2"/>
+    <text x="1310" y="225" class="step">04 · MODEL</text>
+    <text x="1310" y="266" class="heading">DeepSeek 判断下一步</text>
+    <text x="1310" y="302" class="body">直接回答，或选择调用 Tool</text>
+    <text x="1310" y="330" class="small">Weather / Calculator / Current Time</text>
+  </g>
+
+  <path d="M350 275 H425" class="arrow"/>
+  <path d="M740 275 H815" class="arrow"/>
+  <path d="M1180 275 H1265" class="arrow"/>
+
+  <!-- State panel -->
+  <g filter="url(#shadow)">
+    <rect x="100" y="480" width="540" height="430" rx="28" fill="#173d34"/>
+    <text x="140" y="530" class="step" fill="#f2ad69">THREAD STATE</text>
+    <text x="140" y="574" class="state-heading">短期记忆保存的内容</text>
+
+    <rect x="140" y="615" width="460" height="105" rx="17" fill="#244f44"/>
+    <text x="170" y="652" class="state-heading">messages</text>
+    <text x="170" y="685" class="state-body">User / AI / Tool Call / Tool Result / Summary</text>
+
+    <rect x="140" y="744" width="460" height="125" rx="17" fill="#244f44"/>
+    <text x="170" y="781" class="state-heading">toolContextHistory</text>
+    <text x="170" y="814" class="state-body">toolName · arguments · result · executedAt</text>
+    <text x="170" y="843" class="state-accent">Reducer 追加，最多保留最近 20 条</text>
+  </g>
+
+  <!-- Tool loop -->
+  <g filter="url(#shadow)">
+    <rect x="770" y="480" width="410" height="190" rx="26" fill="#fffdf8" stroke="#d7cabb" stroke-width="2"/>
+    <text x="805" y="520" class="step">05 · TOOL RUNTIME</text>
+    <text x="805" y="562" class="heading">工具读取当前状态</text>
+    <text x="805" y="600" class="body">runtime.state 获取最近上下文</text>
+    <text x="805" y="633" class="small">理解“刚才结果”“继续计算”</text>
+
+    <rect x="1290" y="480" width="410" height="190" rx="26" fill="#fff2ec" stroke="#d6977e" stroke-width="2"/>
+    <text x="1325" y="520" class="step">06 · COMMAND</text>
+    <text x="1325" y="562" class="heading">工具写回执行结果</text>
+    <text x="1325" y="600" class="body">Command 更新两类 State</text>
+    <text x="1325" y="633" class="small">ToolMessage + toolContextHistory</text>
+
+    <rect x="900" y="760" width="650" height="150" rx="26" fill="#edf6f1" stroke="#9bbcaf" stroke-width="2"/>
+    <text x="940" y="800" class="step">07 · CHECKPOINT</text>
+    <text x="940" y="842" class="heading">保存更新后的线程状态</text>
+    <text x="940" y="877" class="body">下一轮使用相同 thread_id 即可恢复</text>
+  </g>
+
+  <path d="M1490 360 V445 H975 V465" class="arrow"/>
+  <path d="M1180 575 H1275" class="arrow"/>
+  <path d="M1495 670 V735 H1390 V745" class="arrow"/>
+  <path d="M900 835 H665" class="arrow"/>
+  <text x="678" y="820" class="small">写入 Checkpointer</text>
+
+  <!-- Summary branch -->
+  <g>
+    <rect x="80" y="965" width="1620" height="82" rx="20" fill="#fff8e9" stroke="#d9b46e" stroke-width="2"/>
+    <text x="120" y="997" class="step">CONTEXT CONTROL</text>
+    <text x="320" y="1017" class="body">接近 8,000 Token → summarizationMiddleware 压缩旧历史 → 保留最近 12 条消息</text>
+    <text x="1180" y="1017" class="small">动态工具结果注入也会限长</text>
+  </g>
+  <path d="M1005 360 V435" class="dash"/>
+  <text x="1020" y="417" class="small" fill="#9a6528">历史过长时触发摘要</text>
+
+  <text x="90" y="1080" class="small">注意：MemorySaver 位于进程内存中，服务重启后状态会丢失；生产环境可替换为数据库 Checkpointer。</text>
+</svg>

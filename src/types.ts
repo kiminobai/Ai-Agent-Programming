@@ -37,6 +37,8 @@ export interface ChatRequestPayload {
   modelId: string;
   message: string;
   roleId: string;
+  // 同一对话复用 threadId，LangGraph 才能恢复消息和工具调用历史。
+  threadId: string;
   reasoningEffort?: ReasoningEffort;
 }
 
@@ -65,7 +67,8 @@ export interface ChatProvider {
     message: string,
     systemPrompt: string,
     fewShotExamples?: FewShotExample[],
-    reasoningEffort?: ReasoningEffort
+    reasoningEffort?: ReasoningEffort,
+    threadId?: string
   ): Promise<string>;
   streamChat(
     modelId: string,
@@ -73,6 +76,7 @@ export interface ChatProvider {
     systemPrompt: string,
     onDelta: (chunk: string) => void,
     fewShotExamples?: FewShotExample[],
-    reasoningEffort?: ReasoningEffort
+    reasoningEffort?: ReasoningEffort,
+    threadId?: string
   ): Promise<string>;
 }

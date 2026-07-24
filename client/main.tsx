@@ -66,6 +66,19 @@ function applyStreamEvent(rawEvent: string, onEvent: (event: StreamEvent) => voi
   }
 }
 
+function getOrCreateThreadId(): string {
+  const storageKey = "chat-demo-thread-id";
+  const existingThreadId = sessionStorage.getItem(storageKey);
+  if (existingThreadId) {
+    return existingThreadId;
+  }
+
+  // 当前浏览器标签页复用同一个 ID，让后端恢复上一轮 Agent State。
+  const threadId = crypto.randomUUID();
+  sessionStorage.setItem(storageKey, threadId);
+  return threadId;
+}
+
 function App() {
   // 模型和角色由服务端驱动，API Key 永远不会进入浏览器状态。
   const [models, setModels] = useState<ModelOption[]>([]);
@@ -86,6 +99,8 @@ function App() {
   const [error, setError] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const messageEndRef = useRef<HTMLDivElement | null>(null);
+  // threadId 在整个对话期间保持稳定，不随 React 重新渲染而改变。
+  const threadIdRef = useRef(getOrCreateThreadId());
 
   useEffect(() => {
     async function bootstrap() {
@@ -189,6 +204,7 @@ function App() {
         body: JSON.stringify({
           modelId,
           roleId,
+          threadId: threadIdRef.current,
           message: trimmedMessage,
           reasoningEffort: currentModel?.provider === "openai" ? reasoningEffort : undefined
         })

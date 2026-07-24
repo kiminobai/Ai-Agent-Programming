@@ -21471,6 +21471,16 @@
       onEvent(JSON.parse(line));
     }
   }
+  function getOrCreateThreadId() {
+    const storageKey = "chat-demo-thread-id";
+    const existingThreadId = sessionStorage.getItem(storageKey);
+    if (existingThreadId) {
+      return existingThreadId;
+    }
+    const threadId = crypto.randomUUID();
+    sessionStorage.setItem(storageKey, threadId);
+    return threadId;
+  }
   function App() {
     const [models, setModels] = (0, import_react.useState)([]);
     const [roles, setRoles] = (0, import_react.useState)([]);
@@ -21490,6 +21500,7 @@
     const [error, setError] = (0, import_react.useState)("");
     const [sidebarOpen, setSidebarOpen] = (0, import_react.useState)(false);
     const messageEndRef = (0, import_react.useRef)(null);
+    const threadIdRef = (0, import_react.useRef)(getOrCreateThreadId());
     (0, import_react.useEffect)(() => {
       async function bootstrap() {
         try {
@@ -21570,6 +21581,7 @@
           body: JSON.stringify({
             modelId,
             roleId,
+            threadId: threadIdRef.current,
             message: trimmedMessage,
             reasoningEffort: currentModel?.provider === "openai" ? reasoningEffort : void 0
           })
