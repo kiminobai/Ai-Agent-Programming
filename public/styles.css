@@ -32,18 +32,21 @@ body {
   font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
   background: var(--bg);
   color: var(--text);
+  overflow: hidden;
 }
 
 button,
 textarea,
-select {
+select,
+input {
   font: inherit;
 }
 
 .chatgpt-shell {
   display: flex;
-  min-height: 100%;
+  height: 100vh;
   background: var(--bg);
+  overflow: hidden;
 }
 
 .sidebar {
@@ -51,11 +54,13 @@ select {
   flex: 0 0 290px;
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  padding: 16px;
+  gap: 12px;
+  padding: 14px 12px;
   background: var(--sidebar);
   color: #f9fafb;
   border-right: 1px solid rgba(255, 255, 255, 0.06);
+  height: 100vh;
+  overflow-y: auto;
 }
 
 .sidebar-header {
@@ -65,17 +70,9 @@ select {
   align-items: flex-start;
 }
 
-.sidebar-kicker {
-  margin: 0 0 6px;
-  color: #9ca3af;
-  font-size: 12px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
 .sidebar-header h1 {
   margin: 0;
-  font-size: 24px;
+  font-size: 28px;
 }
 
 .sidebar-close,
@@ -88,93 +85,110 @@ select {
 }
 
 .sidebar-panel {
-  padding: 14px;
-  border-radius: 16px;
-  background: var(--sidebar-soft);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  border: 0;
 }
 
-.sidebar-label {
-  display: block;
-  margin-bottom: 10px;
-  color: #d1d5db;
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.sidebar select {
+.new-thread-button {
   width: 100%;
-  min-height: 44px;
+  min-height: 46px;
   border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 12px;
-  background: #2a2a2a;
+  border-radius: 14px;
+  background: #232323;
   color: #f9fafb;
-  padding: 0 12px;
+  cursor: pointer;
+  transition: background 0.18s ease, border-color 0.18s ease;
+  text-align: left;
+  padding: 0 14px;
+  font-weight: 600;
 }
 
-.sidebar-help {
-  margin: 10px 0 0;
-  color: #9ca3af;
-  font-size: 13px;
-  line-height: 1.6;
+.new-thread-button:hover {
+  background: #2d2d2d;
+  border-color: rgba(255, 255, 255, 0.12);
 }
 
-.role-list {
+.new-thread-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.thread-list {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 6px;
+  margin-top: 12px;
+  overflow: visible;
+  padding-right: 2px;
 }
 
-.role-option {
-  width: 100%;
-  text-align: left;
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  border-radius: 14px;
-  background: #262626;
+.thread-item {
+  border: 1px solid transparent;
+  border-radius: 12px;
+  background: transparent;
   color: #f9fafb;
-  padding: 12px;
-  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px;
   transition: background 0.18s ease, border-color 0.18s ease;
 }
 
-.role-option:hover,
-.role-option.active {
-  background: #303030;
-  border-color: rgba(16, 163, 127, 0.5);
+.thread-item:hover,
+.thread-item.active {
+  background: #2a2a2a;
+  border-color: rgba(255, 255, 255, 0.06);
 }
 
-.role-option-name {
+.thread-item-main {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 4px 6px;
+  cursor: pointer;
+}
+
+.thread-item-title {
   display: block;
   font-weight: 700;
   margin-bottom: 6px;
 }
 
-.role-option-summary {
+.thread-item-preview {
   display: block;
   color: #a1a1aa;
-  font-size: 13px;
-  line-height: 1.5;
+  font-size: 12px;
+  line-height: 1.4;
 }
 
-.sidebar-status {
-  margin-top: auto;
+.thread-rename-button {
+  border: 0;
+  background: transparent;
+  color: #9ca3af;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 8px;
 }
 
-.status-row {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  font-size: 13px;
-  color: #d1d5db;
+.thread-rename-button:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: #f9fafb;
 }
 
-.status-row + .status-row {
-  margin-top: 10px;
-}
-
-.status-row strong {
+.thread-rename-input {
+  width: 100%;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  background: #1f1f1f;
   color: #fff;
-  text-align: right;
+  padding: 8px 10px;
+  outline: none;
 }
 
 .chat-layout {
@@ -182,7 +196,10 @@ select {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
+  height: 100vh;
+  overflow-y: auto;
+  overflow-x: hidden;
+  position: relative;
 }
 
 .chat-header {
@@ -207,12 +224,6 @@ select {
 .chat-header-title {
   font-size: 15px;
   font-weight: 700;
-}
-
-.chat-header-subtitle {
-  margin-top: 2px;
-  color: var(--muted);
-  font-size: 13px;
 }
 
 .top-error {
@@ -358,12 +369,13 @@ select {
 }
 
 .composer-shell {
-  position: fixed;
-  left: 290px;
-  right: 0;
+  position: sticky;
+  left: auto;
+  right: auto;
   bottom: 0;
   padding: 20px 24px 28px;
   background: linear-gradient(180deg, rgba(247, 247, 248, 0) 0%, rgba(247, 247, 248, 0.95) 26%, rgba(247, 247, 248, 1) 100%);
+  z-index: 4;
 }
 
 .composer-card {
@@ -392,7 +404,7 @@ select {
 .composer-actions {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: end;
   gap: 12px;
   padding-top: 8px;
 }
@@ -400,6 +412,34 @@ select {
 .composer-hint {
   color: var(--muted);
   font-size: 12px;
+}
+
+.composer-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.composer-role-picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel-muted);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.composer-role-picker select {
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  outline: none;
+  min-width: 110px;
 }
 
 .send-button {
@@ -444,7 +484,7 @@ select {
   }
 
   .composer-shell {
-    left: 0;
+    left: auto;
   }
 }
 
@@ -483,6 +523,18 @@ select {
   .composer-actions {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .composer-controls {
+    width: 100%;
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .composer-role-picker {
+    width: 100%;
+    justify-content: space-between;
+    border-radius: 14px;
   }
 
   .send-button {

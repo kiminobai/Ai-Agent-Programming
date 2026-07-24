@@ -1,6 +1,6 @@
 /**
  * 项目跨层共享的领域类型。
- * Provider、服务端接口和 React 前端应以这里的契约为准。
+ * Provider、服务端接口和 React 前端都以这里的契约为准。
  */
 export type ProviderId = "deepseek" | "openai" | "siliconflow";
 
@@ -39,6 +39,8 @@ export interface ChatRequestPayload {
   roleId: string;
   // 同一对话复用 threadId，LangGraph 才能恢复消息和工具调用历史。
   threadId: string;
+  // 同一 userId 可跨 thread 共享长期记忆；不同 userId 彼此隔离。
+  userId: string;
   reasoningEffort?: ReasoningEffort;
 }
 
@@ -68,7 +70,8 @@ export interface ChatProvider {
     systemPrompt: string,
     fewShotExamples?: FewShotExample[],
     reasoningEffort?: ReasoningEffort,
-    threadId?: string
+    threadId?: string,
+    userId?: string
   ): Promise<string>;
   streamChat(
     modelId: string,
@@ -77,6 +80,7 @@ export interface ChatProvider {
     onDelta: (chunk: string) => void,
     fewShotExamples?: FewShotExample[],
     reasoningEffort?: ReasoningEffort,
-    threadId?: string
+    threadId?: string,
+    userId?: string
   ): Promise<string>;
 }

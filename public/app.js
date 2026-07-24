@@ -21462,7 +21462,9 @@
     try {
       return JSON.parse(text);
     } catch {
-      throw new Error(`${apiName} returned non-JSON content. Please restart the backend with the latest code.`);
+      throw new Error(
+        `${apiName} returned non-JSON content. Please restart the backend with the latest code.`
+      );
     }
   }
   function applyStreamEvent(rawEvent, onEvent) {
@@ -21471,36 +21473,83 @@
       onEvent(JSON.parse(line));
     }
   }
-  function getOrCreateThreadId() {
-    const storageKey = "chat-demo-thread-id";
-    const existingThreadId = sessionStorage.getItem(storageKey);
-    if (existingThreadId) {
-      return existingThreadId;
+  function getOrCreateStoredId(storageKey) {
+    const existingValue = sessionStorage.getItem(storageKey);
+    if (existingValue) {
+      return existingValue;
     }
-    const threadId = crypto.randomUUID();
-    sessionStorage.setItem(storageKey, threadId);
-    return threadId;
+    const nextValue = crypto.randomUUID();
+    sessionStorage.setItem(storageKey, nextValue);
+    return nextValue;
   }
+  function createWelcomeEntries() {
+    return [
+      {
+        id: "welcome",
+        role: "assistant",
+        content: "Welcome. Start a new chat or open an existing thread. Long-term memory is isolated by userId, while each thread keeps its own short-term context."
+      }
+    ];
+  }
+  var AUTO_SCROLL_THRESHOLD = 120;
   function App() {
     const [models, setModels] = (0, import_react.useState)([]);
     const [roles, setRoles] = (0, import_react.useState)([]);
+    const [threads, setThreads] = (0, import_react.useState)([]);
+    const [activeThreadId, setActiveThreadId] = (0, import_react.useState)("");
     const [modelId, setModelId] = (0, import_react.useState)("");
     const [roleId, setRoleId] = (0, import_react.useState)("");
     const [reasoningEffort, setReasoningEffort] = (0, import_react.useState)("low");
     const [message, setMessage] = (0, import_react.useState)("");
-    const [entries, setEntries] = (0, import_react.useState)([
-      {
-        id: "welcome",
-        role: "assistant",
-        content: "Welcome. Choose a model and role, then start chatting."
-      }
-    ]);
+    const [entries, setEntries] = (0, import_react.useState)(createWelcomeEntries());
     const [isLoading, setIsLoading] = (0, import_react.useState)(true);
     const [isSubmitting, setIsSubmitting] = (0, import_react.useState)(false);
+    const [isThreadLoading, setIsThreadLoading] = (0, import_react.useState)(false);
+    const [renamingThreadId, setRenamingThreadId] = (0, import_react.useState)("");
+    const [renamingTitle, setRenamingTitle] = (0, import_react.useState)("");
     const [error, setError] = (0, import_react.useState)("");
     const [sidebarOpen, setSidebarOpen] = (0, import_react.useState)(false);
+    const [userId, setUserId] = (0, import_react.useState)(() => getOrCreateStoredId("chat-demo-user-id"));
+    const chatLayoutRef = (0, import_react.useRef)(null);
+    const composerShellRef = (0, import_react.useRef)(null);
     const messageEndRef = (0, import_react.useRef)(null);
-    const threadIdRef = (0, import_react.useRef)(getOrCreateThreadId());
+    const shouldAutoScrollRef = (0, import_react.useRef)(true);
+    const pendingInitialScrollRef = (0, import_react.useRef)(false);
+    (0, import_react.useLayoutEffect)(() => {
+      if (!shouldAutoScrollRef.current && !pendingInitialScrollRef.current) {
+        return;
+      }
+      const behavior = pendingInitialScrollRef.current ? "auto" : "smooth";
+      const scrollToBottom = () => {
+        const container = chatLayoutRef.current;
+        const composerHeight = composerShellRef.current?.offsetHeight ?? 0;
+        if (container) {
+          container.scrollTo({
+            top: container.scrollHeight - container.clientHeight + composerHeight,
+            behavior
+          });
+        }
+        pendingInitialScrollRef.current = false;
+      };
+      requestAnimationFrame(() => {
+        requestAnimationFrame(scrollToBottom);
+      });
+    }, [entries, isSubmitting, activeThreadId]);
+    const currentModel = (0, import_react.useMemo)(
+      () => models.find((item) => item.id === modelId),
+      [models, modelId]
+    );
+    const currentRole = (0, import_react.useMemo)(
+      () => roles.find((item) => item.id === roleId),
+      [roles, roleId]
+    );
+    const activeThread = (0, import_react.useMemo)(
+      () => threads.find((thread) => thread.threadId === activeThreadId),
+      [threads, activeThreadId]
+    );
+    const canSubmit = Boolean(
+      !isSubmitting && !isLoading && !isThreadLoading && activeThreadId && modelId && roleId && message.trim()
+    );
     (0, import_react.useEffect)(() => {
       async function bootstrap() {
         try {
@@ -21520,46 +21569,212 @@
             (item) => item.enabled
           );
           const availableRoles = rolesData.roles || [];
+          const nextModelId = enabledModels[0]?.id || "";
+          const nextRoleId = availableRoles.some(
+            (item) => item.id === rolesData.defaultRoleId
+          ) ? rolesData.defaultRoleId : availableRoles[0]?.id || "";
           setModels(enabledModels);
           setRoles(availableRoles);
-          setModelId(enabledModels[0]?.id || "");
-          setRoleId(
-            availableRoles.some((item) => item.id === rolesData.defaultRoleId) ? rolesData.defaultRoleId : availableRoles[0]?.id || ""
-          );
+          setModelId(nextModelId);
+          setRoleId(nextRoleId);
+          if (userId.trim() && nextModelId && nextRoleId) {
+            await loadThreads(userId.trim(), nextModelId, nextRoleId, "low");
+          }
         } catch (loadError) {
-          setError(loadError instanceof Error ? loadError.message : "Failed to initialize.");
+          setError(
+            loadError instanceof Error ? loadError.message : "Failed to initialize."
+          );
         } finally {
           setIsLoading(false);
         }
       }
       void bootstrap();
     }, []);
-    (0, import_react.useEffect)(() => {
-      messageEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-    }, [entries, isSubmitting]);
-    const currentModel = (0, import_react.useMemo)(
-      () => models.find((item) => item.id === modelId),
-      [models, modelId]
-    );
-    const currentRole = (0, import_react.useMemo)(
-      () => roles.find((item) => item.id === roleId),
-      [roles, roleId]
-    );
-    const canSubmit = Boolean(!isSubmitting && !isLoading && modelId && roleId && message.trim());
+    async function loadThreads(nextUserId, fallbackModelId, fallbackRoleId, fallbackReasoningEffort) {
+      const response = await fetch(
+        `/api/threads?userId=${encodeURIComponent(nextUserId)}`
+      );
+      const data = await readJsonResponse(response, "/api/threads");
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to load threads.");
+      }
+      const nextThreads = data.threads || [];
+      setThreads(nextThreads);
+      if (nextThreads.length) {
+        await openThread(nextThreads[0].threadId, nextUserId, nextThreads);
+        return;
+      }
+      await handleCreateThread({
+        nextUserId,
+        nextModelId: fallbackModelId,
+        nextRoleId: fallbackRoleId,
+        nextReasoningEffort: fallbackReasoningEffort
+      });
+    }
+    async function handleCreateThread(options) {
+      const nextUserId = options?.nextUserId ?? userId.trim();
+      const nextModelId = options?.nextModelId ?? modelId;
+      const nextRoleId = options?.nextRoleId ?? roleId;
+      const nextReasoningEffort = options?.nextReasoningEffort ?? reasoningEffort;
+      if (!nextUserId || !nextModelId || !nextRoleId) {
+        return;
+      }
+      setError("");
+      setIsThreadLoading(true);
+      try {
+        const response = await fetch("/api/threads", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            userId: nextUserId,
+            modelId: nextModelId,
+            roleId: nextRoleId,
+            reasoningEffort: nextReasoningEffort
+          })
+        });
+        const data = await readJsonResponse(response, "/api/threads");
+        if (!response.ok) {
+          throw new Error(data.error || "Failed to create thread.");
+        }
+        const thread = data.thread;
+        const nextThreads = [thread, ...threads.filter((item) => item.threadId !== thread.threadId)];
+        shouldAutoScrollRef.current = true;
+        pendingInitialScrollRef.current = true;
+        setThreads(nextThreads);
+        setActiveThreadId(thread.threadId);
+        setEntries(createWelcomeEntries());
+        setModelId(thread.modelId);
+        setRoleId(thread.roleId);
+        setReasoningEffort(thread.reasoningEffort || "low");
+        sessionStorage.setItem("chat-demo-active-thread-id", thread.threadId);
+      } catch (threadError) {
+        setError(
+          threadError instanceof Error ? threadError.message : "Failed to create thread."
+        );
+      } finally {
+        setIsThreadLoading(false);
+      }
+    }
+    async function openThread(threadId, nextUserId = userId.trim(), sourceThreads = threads) {
+      if (!threadId || !nextUserId) {
+        return;
+      }
+      setError("");
+      setIsThreadLoading(true);
+      try {
+        const response = await fetch(
+          `/api/threads/${encodeURIComponent(threadId)}/messages?userId=${encodeURIComponent(nextUserId)}`
+        );
+        const data = await readJsonResponse(response, "/api/threads/:threadId/messages");
+        if (!response.ok) {
+          throw new Error(data.error || "Failed to load thread.");
+        }
+        const thread = data.thread;
+        const nextEntries = (data.messages || []).map((entry, index) => ({
+          id: `${thread.threadId}-${index}`,
+          role: entry.role,
+          content: entry.content,
+          meta: `${thread.roleId} | ${thread.modelId} | ${thread.userId}`
+        }));
+        shouldAutoScrollRef.current = true;
+        pendingInitialScrollRef.current = true;
+        setActiveThreadId(thread.threadId);
+        setEntries(nextEntries.length ? nextEntries : createWelcomeEntries());
+        setModelId(thread.modelId);
+        setRoleId(thread.roleId);
+        setReasoningEffort(thread.reasoningEffort || "low");
+        setThreads(
+          sourceThreads.map((item) => item.threadId === thread.threadId ? thread : item)
+        );
+        sessionStorage.setItem("chat-demo-active-thread-id", thread.threadId);
+        setSidebarOpen(false);
+      } catch (threadError) {
+        setError(
+          threadError instanceof Error ? threadError.message : "Failed to load thread."
+        );
+      } finally {
+        setIsThreadLoading(false);
+      }
+    }
+    async function refreshThreads(preferredThreadId) {
+      if (!userId.trim()) {
+        return;
+      }
+      const response = await fetch(
+        `/api/threads?userId=${encodeURIComponent(userId.trim())}`
+      );
+      const data = await readJsonResponse(response, "/api/threads");
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to refresh threads.");
+      }
+      const nextThreads = data.threads || [];
+      setThreads(nextThreads);
+      if (preferredThreadId) {
+        const refreshed = nextThreads.find((thread) => thread.threadId === preferredThreadId);
+        if (refreshed) {
+          setModelId(refreshed.modelId);
+          setRoleId(refreshed.roleId);
+          setReasoningEffort(refreshed.reasoningEffort || "low");
+        }
+      }
+    }
+    async function submitRenameThread(threadId) {
+      const trimmedTitle = renamingTitle.trim();
+      if (!threadId || !userId.trim()) {
+        return;
+      }
+      if (!trimmedTitle) {
+        setRenamingThreadId("");
+        setRenamingTitle("");
+        return;
+      }
+      try {
+        const response = await fetch(`/api/threads/${encodeURIComponent(threadId)}`, {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            userId: userId.trim(),
+            title: trimmedTitle
+          })
+        });
+        const data = await readJsonResponse(response, "/api/threads/:threadId");
+        if (!response.ok) {
+          throw new Error(data.error || "Failed to rename thread.");
+        }
+        const renamedThread = data.thread;
+        setThreads(
+          (prev) => prev.map(
+            (thread) => thread.threadId === renamedThread.threadId ? renamedThread : thread
+          )
+        );
+      } catch (renameError) {
+        setError(
+          renameError instanceof Error ? renameError.message : "Failed to rename thread."
+        );
+      } finally {
+        setRenamingThreadId("");
+        setRenamingTitle("");
+      }
+    }
     async function handleSubmit(event) {
       event?.preventDefault();
       const trimmedMessage = message.trim();
-      if (!trimmedMessage || !modelId || !roleId) {
+      if (!trimmedMessage || !modelId || !roleId || !userId.trim() || !activeThreadId) {
         return;
       }
       setError("");
       setIsSubmitting(true);
+      shouldAutoScrollRef.current = true;
       const assistantEntryId = `assistant-${Date.now()}`;
       const userEntry = {
         id: `user-${Date.now()}`,
         role: "user",
         content: trimmedMessage,
-        meta: `${currentRole?.label || roleId} \xB7 ${currentModel?.label || modelId}`
+        meta: `${currentRole?.label || roleId} | ${currentModel?.label || modelId} | ${userId}`
       };
       setEntries((prev) => [
         ...prev,
@@ -21568,7 +21783,7 @@
           id: assistantEntryId,
           role: "assistant",
           content: "",
-          meta: `${currentRole?.label || roleId} \xB7 ${currentModel?.label || modelId}`
+          meta: `${currentRole?.label || roleId} | ${currentModel?.label || modelId} | ${userId}`
         }
       ]);
       setMessage("");
@@ -21581,7 +21796,8 @@
           body: JSON.stringify({
             modelId,
             roleId,
-            threadId: threadIdRef.current,
+            threadId: activeThreadId,
+            userId: userId.trim(),
             message: trimmedMessage,
             reasoningEffort: currentModel?.provider === "openai" ? reasoningEffort : void 0
           })
@@ -21606,7 +21822,7 @@
           if (streamEvent.type === "meta") {
             updateAssistantEntry((entry) => ({
               ...entry,
-              meta: `${currentRole?.label || streamEvent.meta.roleId} \xB7 ${streamEvent.meta.modelId}`
+              meta: `${currentRole?.label || streamEvent.meta.roleId} | ${streamEvent.meta.modelId} | ${streamEvent.meta.userId}`
             }));
             return;
           }
@@ -21623,7 +21839,7 @@
             updateAssistantEntry((entry) => ({
               ...entry,
               content: finalReply || "Model returned no content.",
-              meta: `${currentRole?.label || streamEvent.meta.roleId} \xB7 ${streamEvent.meta.modelId}`
+              meta: `${currentRole?.label || streamEvent.meta.roleId} | ${streamEvent.meta.modelId} | ${streamEvent.meta.userId}`
             }));
             return;
           }
@@ -21648,6 +21864,7 @@
         if (buffer.trim()) {
           applyStreamEvent(buffer, handleEvent);
         }
+        await refreshThreads(activeThreadId);
       } catch (submitError) {
         const messageText = submitError instanceof Error ? submitError.message : "An error occurred while sending the message.";
         setError(messageText);
@@ -21671,7 +21888,15 @@
         }
       }
     }
-    return /* @__PURE__ */ import_react.default.createElement("div", { className: "chatgpt-shell" }, /* @__PURE__ */ import_react.default.createElement("aside", { className: `sidebar ${sidebarOpen ? "open" : ""}` }, /* @__PURE__ */ import_react.default.createElement("div", { className: "sidebar-header" }, /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("p", { className: "sidebar-kicker" }, "Role Chat"), /* @__PURE__ */ import_react.default.createElement("h1", null, "Chat Settings")), /* @__PURE__ */ import_react.default.createElement(
+    function handleChatLayoutScroll() {
+      const container = chatLayoutRef.current;
+      if (!container) {
+        return;
+      }
+      const distanceToBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+      shouldAutoScrollRef.current = distanceToBottom <= AUTO_SCROLL_THRESHOLD;
+    }
+    return /* @__PURE__ */ import_react.default.createElement("div", { className: "chatgpt-shell" }, /* @__PURE__ */ import_react.default.createElement("aside", { className: `sidebar ${sidebarOpen ? "open" : ""}` }, /* @__PURE__ */ import_react.default.createElement("div", { className: "sidebar-header" }, /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("h1", null, "ChatGPT")), /* @__PURE__ */ import_react.default.createElement(
       "button",
       {
         type: "button",
@@ -21679,59 +21904,129 @@
         onClick: () => setSidebarOpen(false)
       },
       "\xD7"
-    )), /* @__PURE__ */ import_react.default.createElement("section", { className: "sidebar-panel" }, /* @__PURE__ */ import_react.default.createElement("label", { className: "sidebar-label", htmlFor: "model-select" }, "Model"), /* @__PURE__ */ import_react.default.createElement(
-      "select",
-      {
-        id: "model-select",
-        value: modelId,
-        onChange: (event) => setModelId(event.target.value),
-        disabled: !models.length || isLoading
-      },
-      models.length ? null : /* @__PURE__ */ import_react.default.createElement("option", { value: "" }, "No available model"),
-      models.map((model) => /* @__PURE__ */ import_react.default.createElement("option", { key: model.id, value: model.id }, model.label))
-    ), /* @__PURE__ */ import_react.default.createElement("p", { className: "sidebar-help" }, currentModel ? `${currentModel.label} \xB7 ${currentModel.description}` : "Please configure at least one available model.")), /* @__PURE__ */ import_react.default.createElement("section", { className: "sidebar-panel" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "sidebar-label" }, "Role"), /* @__PURE__ */ import_react.default.createElement("div", { className: "role-list" }, roles.map((role) => /* @__PURE__ */ import_react.default.createElement(
+    )), /* @__PURE__ */ import_react.default.createElement("section", { className: "sidebar-panel sidebar-thread-panel" }, /* @__PURE__ */ import_react.default.createElement(
       "button",
       {
-        key: role.id,
         type: "button",
-        className: `role-option ${role.id === roleId ? "active" : ""}`,
-        onClick: () => {
-          setRoleId(role.id);
-          setSidebarOpen(false);
+        className: "new-thread-button",
+        onClick: () => void handleCreateThread(),
+        disabled: !userId.trim() || !modelId || !roleId || isThreadLoading
+      },
+      "+ New chat"
+    ), /* @__PURE__ */ import_react.default.createElement("div", { className: "thread-list" }, threads.map((thread) => /* @__PURE__ */ import_react.default.createElement(
+      "div",
+      {
+        key: thread.threadId,
+        className: `thread-item ${thread.threadId === activeThreadId ? "active" : ""}`
+      },
+      /* @__PURE__ */ import_react.default.createElement(
+        "button",
+        {
+          type: "button",
+          className: "thread-item-main",
+          onClick: () => void openThread(thread.threadId)
+        },
+        renamingThreadId === thread.threadId ? /* @__PURE__ */ import_react.default.createElement(
+          "input",
+          {
+            className: "thread-rename-input",
+            value: renamingTitle,
+            onChange: (event) => setRenamingTitle(event.target.value),
+            onBlur: () => void submitRenameThread(thread.threadId),
+            onKeyDown: (event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                void submitRenameThread(thread.threadId);
+              }
+              if (event.key === "Escape") {
+                setRenamingThreadId("");
+                setRenamingTitle("");
+              }
+            },
+            autoFocus: true
+          }
+        ) : /* @__PURE__ */ import_react.default.createElement(import_react.default.Fragment, null, /* @__PURE__ */ import_react.default.createElement("span", { className: "thread-item-title" }, thread.title), /* @__PURE__ */ import_react.default.createElement("span", { className: "thread-item-preview" }, thread.lastMessagePreview || "No messages yet"))
+      ),
+      renamingThreadId === thread.threadId ? null : /* @__PURE__ */ import_react.default.createElement(
+        "button",
+        {
+          type: "button",
+          className: "thread-rename-button",
+          onClick: () => {
+            setRenamingThreadId(thread.threadId);
+            setRenamingTitle(thread.title);
+          }
+        },
+        "Rename"
+      )
+    ))))), /* @__PURE__ */ import_react.default.createElement(
+      "main",
+      {
+        ref: chatLayoutRef,
+        className: "chat-layout",
+        onScroll: handleChatLayoutScroll
+      },
+      /* @__PURE__ */ import_react.default.createElement("header", { className: "chat-header" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-header-left" }, /* @__PURE__ */ import_react.default.createElement(
+        "button",
+        {
+          type: "button",
+          className: "menu-button",
+          onClick: () => setSidebarOpen((value) => !value)
+        },
+        "\u2630"
+      ), /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-header-title" }, "Role ChatGPT UI")))),
+      error ? /* @__PURE__ */ import_react.default.createElement("div", { className: "top-error" }, error) : null,
+      /* @__PURE__ */ import_react.default.createElement("section", { className: "conversation" }, isLoading || isThreadLoading ? /* @__PURE__ */ import_react.default.createElement("div", { className: "empty-state" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "empty-state-title" }, isLoading ? "Loading configuration" : "Loading thread"), /* @__PURE__ */ import_react.default.createElement("div", { className: "empty-state-copy" }, isLoading ? "Fetching models and roles." : "Restoring messages from SQLite checkpoints.")) : null, !isLoading && !isThreadLoading && entries.map((entry) => /* @__PURE__ */ import_react.default.createElement("div", { key: entry.id, className: `chat-row ${entry.role}` }, /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-avatar" }, entry.role === "user" ? "You" : "AI"), /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-bubble-wrap" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-bubble-header" }, /* @__PURE__ */ import_react.default.createElement("span", null, entry.role === "user" ? "You" : currentRole?.label || "Assistant"), entry.meta ? /* @__PURE__ */ import_react.default.createElement("span", { className: "chat-meta" }, entry.meta) : null), /* @__PURE__ */ import_react.default.createElement("div", { className: `chat-bubble ${entry.role}` }, entry.content)))), /* @__PURE__ */ import_react.default.createElement("div", { ref: messageEndRef })),
+      /* @__PURE__ */ import_react.default.createElement("footer", { ref: composerShellRef, className: "composer-shell" }, /* @__PURE__ */ import_react.default.createElement("form", { className: "composer-card", onSubmit: handleSubmit }, /* @__PURE__ */ import_react.default.createElement(
+        "textarea",
+        {
+          value: message,
+          onChange: (event) => setMessage(event.target.value),
+          onKeyDown: handleTextareaKeyDown,
+          placeholder: "Send a message. Enter to send, Shift+Enter for a new line.",
+          rows: 1,
+          required: true
         }
-      },
-      /* @__PURE__ */ import_react.default.createElement("span", { className: "role-option-name" }, role.label),
-      /* @__PURE__ */ import_react.default.createElement("span", { className: "role-option-summary" }, role.summary)
-    )))), currentModel?.provider === "openai" ? /* @__PURE__ */ import_react.default.createElement("section", { className: "sidebar-panel" }, /* @__PURE__ */ import_react.default.createElement("label", { className: "sidebar-label", htmlFor: "reasoning-effort" }, "Reasoning"), /* @__PURE__ */ import_react.default.createElement(
-      "select",
-      {
-        id: "reasoning-effort",
-        value: reasoningEffort,
-        onChange: (event) => setReasoningEffort(event.target.value)
-      },
-      /* @__PURE__ */ import_react.default.createElement("option", { value: "minimal" }, "minimal"),
-      /* @__PURE__ */ import_react.default.createElement("option", { value: "low" }, "low"),
-      /* @__PURE__ */ import_react.default.createElement("option", { value: "medium" }, "medium"),
-      /* @__PURE__ */ import_react.default.createElement("option", { value: "high" }, "high")
-    ), /* @__PURE__ */ import_react.default.createElement("p", { className: "sidebar-help" }, "This only applies to OpenAI Responses API requests.")) : null, /* @__PURE__ */ import_react.default.createElement("section", { className: "sidebar-panel sidebar-status" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "status-row" }, /* @__PURE__ */ import_react.default.createElement("span", null, "Current role"), /* @__PURE__ */ import_react.default.createElement("strong", null, currentRole?.label || "Not selected")), /* @__PURE__ */ import_react.default.createElement("div", { className: "status-row" }, /* @__PURE__ */ import_react.default.createElement("span", null, "Current model"), /* @__PURE__ */ import_react.default.createElement("strong", null, currentModel?.label || "Not selected")))), /* @__PURE__ */ import_react.default.createElement("main", { className: "chat-layout" }, /* @__PURE__ */ import_react.default.createElement("header", { className: "chat-header" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-header-left" }, /* @__PURE__ */ import_react.default.createElement(
-      "button",
-      {
-        type: "button",
-        className: "menu-button",
-        onClick: () => setSidebarOpen((value) => !value)
-      },
-      "\u2630"
-    ), /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-header-title" }, "Role ChatGPT UI"), /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-header-subtitle" }, currentRole?.label || "No role", " \xB7 ", currentModel?.label || "No model")))), error ? /* @__PURE__ */ import_react.default.createElement("div", { className: "top-error" }, error) : null, /* @__PURE__ */ import_react.default.createElement("section", { className: "conversation" }, isLoading ? /* @__PURE__ */ import_react.default.createElement("div", { className: "empty-state" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "empty-state-title" }, "Loading configuration"), /* @__PURE__ */ import_react.default.createElement("div", { className: "empty-state-copy" }, "Fetching models and roles.")) : null, !isLoading && entries.map((entry) => /* @__PURE__ */ import_react.default.createElement("div", { key: entry.id, className: `chat-row ${entry.role}` }, /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-avatar" }, entry.role === "user" ? "You" : "AI"), /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-bubble-wrap" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-bubble-header" }, /* @__PURE__ */ import_react.default.createElement("span", null, entry.role === "user" ? "You" : currentRole?.label || "Assistant"), entry.meta ? /* @__PURE__ */ import_react.default.createElement("span", { className: "chat-meta" }, entry.meta) : null), /* @__PURE__ */ import_react.default.createElement("div", { className: `chat-bubble ${entry.role}` }, entry.content)))), /* @__PURE__ */ import_react.default.createElement("div", { ref: messageEndRef })), /* @__PURE__ */ import_react.default.createElement("footer", { className: "composer-shell" }, /* @__PURE__ */ import_react.default.createElement("form", { className: "composer-card", onSubmit: handleSubmit }, /* @__PURE__ */ import_react.default.createElement(
-      "textarea",
-      {
-        value: message,
-        onChange: (event) => setMessage(event.target.value),
-        onKeyDown: handleTextareaKeyDown,
-        placeholder: "Send a message. Enter to send, Shift+Enter for a new line.",
-        rows: 1,
-        required: true
-      }
-    ), /* @__PURE__ */ import_react.default.createElement("div", { className: "composer-actions" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "composer-hint" }, "Role: ", currentRole?.label || "Not selected", " | Model:", " ", currentModel?.label || "Not selected", currentModel?.provider === "openai" ? ` | Reasoning: ${reasoningEffort}` : ""), /* @__PURE__ */ import_react.default.createElement("button", { className: "send-button", type: "submit", disabled: !canSubmit }, isSubmitting ? "Streaming..." : "Send"))))));
+      ), /* @__PURE__ */ import_react.default.createElement("div", { className: "composer-actions" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "composer-controls" }, /* @__PURE__ */ import_react.default.createElement("label", { className: "composer-role-picker", htmlFor: "composer-model-select" }, /* @__PURE__ */ import_react.default.createElement("span", null, "Model"), /* @__PURE__ */ import_react.default.createElement(
+        "select",
+        {
+          id: "composer-model-select",
+          value: modelId,
+          onChange: (event) => setModelId(event.target.value),
+          disabled: !models.length || isSubmitting || isThreadLoading
+        },
+        models.map((model) => /* @__PURE__ */ import_react.default.createElement("option", { key: model.id, value: model.id }, model.label))
+      )), /* @__PURE__ */ import_react.default.createElement("label", { className: "composer-role-picker", htmlFor: "composer-role-select" }, /* @__PURE__ */ import_react.default.createElement("span", null, "Role"), /* @__PURE__ */ import_react.default.createElement(
+        "select",
+        {
+          id: "composer-role-select",
+          value: roleId,
+          onChange: (event) => setRoleId(event.target.value),
+          disabled: !roles.length || isSubmitting || isThreadLoading
+        },
+        roles.map((role) => /* @__PURE__ */ import_react.default.createElement("option", { key: role.id, value: role.id }, role.label))
+      )), currentModel?.provider === "openai" ? /* @__PURE__ */ import_react.default.createElement(
+        "label",
+        {
+          className: "composer-role-picker",
+          htmlFor: "composer-reasoning-effort"
+        },
+        /* @__PURE__ */ import_react.default.createElement("span", null, "Reasoning"),
+        /* @__PURE__ */ import_react.default.createElement(
+          "select",
+          {
+            id: "composer-reasoning-effort",
+            value: reasoningEffort,
+            onChange: (event) => setReasoningEffort(event.target.value),
+            disabled: isSubmitting || isThreadLoading
+          },
+          /* @__PURE__ */ import_react.default.createElement("option", { value: "minimal" }, "minimal"),
+          /* @__PURE__ */ import_react.default.createElement("option", { value: "low" }, "low"),
+          /* @__PURE__ */ import_react.default.createElement("option", { value: "medium" }, "medium"),
+          /* @__PURE__ */ import_react.default.createElement("option", { value: "high" }, "high")
+        )
+      ) : null, /* @__PURE__ */ import_react.default.createElement("button", { className: "send-button", type: "submit", disabled: !canSubmit }, isSubmitting ? "Streaming..." : "Send")))))
+    ));
   }
   (0, import_client.createRoot)(document.getElementById("root")).render(/* @__PURE__ */ import_react.default.createElement(App, null));
 })();

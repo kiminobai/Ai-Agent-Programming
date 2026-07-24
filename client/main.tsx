@@ -1,8 +1,12 @@
-/**
- * React 单页聊天界面。
- * 负责模型/角色选择、SSE 增量解析和对话状态展示。
- */
-import React, { FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import React, {
+  FormEvent,
+  KeyboardEvent,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState
+} from "react";
 import { createRoot } from "react-dom/client";
 
 type ProviderId = "deepseek" | "openai" | "siliconflow";
@@ -30,11 +34,26 @@ type ChatEntry = {
   meta?: string;
 };
 
+type ChatThread = {
+  threadId: string;
+  userId: string;
+  providerId: ProviderId;
+  modelId: string;
+  roleId: string;
+  reasoningEffort?: ReasoningEffort;
+  title: string;
+  lastMessagePreview?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
 type StreamMeta = {
   provider: ProviderId;
   modelId: string;
   modelLabel: string;
   roleId: string;
+  userId: string;
+  threadId: string;
 };
 
 type StreamEvent =
@@ -49,12 +68,13 @@ async function readJsonResponse(response: Response, apiName: string) {
   try {
     return JSON.parse(text);
   } catch {
-    throw new Error(`${apiName} returned non-JSON content. Please restart the backend with the latest code.`);
+    throw new Error(
+      `${apiName} returned non-JSON content. Please restart the backend with the latest code.`
+    );
   }
 }
 
 function applyStreamEvent(rawEvent: string, onEvent: (event: StreamEvent) => void) {
-  // 一个 SSE 数据块可能包含多行，只解析 data: 开头的有效负载。
   const lines = rawEvent
     .split(/\r?\n/)
     .filter((line) => line.startsWith("data:"))
@@ -66,41 +86,99 @@ function applyStreamEvent(rawEvent: string, onEvent: (event: StreamEvent) => voi
   }
 }
 
-function getOrCreateThreadId(): string {
-  const storageKey = "chat-demo-thread-id";
-  const existingThreadId = sessionStorage.getItem(storageKey);
-  if (existingThreadId) {
-    return existingThreadId;
+function getOrCreateStoredId(storageKey: string): string {
+  const existingValue = sessionStorage.getItem(storageKey);
+  if (existingValue) {
+    return existingValue;
   }
 
-  // 当前浏览器标签页复用同一个 ID，让后端恢复上一轮 Agent State。
-  const threadId = crypto.randomUUID();
-  sessionStorage.setItem(storageKey, threadId);
-  return threadId;
+  const nextValue = crypto.randomUUID();
+  sessionStorage.setItem(storageKey, nextValue);
+  return nextValue;
 }
 
+function createWelcomeEntries(): ChatEntry[] {
+  return [
+    {
+      id: "welcome",
+      role: "assistant",
+      content:
+        "Welcome. Start a new chat or open an existing thread. Long-term memory is isolated by userId, while each thread keeps its own short-term context."
+    }
+  ];
+}
+
+const AUTO_SCROLL_THRESHOLD = 120;
+
 function App() {
-  // 模型和角色由服务端驱动，API Key 永远不会进入浏览器状态。
   const [models, setModels] = useState<ModelOption[]>([]);
   const [roles, setRoles] = useState<PromptRole[]>([]);
+  const [threads, setThreads] = useState<ChatThread[]>([]);
+  const [activeThreadId, setActiveThreadId] = useState("");
   const [modelId, setModelId] = useState("");
   const [roleId, setRoleId] = useState("");
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("low");
   const [message, setMessage] = useState("");
-  const [entries, setEntries] = useState<ChatEntry[]>([
-    {
-      id: "welcome",
-      role: "assistant",
-      content: "Welcome. Choose a model and role, then start chatting."
-    }
-  ]);
+  const [entries, setEntries] = useState<ChatEntry[]>(createWelcomeEntries());
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isThreadLoading, setIsThreadLoading] = useState(false);
+  const [renamingThreadId, setRenamingThreadId] = useState("");
+  const [renamingTitle, setRenamingTitle] = useState("");
   const [error, setError] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [userId, setUserId] = useState(() => getOrCreateStoredId("chat-demo-user-id"));
+  const chatLayoutRef = useRef<HTMLElement | null>(null);
+  const composerShellRef = useRef<HTMLElement | null>(null);
   const messageEndRef = useRef<HTMLDivElement | null>(null);
-  // threadId 在整个对话期间保持稳定，不随 React 重新渲染而改变。
-  const threadIdRef = useRef(getOrCreateThreadId());
+  const shouldAutoScrollRef = useRef(true);
+  const pendingInitialScrollRef = useRef(false);
+
+  useLayoutEffect(() => {
+    if (!shouldAutoScrollRef.current && !pendingInitialScrollRef.current) {
+      return;
+    }
+
+    const behavior = pendingInitialScrollRef.current ? "auto" : "smooth";
+    const scrollToBottom = () => {
+      const container = chatLayoutRef.current;
+      const composerHeight = composerShellRef.current?.offsetHeight ?? 0;
+      if (container) {
+        container.scrollTo({
+          top: container.scrollHeight - container.clientHeight + composerHeight,
+          behavior
+        });
+      }
+      pendingInitialScrollRef.current = false;
+    };
+
+    // 首次刷新恢复线程时，等布局和 sticky 输入框都稳定后再定位到底部。
+    requestAnimationFrame(() => {
+      requestAnimationFrame(scrollToBottom);
+    });
+  }, [entries, isSubmitting, activeThreadId]);
+
+  const currentModel = useMemo(
+    () => models.find((item) => item.id === modelId),
+    [models, modelId]
+  );
+  const currentRole = useMemo(
+    () => roles.find((item) => item.id === roleId),
+    [roles, roleId]
+  );
+  const activeThread = useMemo(
+    () => threads.find((thread) => thread.threadId === activeThreadId),
+    [threads, activeThreadId]
+  );
+  const canSubmit = Boolean(
+    !isSubmitting &&
+      !isLoading &&
+      !isThreadLoading &&
+      activeThreadId &&
+      modelId &&
+      roleId &&
+      message.trim()
+  );
 
   useEffect(() => {
     async function bootstrap() {
@@ -125,17 +203,25 @@ function App() {
           (item: ModelOption) => item.enabled
         );
         const availableRoles = rolesData.roles || [];
+        const nextModelId = enabledModels[0]?.id || "";
+        const nextRoleId = availableRoles.some(
+          (item: PromptRole) => item.id === rolesData.defaultRoleId
+        )
+          ? rolesData.defaultRoleId
+          : availableRoles[0]?.id || "";
 
         setModels(enabledModels);
         setRoles(availableRoles);
-        setModelId(enabledModels[0]?.id || "");
-        setRoleId(
-          availableRoles.some((item: PromptRole) => item.id === rolesData.defaultRoleId)
-            ? rolesData.defaultRoleId
-            : availableRoles[0]?.id || ""
-        );
+        setModelId(nextModelId);
+        setRoleId(nextRoleId);
+
+        if (userId.trim() && nextModelId && nextRoleId) {
+          await loadThreads(userId.trim(), nextModelId, nextRoleId, "low");
+        }
       } catch (loadError) {
-        setError(loadError instanceof Error ? loadError.message : "Failed to initialize.");
+        setError(
+          loadError instanceof Error ? loadError.message : "Failed to initialize."
+        );
       } finally {
         setIsLoading(false);
       }
@@ -144,42 +230,237 @@ function App() {
     void bootstrap();
   }, []);
 
-  useEffect(() => {
-    messageEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [entries, isSubmitting]);
+  async function loadThreads(
+    nextUserId: string,
+    fallbackModelId: string,
+    fallbackRoleId: string,
+    fallbackReasoningEffort: ReasoningEffort
+  ) {
+    const response = await fetch(
+      `/api/threads?userId=${encodeURIComponent(nextUserId)}`
+    );
+    const data = await readJsonResponse(response, "/api/threads");
 
-  const currentModel = useMemo(
-    () => models.find((item) => item.id === modelId),
-    [models, modelId]
-  );
+    if (!response.ok) {
+      throw new Error(data.error || "Failed to load threads.");
+    }
 
-  const currentRole = useMemo(
-    () => roles.find((item) => item.id === roleId),
-    [roles, roleId]
-  );
+    const nextThreads = (data.threads || []) as ChatThread[];
+    setThreads(nextThreads);
 
-  const canSubmit = Boolean(!isSubmitting && !isLoading && modelId && roleId && message.trim());
-
-  async function handleSubmit(event?: FormEvent<HTMLFormElement>) {
-    // 步骤 1：阻止表单刷新页面，并读取当前输入。
-    event?.preventDefault();
-
-    const trimmedMessage = message.trim();
-    if (!trimmedMessage || !modelId || !roleId) {
+    if (nextThreads.length) {
+      await openThread(nextThreads[0].threadId, nextUserId, nextThreads);
       return;
     }
 
-    // 步骤 2：锁定提交状态，防止用户重复发送。
+    await handleCreateThread({
+      nextUserId,
+      nextModelId: fallbackModelId,
+      nextRoleId: fallbackRoleId,
+      nextReasoningEffort: fallbackReasoningEffort
+    });
+  }
+
+  async function handleCreateThread(options?: {
+    nextUserId?: string;
+    nextModelId?: string;
+    nextRoleId?: string;
+    nextReasoningEffort?: ReasoningEffort;
+  }) {
+    const nextUserId = options?.nextUserId ?? userId.trim();
+    const nextModelId = options?.nextModelId ?? modelId;
+    const nextRoleId = options?.nextRoleId ?? roleId;
+    const nextReasoningEffort = options?.nextReasoningEffort ?? reasoningEffort;
+
+    if (!nextUserId || !nextModelId || !nextRoleId) {
+      return;
+    }
+
+    setError("");
+    setIsThreadLoading(true);
+
+    try {
+      const response = await fetch("/api/threads", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          userId: nextUserId,
+          modelId: nextModelId,
+          roleId: nextRoleId,
+          reasoningEffort: nextReasoningEffort
+        })
+      });
+
+      const data = await readJsonResponse(response, "/api/threads");
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to create thread.");
+      }
+
+      const thread = data.thread as ChatThread;
+      const nextThreads = [thread, ...threads.filter((item) => item.threadId !== thread.threadId)];
+      shouldAutoScrollRef.current = true;
+      pendingInitialScrollRef.current = true;
+      setThreads(nextThreads);
+      setActiveThreadId(thread.threadId);
+      setEntries(createWelcomeEntries());
+      setModelId(thread.modelId);
+      setRoleId(thread.roleId);
+      setReasoningEffort(thread.reasoningEffort || "low");
+      sessionStorage.setItem("chat-demo-active-thread-id", thread.threadId);
+    } catch (threadError) {
+      setError(
+        threadError instanceof Error ? threadError.message : "Failed to create thread."
+      );
+    } finally {
+      setIsThreadLoading(false);
+    }
+  }
+
+  async function openThread(
+    threadId: string,
+    nextUserId = userId.trim(),
+    sourceThreads = threads
+  ) {
+    if (!threadId || !nextUserId) {
+      return;
+    }
+
+    setError("");
+    setIsThreadLoading(true);
+
+    try {
+      const response = await fetch(
+        `/api/threads/${encodeURIComponent(threadId)}/messages?userId=${encodeURIComponent(nextUserId)}`
+      );
+      const data = await readJsonResponse(response, "/api/threads/:threadId/messages");
+
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to load thread.");
+      }
+
+      const thread = data.thread as ChatThread;
+      const nextEntries = ((data.messages || []) as Array<{
+        role: "user" | "assistant";
+        content: string;
+      }>).map((entry, index) => ({
+        id: `${thread.threadId}-${index}`,
+        role: entry.role,
+        content: entry.content,
+        meta: `${thread.roleId} | ${thread.modelId} | ${thread.userId}`
+      }));
+
+      shouldAutoScrollRef.current = true;
+      pendingInitialScrollRef.current = true;
+      setActiveThreadId(thread.threadId);
+      setEntries(nextEntries.length ? nextEntries : createWelcomeEntries());
+      setModelId(thread.modelId);
+      setRoleId(thread.roleId);
+      setReasoningEffort(thread.reasoningEffort || "low");
+      setThreads(
+        sourceThreads.map((item) => (item.threadId === thread.threadId ? thread : item))
+      );
+      sessionStorage.setItem("chat-demo-active-thread-id", thread.threadId);
+      setSidebarOpen(false);
+    } catch (threadError) {
+      setError(
+        threadError instanceof Error ? threadError.message : "Failed to load thread."
+      );
+    } finally {
+      setIsThreadLoading(false);
+    }
+  }
+
+  async function refreshThreads(preferredThreadId?: string) {
+    if (!userId.trim()) {
+      return;
+    }
+
+    const response = await fetch(
+      `/api/threads?userId=${encodeURIComponent(userId.trim())}`
+    );
+    const data = await readJsonResponse(response, "/api/threads");
+    if (!response.ok) {
+      throw new Error(data.error || "Failed to refresh threads.");
+    }
+
+    const nextThreads = (data.threads || []) as ChatThread[];
+    setThreads(nextThreads);
+
+    if (preferredThreadId) {
+      const refreshed = nextThreads.find((thread) => thread.threadId === preferredThreadId);
+      if (refreshed) {
+        setModelId(refreshed.modelId);
+        setRoleId(refreshed.roleId);
+        setReasoningEffort(refreshed.reasoningEffort || "low");
+      }
+    }
+  }
+
+  async function submitRenameThread(threadId: string) {
+    const trimmedTitle = renamingTitle.trim();
+    if (!threadId || !userId.trim()) {
+      return;
+    }
+
+    if (!trimmedTitle) {
+      setRenamingThreadId("");
+      setRenamingTitle("");
+      return;
+    }
+
+    try {
+      const response = await fetch(`/api/threads/${encodeURIComponent(threadId)}`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          userId: userId.trim(),
+          title: trimmedTitle
+        })
+      });
+
+      const data = await readJsonResponse(response, "/api/threads/:threadId");
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to rename thread.");
+      }
+
+      const renamedThread = data.thread as ChatThread;
+      setThreads((prev) =>
+        prev.map((thread) =>
+          thread.threadId === renamedThread.threadId ? renamedThread : thread
+        )
+      );
+    } catch (renameError) {
+      setError(
+        renameError instanceof Error ? renameError.message : "Failed to rename thread."
+      );
+    } finally {
+      setRenamingThreadId("");
+      setRenamingTitle("");
+    }
+  }
+
+  async function handleSubmit(event?: FormEvent<HTMLFormElement>) {
+    event?.preventDefault();
+
+    const trimmedMessage = message.trim();
+    if (!trimmedMessage || !modelId || !roleId || !userId.trim() || !activeThreadId) {
+      return;
+    }
+
     setError("");
     setIsSubmitting(true);
+    shouldAutoScrollRef.current = true;
 
-    // 步骤 3：先在 UI 插入用户消息与空助手消息，提供即时反馈。
     const assistantEntryId = `assistant-${Date.now()}`;
     const userEntry: ChatEntry = {
       id: `user-${Date.now()}`,
       role: "user",
       content: trimmedMessage,
-      meta: `${currentRole?.label || roleId} · ${currentModel?.label || modelId}`
+      meta: `${currentRole?.label || roleId} | ${currentModel?.label || modelId} | ${userId}`
     };
 
     setEntries((prev) => [
@@ -189,13 +470,12 @@ function App() {
         id: assistantEntryId,
         role: "assistant",
         content: "",
-        meta: `${currentRole?.label || roleId} · ${currentModel?.label || modelId}`
+        meta: `${currentRole?.label || roleId} | ${currentModel?.label || modelId} | ${userId}`
       }
     ]);
     setMessage("");
 
     try {
-      // 步骤 4：向后端发送模型、角色和本次用户消息。
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: {
@@ -204,13 +484,13 @@ function App() {
         body: JSON.stringify({
           modelId,
           roleId,
-          threadId: threadIdRef.current,
+          threadId: activeThreadId,
+          userId: userId.trim(),
           message: trimmedMessage,
           reasoningEffort: currentModel?.provider === "openai" ? reasoningEffort : undefined
         })
       });
 
-      // 步骤 5：普通 HTTP 错误在进入 SSE 读取前处理。
       if (!response.ok) {
         const data = await readJsonResponse(response, "/api/chat");
         throw new Error(data.error || "Request failed. Please try again.");
@@ -220,31 +500,27 @@ function App() {
         throw new Error("Streaming response is unavailable.");
       }
 
-      // 步骤 6：所有流式事件只更新本次请求对应的助手消息。
       const updateAssistantEntry = (updater: (entry: ChatEntry) => ChatEntry) => {
         setEntries((prev) =>
           prev.map((entry) => (entry.id === assistantEntryId ? updater(entry) : entry))
         );
       };
 
-      // 步骤 7：Reader 获取二进制块，Decoder 将其增量转换为 UTF-8 文本。
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
       let finalReply = "";
 
-      // 步骤 8：按 meta、delta、done、error 四种事件更新状态。
       const handleEvent = (streamEvent: StreamEvent) => {
         if (streamEvent.type === "meta") {
           updateAssistantEntry((entry) => ({
             ...entry,
-            meta: `${currentRole?.label || streamEvent.meta.roleId} · ${streamEvent.meta.modelId}`
+            meta: `${currentRole?.label || streamEvent.meta.roleId} | ${streamEvent.meta.modelId} | ${streamEvent.meta.userId}`
           }));
           return;
         }
 
         if (streamEvent.type === "delta") {
-          // delta 到达一次就追加一次，形成逐字输出效果。
           finalReply += streamEvent.chunk;
           updateAssistantEntry((entry) => ({
             ...entry,
@@ -254,12 +530,11 @@ function App() {
         }
 
         if (streamEvent.type === "done") {
-          // done 携带服务端完整答案，用于纠正可能遗漏的最后一个分片。
           finalReply = streamEvent.reply || finalReply;
           updateAssistantEntry((entry) => ({
             ...entry,
             content: finalReply || "Model returned no content.",
-            meta: `${currentRole?.label || streamEvent.meta.roleId} · ${streamEvent.meta.modelId}`
+            meta: `${currentRole?.label || streamEvent.meta.roleId} | ${streamEvent.meta.modelId} | ${streamEvent.meta.userId}`
           }));
           return;
         }
@@ -267,12 +542,10 @@ function App() {
         throw new Error(streamEvent.error || "Streaming request failed.");
       };
 
-      // 步骤 9：持续读取网络块；一个块可能含半个或多个 SSE 事件。
       while (true) {
         const { done, value } = await reader.read();
         buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
 
-        // SSE 事件以空行分隔；不完整尾部继续留在 buffer 等待下个块。
         let eventEnd = buffer.indexOf("\n\n");
         while (eventEnd !== -1) {
           const rawEvent = buffer.slice(0, eventEnd);
@@ -288,14 +561,16 @@ function App() {
         }
       }
 
-      // 步骤 10：连接结束后处理 Decoder 缓冲区中的最后一个事件。
       if (buffer.trim()) {
         applyStreamEvent(buffer, handleEvent);
       }
+
+      await refreshThreads(activeThreadId);
     } catch (submitError) {
-      // 步骤 11：请求失败时保留已收到内容，并在空消息中展示错误。
       const messageText =
-        submitError instanceof Error ? submitError.message : "An error occurred while sending the message.";
+        submitError instanceof Error
+          ? submitError.message
+          : "An error occurred while sending the message.";
 
       setError(messageText);
       setEntries((prev) =>
@@ -309,7 +584,6 @@ function App() {
         )
       );
     } finally {
-      // 步骤 12：无论成功失败都解除输入锁定。
       setIsSubmitting(false);
     }
   }
@@ -323,13 +597,23 @@ function App() {
     }
   }
 
+  function handleChatLayoutScroll() {
+    const container = chatLayoutRef.current;
+    if (!container) {
+      return;
+    }
+
+    const distanceToBottom =
+      container.scrollHeight - container.scrollTop - container.clientHeight;
+    shouldAutoScrollRef.current = distanceToBottom <= AUTO_SCROLL_THRESHOLD;
+  }
+
   return (
     <div className="chatgpt-shell">
       <aside className={`sidebar ${sidebarOpen ? "open" : ""}`}>
         <div className="sidebar-header">
           <div>
-            <p className="sidebar-kicker">Role Chat</p>
-            <h1>Chat Settings</h1>
+            <h1>ChatGPT</h1>
           </div>
           <button
             type="button"
@@ -340,86 +624,77 @@ function App() {
           </button>
         </div>
 
-        <section className="sidebar-panel">
-          <label className="sidebar-label" htmlFor="model-select">
-            Model
-          </label>
-          <select
-            id="model-select"
-            value={modelId}
-            onChange={(event) => setModelId(event.target.value)}
-            disabled={!models.length || isLoading}
+        <section className="sidebar-panel sidebar-thread-panel">
+          <button
+            type="button"
+            className="new-thread-button"
+            onClick={() => void handleCreateThread()}
+            disabled={!userId.trim() || !modelId || !roleId || isThreadLoading}
           >
-            {models.length ? null : <option value="">No available model</option>}
-            {models.map((model) => (
-              <option key={model.id} value={model.id}>
-                {model.label}
-              </option>
-            ))}
-          </select>
-          <p className="sidebar-help">
-            {currentModel
-              ? `${currentModel.label} · ${currentModel.description}`
-              : "Please configure at least one available model."}
-          </p>
-        </section>
-
-        <section className="sidebar-panel">
-          <div className="sidebar-label">Role</div>
-          <div className="role-list">
-            {roles.map((role) => (
-              <button
-                key={role.id}
-                type="button"
-                className={`role-option ${role.id === roleId ? "active" : ""}`}
-                onClick={() => {
-                  setRoleId(role.id);
-                  setSidebarOpen(false);
-                }}
+            + New chat
+          </button>
+          <div className="thread-list">
+            {threads.map((thread) => (
+              <div
+                key={thread.threadId}
+                className={`thread-item ${thread.threadId === activeThreadId ? "active" : ""}`}
               >
-                <span className="role-option-name">{role.label}</span>
-                <span className="role-option-summary">{role.summary}</span>
-              </button>
+                <button
+                  type="button"
+                  className="thread-item-main"
+                  onClick={() => void openThread(thread.threadId)}
+                >
+                  {renamingThreadId === thread.threadId ? (
+                    <input
+                      className="thread-rename-input"
+                      value={renamingTitle}
+                      onChange={(event) => setRenamingTitle(event.target.value)}
+                      onBlur={() => void submitRenameThread(thread.threadId)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          event.preventDefault();
+                          void submitRenameThread(thread.threadId);
+                        }
+
+                        if (event.key === "Escape") {
+                          setRenamingThreadId("");
+                          setRenamingTitle("");
+                        }
+                      }}
+                      autoFocus
+                    />
+                  ) : (
+                    <>
+                      <span className="thread-item-title">{thread.title}</span>
+                      <span className="thread-item-preview">
+                        {thread.lastMessagePreview || "No messages yet"}
+                      </span>
+                    </>
+                  )}
+                </button>
+                {renamingThreadId === thread.threadId ? null : (
+                  <button
+                    type="button"
+                    className="thread-rename-button"
+                    onClick={() => {
+                      setRenamingThreadId(thread.threadId);
+                      setRenamingTitle(thread.title);
+                    }}
+                  >
+                    Rename
+                  </button>
+                )}
+              </div>
             ))}
-          </div>
-        </section>
-
-        {currentModel?.provider === "openai" ? (
-          <section className="sidebar-panel">
-            <label className="sidebar-label" htmlFor="reasoning-effort">
-              Reasoning
-            </label>
-            <select
-              id="reasoning-effort"
-              value={reasoningEffort}
-              onChange={(event) =>
-                setReasoningEffort(event.target.value as ReasoningEffort)
-              }
-            >
-              <option value="minimal">minimal</option>
-              <option value="low">low</option>
-              <option value="medium">medium</option>
-              <option value="high">high</option>
-            </select>
-            <p className="sidebar-help">
-              This only applies to OpenAI Responses API requests.
-            </p>
-          </section>
-        ) : null}
-
-        <section className="sidebar-panel sidebar-status">
-          <div className="status-row">
-            <span>Current role</span>
-            <strong>{currentRole?.label || "Not selected"}</strong>
-          </div>
-          <div className="status-row">
-            <span>Current model</span>
-            <strong>{currentModel?.label || "Not selected"}</strong>
           </div>
         </section>
       </aside>
 
-      <main className="chat-layout">
+      <main
+        ref={chatLayoutRef}
+        className="chat-layout"
+        onScroll={handleChatLayoutScroll}
+      >
         <header className="chat-header">
           <div className="chat-header-left">
             <button
@@ -431,9 +706,6 @@ function App() {
             </button>
             <div>
               <div className="chat-header-title">Role ChatGPT UI</div>
-              <div className="chat-header-subtitle">
-                {currentRole?.label || "No role"} · {currentModel?.label || "No model"}
-              </div>
             </div>
           </div>
         </header>
@@ -441,14 +713,21 @@ function App() {
         {error ? <div className="top-error">{error}</div> : null}
 
         <section className="conversation">
-          {isLoading ? (
+          {isLoading || isThreadLoading ? (
             <div className="empty-state">
-              <div className="empty-state-title">Loading configuration</div>
-              <div className="empty-state-copy">Fetching models and roles.</div>
+              <div className="empty-state-title">
+                {isLoading ? "Loading configuration" : "Loading thread"}
+              </div>
+              <div className="empty-state-copy">
+                {isLoading
+                  ? "Fetching models and roles."
+                  : "Restoring messages from SQLite checkpoints."}
+              </div>
             </div>
           ) : null}
 
           {!isLoading &&
+            !isThreadLoading &&
             entries.map((entry) => (
               <div key={entry.id} className={`chat-row ${entry.role}`}>
                 <div className="chat-avatar">{entry.role === "user" ? "You" : "AI"}</div>
@@ -465,7 +744,7 @@ function App() {
           <div ref={messageEndRef} />
         </section>
 
-        <footer className="composer-shell">
+        <footer ref={composerShellRef} className="composer-shell">
           <form className="composer-card" onSubmit={handleSubmit}>
             <textarea
               value={message}
@@ -476,16 +755,62 @@ function App() {
               required
             />
             <div className="composer-actions">
-              <div className="composer-hint">
-                Role: {currentRole?.label || "Not selected"} | Model:{" "}
-                {currentModel?.label || "Not selected"}
-                {currentModel?.provider === "openai"
-                  ? ` | Reasoning: ${reasoningEffort}`
-                  : ""}
+              <div className="composer-controls">
+                <label className="composer-role-picker" htmlFor="composer-model-select">
+                  <span>Model</span>
+                  <select
+                    id="composer-model-select"
+                    value={modelId}
+                    onChange={(event) => setModelId(event.target.value)}
+                    disabled={!models.length || isSubmitting || isThreadLoading}
+                  >
+                    {models.map((model) => (
+                      <option key={model.id} value={model.id}>
+                        {model.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="composer-role-picker" htmlFor="composer-role-select">
+                  <span>Role</span>
+                  <select
+                    id="composer-role-select"
+                    value={roleId}
+                    onChange={(event) => setRoleId(event.target.value)}
+                    disabled={!roles.length || isSubmitting || isThreadLoading}
+                  >
+                    {roles.map((role) => (
+                      <option key={role.id} value={role.id}>
+                        {role.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {currentModel?.provider === "openai" ? (
+                  <label
+                    className="composer-role-picker"
+                    htmlFor="composer-reasoning-effort"
+                  >
+                    <span>Reasoning</span>
+                    <select
+                      id="composer-reasoning-effort"
+                      value={reasoningEffort}
+                      onChange={(event) =>
+                        setReasoningEffort(event.target.value as ReasoningEffort)
+                      }
+                      disabled={isSubmitting || isThreadLoading}
+                    >
+                      <option value="minimal">minimal</option>
+                      <option value="low">low</option>
+                      <option value="medium">medium</option>
+                      <option value="high">high</option>
+                    </select>
+                  </label>
+                ) : null}
+                <button className="send-button" type="submit" disabled={!canSubmit}>
+                  {isSubmitting ? "Streaming..." : "Send"}
+                </button>
               </div>
-              <button className="send-button" type="submit" disabled={!canSubmit}>
-                {isSubmitting ? "Streaming..." : "Send"}
-              </button>
             </div>
           </form>
         </footer>
