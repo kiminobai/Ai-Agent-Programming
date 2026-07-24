@@ -1,3 +1,4 @@
+import OpenAI from "openai";
 import {
   ChatProvider,
   FewShotExample,
@@ -59,14 +60,16 @@ interface CompatibleToolCallDelta {
   };
 }
 
+interface DeepSeekAssistantMessage {
+  role: "assistant";
+  content: string | null;
+  reasoning_content?: string | null;
+  tool_calls?: CompatibleToolCall[];
+}
+
 interface DeepSeekStreamResult {
   text: string;
-  assistantMessage: {
-    role: "assistant";
-    content: string | null;
-    reasoning_content?: string;
-    tool_calls?: CompatibleToolCall[];
-  };
+  assistantMessage: DeepSeekAssistantMessage;
 }
 
 interface OpenAIResponsesOutputItem {
@@ -107,13 +110,39 @@ interface ResponsesStreamResult {
 }
 
 export class OpenAICompatibleProvider implements ChatProvider {
+  private readonly deepSeekClient?: OpenAI;
+
   constructor(
     public readonly id: ProviderId,
     private readonly config: ProviderConfig
-  ) {}
+  ) {
+    if (id === "deepseek" && config.apiKey) {
+      this.deepSeekClient = new OpenAI({
+        apiKey: config.apiKey,
+        baseURL: this.getDeepSeekBaseUrl(config.apiUrl)
+      });
+    }
+  }
 
   isAvailable(): boolean {
     return Boolean(this.config.apiKey);
+  }
+
+  private getDeepSeekBaseUrl(apiUrl: string): string {
+    const url = new URL(apiUrl);
+    url.pathname = url.pathname.replace(
+      /\/(?:v1\/)?chat\/completions\/?$/,
+      ""
+    );
+    return url.toString().replace(/\/$/, "");
+  }
+
+  private requireDeepSeekClient(): OpenAI {
+    if (!this.deepSeekClient) {
+      throw new Error("DeepSeek SDK client is not configured.");
+    }
+
+    return this.deepSeekClient;
   }
 
   async sendChat(
@@ -350,15 +379,15 @@ export class OpenAICompatibleProvider implements ChatProvider {
     };
   }
 
-  private buildDeepSeekTools() {
+  private buildDeepSeekTools(): OpenAI.Chat.Completions.ChatCompletionTool[] {
     return toolSchemas.map((tool) => ({
-        type: "function",
-        function: {
-          name: tool.name,
-          description: tool.description,
-          parameters: tool.parameters
-        }
-      }));
+      type: "function",
+      function: {
+        name: tool.name,
+        description: tool.description,
+        parameters: tool.parameters
+      }
+    }));
   }
 
   private getDeepSeekToolCalls(
@@ -383,31 +412,20 @@ export class OpenAICompatibleProvider implements ChatProvider {
       fewShotExamples
     );
     const tools = this.buildDeepSeekTools();
+    const client = this.requireDeepSeekClient();
 
-    const initialResponse = await fetch(this.config.apiUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${this.config.apiKey}`
-      },
-      body: JSON.stringify({
-        model: modelId,
-        messages,
-        tools,
-        tool_choice: "auto",
-        stream: false
-      })
+    const initialData = await client.chat.completions.create({
+      model: modelId,
+      messages:
+        messages as OpenAI.Chat.Completions.ChatCompletionMessageParam[],
+      tools,
+      tool_choice: "auto",
+      stream: false
     });
 
-    const initialData =
-      (await initialResponse.json()) as OpenAICompatibleResponse;
-    if (!initialResponse.ok) {
-      throw new Error(
-        initialData.error?.message || `${this.id} request failed.`
-      );
-    }
-
-    const assistant = initialData.choices?.[0]?.message;
+    const assistant = initialData.choices[0]?.message as
+      | DeepSeekAssistantMessage
+      | undefined;
     const toolCalls = this.getDeepSeekToolCalls(assistant?.tool_calls);
     if (!assistant || toolCalls.length === 0) {
       return (
@@ -436,30 +454,17 @@ export class OpenAICompatibleProvider implements ChatProvider {
       ...toolMessages
     ];
 
-    const finalResponse = await fetch(this.config.apiUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${this.config.apiKey}`
-      },
-      body: JSON.stringify({
-        model: modelId,
-        messages: continuationMessages,
-        tools,
-        tool_choice: "none",
-        stream: false
-      })
+    const finalData = await client.chat.completions.create({
+      model: modelId,
+      messages:
+        continuationMessages as OpenAI.Chat.Completions.ChatCompletionMessageParam[],
+      tools,
+      tool_choice: "none",
+      stream: false
     });
 
-    const finalData = (await finalResponse.json()) as OpenAICompatibleResponse;
-    if (!finalResponse.ok) {
-      throw new Error(
-        finalData.error?.message || `${this.id} request failed.`
-      );
-    }
-
     return (
-      finalData.choices?.[0]?.message?.content?.trim() ||
+      finalData.choices[0]?.message?.content?.trim() ||
       "Model returned no content."
     );
   }
@@ -470,118 +475,64 @@ export class OpenAICompatibleProvider implements ChatProvider {
     toolChoice: "auto" | "none",
     onDelta: (chunk: string) => void
   ): Promise<DeepSeekStreamResult> {
-    const response = await fetch(this.config.apiUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${this.config.apiKey}`
-      },
-      body: JSON.stringify({
-        model: modelId,
-        messages,
-        tools: this.buildDeepSeekTools(),
-        tool_choice: toolChoice,
-        stream: true
-      })
+    const stream = await this.requireDeepSeekClient().chat.completions.create({
+      model: modelId,
+      messages:
+        messages as OpenAI.Chat.Completions.ChatCompletionMessageParam[],
+      tools: this.buildDeepSeekTools(),
+      tool_choice: toolChoice,
+      stream: true
     });
-
-    if (!response.ok) {
-      const data = (await response.json().catch(() => null)) as
-        | OpenAICompatibleResponse
-        | null;
-      throw new Error(data?.error?.message || `${this.id} request failed.`);
-    }
-
-    if (!response.body) {
-      throw new Error(`${this.id} did not return a readable stream.`);
-    }
-
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
     const toolCalls: Array<CompatibleToolCall | undefined> = [];
-    let buffer = "";
     let text = "";
     let reasoningContent = "";
 
-    const consumeEvent = (rawEvent: string) => {
-      const lines = rawEvent
-        .split(/\r?\n/)
-        .filter((line) => line.startsWith("data:"))
-        .map((line) => line.slice(5).trim())
-        .filter(Boolean);
-
-      for (const line of lines) {
-        if (line === "[DONE]") {
-          continue;
-        }
-
-        const chunk = JSON.parse(line) as OpenAICompatibleStreamChunk;
-        if (chunk.error?.message) {
-          throw new Error(chunk.error.message);
-        }
-
-        const delta = chunk.choices?.[0]?.delta;
-        if (!delta) {
-          continue;
-        }
-
-        if (delta.reasoning_content) {
-          reasoningContent += delta.reasoning_content;
-        }
-
-        if (delta.content) {
-          text += delta.content;
-          onDelta(delta.content);
-        }
-
-        for (const toolCallDelta of delta.tool_calls || []) {
-          const index = toolCallDelta.index;
-          const current = toolCalls[index] || {
-            id: "",
-            type: "function" as const,
-            function: {
-              name: "",
-              arguments: ""
-            }
-          };
-
-          if (toolCallDelta.id) {
-            current.id = toolCallDelta.id;
+    for await (const chunk of stream) {
+      const delta = chunk.choices[0]?.delta as
+        | {
+            content?: string | null;
+            reasoning_content?: string | null;
+            tool_calls?: CompatibleToolCallDelta[];
           }
-          if (toolCallDelta.function?.name) {
-            current.function.name = toolCallDelta.function.name;
-          }
-          if (toolCallDelta.function?.arguments) {
-            current.function.arguments +=
-              toolCallDelta.function.arguments;
-          }
+        | undefined;
 
-          toolCalls[index] = current;
-        }
-      }
-    };
-
-    while (true) {
-      const { done, value } = await reader.read();
-      buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
-
-      let eventEnd = buffer.indexOf("\n\n");
-      while (eventEnd !== -1) {
-        const rawEvent = buffer.slice(0, eventEnd);
-        buffer = buffer.slice(eventEnd + 2);
-        if (rawEvent.trim()) {
-          consumeEvent(rawEvent);
-        }
-        eventEnd = buffer.indexOf("\n\n");
+      if (!delta) {
+        continue;
       }
 
-      if (done) {
-        break;
+      if (delta.reasoning_content) {
+        reasoningContent += delta.reasoning_content;
       }
-    }
 
-    if (buffer.trim()) {
-      consumeEvent(buffer);
+      if (delta.content) {
+        text += delta.content;
+        onDelta(delta.content);
+      }
+
+      for (const toolCallDelta of delta.tool_calls || []) {
+        const index = toolCallDelta.index;
+        const current = toolCalls[index] || {
+          id: "",
+          type: "function" as const,
+          function: {
+            name: "",
+            arguments: ""
+          }
+        };
+
+        if (toolCallDelta.id) {
+          current.id = toolCallDelta.id;
+        }
+        if (toolCallDelta.function?.name) {
+          current.function.name = toolCallDelta.function.name;
+        }
+        if (toolCallDelta.function?.arguments) {
+          current.function.arguments +=
+            toolCallDelta.function.arguments;
+        }
+
+        toolCalls[index] = current;
+      }
     }
 
     const completeToolCalls = toolCalls.filter(
