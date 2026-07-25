@@ -21492,6 +21492,100 @@
     ];
   }
   var AUTO_SCROLL_THRESHOLD = 120;
+  var ATTACHMENT_MARKER_PATTERN = /\n*\[Attachment available in current thread: ([^\]]+)\]\n(?:If the user wants analysis, extraction, chunking, summarization, or document QA, call inspect_uploaded_document\.|If the user asks to use the file content, call chunk_uploaded_document to split it into bounded chunks before answering\.|If the user asks to use the file content, call retrieve_uploaded_document_chunks to retrieve only relevant chunks before answering\.)/;
+  function extractAttachmentFromContent(content) {
+    const match = content.match(ATTACHMENT_MARKER_PATTERN);
+    if (!match) {
+      return { content };
+    }
+    return {
+      content: content.replace(ATTACHMENT_MARKER_PATTERN, "").trim(),
+      attachmentName: match[1]
+    };
+  }
+  function renderInlineMarkdown(text) {
+    const parts = text.split(/(`[^`]+`|\*\*[^*]+\*\*)/g);
+    return parts.map((part, index) => {
+      if (part.startsWith("`") && part.endsWith("`")) {
+        return /* @__PURE__ */ import_react.default.createElement("code", { key: index }, part.slice(1, -1));
+      }
+      if (part.startsWith("**") && part.endsWith("**")) {
+        return /* @__PURE__ */ import_react.default.createElement("strong", { key: index }, part.slice(2, -2));
+      }
+      return /* @__PURE__ */ import_react.default.createElement(import_react.default.Fragment, { key: index }, part);
+    });
+  }
+  function isMarkdownTable(lines, index) {
+    return index + 1 < lines.length && lines[index].trim().startsWith("|") && lines[index + 1].trim().startsWith("|") && /^(\|\s*:?-{3,}:?\s*)+\|?$/.test(lines[index + 1].trim());
+  }
+  function renderMarkdown(content) {
+    const blocks = [];
+    const lines = content.split(/\r?\n/);
+    let index = 0;
+    while (index < lines.length) {
+      const line = lines[index];
+      if (line.trim().startsWith("```")) {
+        const codeLines = [];
+        index += 1;
+        while (index < lines.length && !lines[index].trim().startsWith("```")) {
+          codeLines.push(lines[index]);
+          index += 1;
+        }
+        index += 1;
+        blocks.push(
+          /* @__PURE__ */ import_react.default.createElement("pre", { className: "markdown-code-block", key: `code-${index}` }, /* @__PURE__ */ import_react.default.createElement("code", null, codeLines.join("\n")))
+        );
+        continue;
+      }
+      if (isMarkdownTable(lines, index)) {
+        const tableLines = [];
+        while (index < lines.length && lines[index].trim().startsWith("|")) {
+          tableLines.push(lines[index]);
+          index += 1;
+        }
+        const rows = tableLines.filter((_, rowIndex) => rowIndex !== 1).map(
+          (row) => row.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((cell) => cell.trim())
+        );
+        const [header, ...bodyRows] = rows;
+        blocks.push(
+          /* @__PURE__ */ import_react.default.createElement("div", { className: "markdown-table-wrap", key: `table-${index}` }, /* @__PURE__ */ import_react.default.createElement("table", null, /* @__PURE__ */ import_react.default.createElement("thead", null, /* @__PURE__ */ import_react.default.createElement("tr", null, header.map((cell, cellIndex) => /* @__PURE__ */ import_react.default.createElement("th", { key: cellIndex }, renderInlineMarkdown(cell))))), /* @__PURE__ */ import_react.default.createElement("tbody", null, bodyRows.map((row, rowIndex) => /* @__PURE__ */ import_react.default.createElement("tr", { key: rowIndex }, row.map((cell, cellIndex) => /* @__PURE__ */ import_react.default.createElement("td", { key: cellIndex }, renderInlineMarkdown(cell))))))))
+        );
+        continue;
+      }
+      if (!line.trim()) {
+        index += 1;
+        continue;
+      }
+      const headingMatch = line.match(/^(#{1,4})\s+(.+)$/);
+      if (headingMatch) {
+        const Tag = `h${headingMatch[1].length}`;
+        blocks.push(/* @__PURE__ */ import_react.default.createElement(Tag, { key: `heading-${index}` }, renderInlineMarkdown(headingMatch[2])));
+        index += 1;
+        continue;
+      }
+      if (/^\s*[-*]\s+/.test(line)) {
+        const items = [];
+        while (index < lines.length && /^\s*[-*]\s+/.test(lines[index])) {
+          items.push(lines[index].replace(/^\s*[-*]\s+/, ""));
+          index += 1;
+        }
+        blocks.push(
+          /* @__PURE__ */ import_react.default.createElement("ul", { key: `list-${index}` }, items.map((item, itemIndex) => /* @__PURE__ */ import_react.default.createElement("li", { key: itemIndex }, renderInlineMarkdown(item))))
+        );
+        continue;
+      }
+      const paragraphLines = [line];
+      index += 1;
+      while (index < lines.length && lines[index].trim() && !lines[index].trim().startsWith("```") && !lines[index].match(/^(#{1,4})\s+/) && !/^\s*[-*]\s+/.test(lines[index]) && !isMarkdownTable(lines, index)) {
+        paragraphLines.push(lines[index]);
+        index += 1;
+      }
+      blocks.push(
+        /* @__PURE__ */ import_react.default.createElement("p", { key: `paragraph-${index}` }, renderInlineMarkdown(paragraphLines.join("\n")))
+      );
+    }
+    return blocks;
+  }
   function App() {
     const [models, setModels] = (0, import_react.useState)([]);
     const [roles, setRoles] = (0, import_react.useState)([]);
@@ -21509,12 +21603,14 @@
     const [renamingTitle, setRenamingTitle] = (0, import_react.useState)("");
     const [error, setError] = (0, import_react.useState)("");
     const [sidebarOpen, setSidebarOpen] = (0, import_react.useState)(false);
-    const [userId, setUserId] = (0, import_react.useState)(() => getOrCreateStoredId("chat-demo-user-id"));
+    const [userId] = (0, import_react.useState)(() => getOrCreateStoredId("chat-demo-user-id"));
+    const [attachment, setAttachment] = (0, import_react.useState)(null);
     const chatLayoutRef = (0, import_react.useRef)(null);
     const composerShellRef = (0, import_react.useRef)(null);
-    const messageEndRef = (0, import_react.useRef)(null);
+    const fileInputRef = (0, import_react.useRef)(null);
     const shouldAutoScrollRef = (0, import_react.useRef)(true);
     const pendingInitialScrollRef = (0, import_react.useRef)(false);
+    const lastScrollTopRef = (0, import_react.useRef)(0);
     (0, import_react.useLayoutEffect)(() => {
       if (!shouldAutoScrollRef.current && !pendingInitialScrollRef.current) {
         return;
@@ -21528,6 +21624,7 @@
             top: container.scrollHeight - container.clientHeight + composerHeight,
             behavior
           });
+          lastScrollTopRef.current = container.scrollTop;
         }
         pendingInitialScrollRef.current = false;
       };
@@ -21543,12 +21640,8 @@
       () => roles.find((item) => item.id === roleId),
       [roles, roleId]
     );
-    const activeThread = (0, import_react.useMemo)(
-      () => threads.find((thread) => thread.threadId === activeThreadId),
-      [threads, activeThreadId]
-    );
     const canSubmit = Boolean(
-      !isSubmitting && !isLoading && !isThreadLoading && activeThreadId && modelId && roleId && message.trim()
+      !isSubmitting && !isLoading && !isThreadLoading && activeThreadId && modelId && roleId && (message.trim() || attachment)
     );
     (0, import_react.useEffect)(() => {
       async function bootstrap() {
@@ -21589,7 +21682,7 @@
         }
       }
       void bootstrap();
-    }, []);
+    }, [userId]);
     async function loadThreads(nextUserId, fallbackModelId, fallbackRoleId, fallbackReasoningEffort) {
       const response = await fetch(
         `/api/threads?userId=${encodeURIComponent(nextUserId)}`
@@ -21673,9 +21766,9 @@
         }
         const thread = data.thread;
         const nextEntries = (data.messages || []).map((entry, index) => ({
+          ...extractAttachmentFromContent(entry.content),
           id: `${thread.threadId}-${index}`,
           role: entry.role,
-          content: entry.content,
           meta: `${thread.roleId} | ${thread.modelId} | ${thread.userId}`
         }));
         shouldAutoScrollRef.current = true;
@@ -21699,11 +21792,12 @@
       }
     }
     async function refreshThreads(preferredThreadId) {
-      if (!userId.trim()) {
+      const trimmedUserId = userId.trim();
+      if (!trimmedUserId) {
         return;
       }
       const response = await fetch(
-        `/api/threads?userId=${encodeURIComponent(userId.trim())}`
+        `/api/threads?userId=${encodeURIComponent(trimmedUserId)}`
       );
       const data = await readJsonResponse(response, "/api/threads");
       if (!response.ok) {
@@ -21763,7 +21857,8 @@
     async function handleSubmit(event) {
       event?.preventDefault();
       const trimmedMessage = message.trim();
-      if (!trimmedMessage || !modelId || !roleId || !userId.trim() || !activeThreadId) {
+      const outgoingMessage = trimmedMessage || (attachment ? `I uploaded a file named ${attachment.name}.` : "");
+      if (!outgoingMessage || !modelId || !roleId || !userId.trim() || !activeThreadId) {
         return;
       }
       setError("");
@@ -21773,8 +21868,9 @@
       const userEntry = {
         id: `user-${Date.now()}`,
         role: "user",
-        content: trimmedMessage,
-        meta: `${currentRole?.label || roleId} | ${currentModel?.label || modelId} | ${userId}`
+        content: outgoingMessage,
+        meta: `${currentRole?.label || roleId} | ${currentModel?.label || modelId} | ${userId}`,
+        attachmentName: attachment?.name
       };
       setEntries((prev) => [
         ...prev,
@@ -21788,19 +21884,20 @@
       ]);
       setMessage("");
       try {
+        const formData = new FormData();
+        formData.append("modelId", modelId);
+        formData.append("roleId", roleId);
+        formData.append("threadId", activeThreadId);
+        formData.append("userId", userId.trim());
+        formData.append("message", outgoingMessage);
+        formData.append("reasoningEffort", reasoningEffort);
+        if (attachment) {
+          formData.append("attachment", attachment);
+          formData.append("attachmentName", attachment.name);
+        }
         const response = await fetch("/api/chat", {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({
-            modelId,
-            roleId,
-            threadId: activeThreadId,
-            userId: userId.trim(),
-            message: trimmedMessage,
-            reasoningEffort: currentModel?.provider === "openai" ? reasoningEffort : void 0
-          })
+          body: formData
         });
         if (!response.ok) {
           const data = await readJsonResponse(response, "/api/chat");
@@ -21864,6 +21961,10 @@
         if (buffer.trim()) {
           applyStreamEvent(buffer, handleEvent);
         }
+        setAttachment(null);
+        if (fileInputRef.current) {
+          fileInputRef.current.value = "";
+        }
         await refreshThreads(activeThreadId);
       } catch (submitError) {
         const messageText = submitError instanceof Error ? submitError.message : "An error occurred while sending the message.";
@@ -21893,8 +21994,15 @@
       if (!container) {
         return;
       }
+      const isScrollingUp = container.scrollTop < lastScrollTopRef.current;
       const distanceToBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
-      shouldAutoScrollRef.current = distanceToBottom <= AUTO_SCROLL_THRESHOLD;
+      shouldAutoScrollRef.current = !isScrollingUp && distanceToBottom <= AUTO_SCROLL_THRESHOLD;
+      lastScrollTopRef.current = container.scrollTop;
+    }
+    function handleChatLayoutWheel(event) {
+      if (event.deltaY < 0) {
+        shouldAutoScrollRef.current = false;
+      }
     }
     return /* @__PURE__ */ import_react.default.createElement("div", { className: "chatgpt-shell" }, /* @__PURE__ */ import_react.default.createElement("aside", { className: `sidebar ${sidebarOpen ? "open" : ""}` }, /* @__PURE__ */ import_react.default.createElement("div", { className: "sidebar-header" }, /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("h1", null, "ChatGPT")), /* @__PURE__ */ import_react.default.createElement(
       "button",
@@ -21964,7 +22072,8 @@
       {
         ref: chatLayoutRef,
         className: "chat-layout",
-        onScroll: handleChatLayoutScroll
+        onScroll: handleChatLayoutScroll,
+        onWheel: handleChatLayoutWheel
       },
       /* @__PURE__ */ import_react.default.createElement("header", { className: "chat-header" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-header-left" }, /* @__PURE__ */ import_react.default.createElement(
         "button",
@@ -21976,8 +22085,20 @@
         "\u2630"
       ), /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-header-title" }, "Role ChatGPT UI")))),
       error ? /* @__PURE__ */ import_react.default.createElement("div", { className: "top-error" }, error) : null,
-      /* @__PURE__ */ import_react.default.createElement("section", { className: "conversation" }, isLoading || isThreadLoading ? /* @__PURE__ */ import_react.default.createElement("div", { className: "empty-state" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "empty-state-title" }, isLoading ? "Loading configuration" : "Loading thread"), /* @__PURE__ */ import_react.default.createElement("div", { className: "empty-state-copy" }, isLoading ? "Fetching models and roles." : "Restoring messages from SQLite checkpoints.")) : null, !isLoading && !isThreadLoading && entries.map((entry) => /* @__PURE__ */ import_react.default.createElement("div", { key: entry.id, className: `chat-row ${entry.role}` }, /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-avatar" }, entry.role === "user" ? "You" : "AI"), /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-bubble-wrap" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-bubble-header" }, /* @__PURE__ */ import_react.default.createElement("span", null, entry.role === "user" ? "You" : currentRole?.label || "Assistant"), entry.meta ? /* @__PURE__ */ import_react.default.createElement("span", { className: "chat-meta" }, entry.meta) : null), /* @__PURE__ */ import_react.default.createElement("div", { className: `chat-bubble ${entry.role}` }, entry.content)))), /* @__PURE__ */ import_react.default.createElement("div", { ref: messageEndRef })),
-      /* @__PURE__ */ import_react.default.createElement("footer", { ref: composerShellRef, className: "composer-shell" }, /* @__PURE__ */ import_react.default.createElement("form", { className: "composer-card", onSubmit: handleSubmit }, /* @__PURE__ */ import_react.default.createElement(
+      /* @__PURE__ */ import_react.default.createElement("section", { className: "conversation" }, isLoading || isThreadLoading ? /* @__PURE__ */ import_react.default.createElement("div", { className: "empty-state" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "empty-state-title" }, isLoading ? "Loading configuration" : "Loading thread"), /* @__PURE__ */ import_react.default.createElement("div", { className: "empty-state-copy" }, isLoading ? "Fetching models and roles." : "Restoring messages from SQLite checkpoints.")) : null, !isLoading && !isThreadLoading && entries.map((entry) => /* @__PURE__ */ import_react.default.createElement("div", { key: entry.id, className: `chat-row ${entry.role}` }, /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-avatar" }, entry.role === "user" ? "You" : "AI"), /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-bubble-wrap" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-bubble-header" }, /* @__PURE__ */ import_react.default.createElement("span", null, entry.role === "user" ? "You" : currentRole?.label || "Assistant"), entry.meta ? /* @__PURE__ */ import_react.default.createElement("span", { className: "chat-meta" }, entry.meta) : null), /* @__PURE__ */ import_react.default.createElement("div", { className: `chat-bubble ${entry.role}` }, entry.attachmentName ? /* @__PURE__ */ import_react.default.createElement("div", { className: "message-attachment-card" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "message-attachment-icon" }, "FILE"), /* @__PURE__ */ import_react.default.createElement("div", { className: "message-attachment-info" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "message-attachment-name" }, entry.attachmentName), /* @__PURE__ */ import_react.default.createElement("div", { className: "message-attachment-copy" }, "Uploaded document"))) : null, entry.role === "assistant" ? /* @__PURE__ */ import_react.default.createElement("div", { className: "markdown-body" }, renderMarkdown(entry.content)) : /* @__PURE__ */ import_react.default.createElement("div", { className: "message-text" }, entry.content)))))),
+      /* @__PURE__ */ import_react.default.createElement("footer", { ref: composerShellRef, className: "composer-shell" }, /* @__PURE__ */ import_react.default.createElement("form", { className: "composer-card", onSubmit: handleSubmit }, attachment ? /* @__PURE__ */ import_react.default.createElement("div", { className: "composer-attachment-chip" }, /* @__PURE__ */ import_react.default.createElement("span", null, attachment.name), /* @__PURE__ */ import_react.default.createElement(
+        "button",
+        {
+          type: "button",
+          onClick: () => {
+            setAttachment(null);
+            if (fileInputRef.current) {
+              fileInputRef.current.value = "";
+            }
+          }
+        },
+        "Remove"
+      )) : null, /* @__PURE__ */ import_react.default.createElement(
         "textarea",
         {
           value: message,
@@ -21987,7 +22108,27 @@
           rows: 1,
           required: true
         }
-      ), /* @__PURE__ */ import_react.default.createElement("div", { className: "composer-actions" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "composer-controls" }, /* @__PURE__ */ import_react.default.createElement("label", { className: "composer-role-picker", htmlFor: "composer-model-select" }, /* @__PURE__ */ import_react.default.createElement("span", null, "Model"), /* @__PURE__ */ import_react.default.createElement(
+      ), /* @__PURE__ */ import_react.default.createElement(
+        "input",
+        {
+          ref: fileInputRef,
+          className: "hidden-file-input",
+          type: "file",
+          accept: ".md,.markdown,.txt,.pdf",
+          onChange: (event) => {
+            setAttachment(event.target.files?.[0] || null);
+          }
+        }
+      ), /* @__PURE__ */ import_react.default.createElement("div", { className: "composer-actions" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "composer-controls" }, /* @__PURE__ */ import_react.default.createElement(
+        "button",
+        {
+          type: "button",
+          className: "attach-button",
+          onClick: () => fileInputRef.current?.click(),
+          disabled: isSubmitting || isThreadLoading
+        },
+        "Attach"
+      ), /* @__PURE__ */ import_react.default.createElement("label", { className: "composer-role-picker", htmlFor: "composer-model-select" }, /* @__PURE__ */ import_react.default.createElement("span", null, "Model"), /* @__PURE__ */ import_react.default.createElement(
         "select",
         {
           id: "composer-model-select",

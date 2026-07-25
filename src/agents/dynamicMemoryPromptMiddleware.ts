@@ -11,6 +11,7 @@ import {
   THEME_PREFERENCE_KEY,
   UserPreferenceMemory
 } from "../memory/longTermMemory";
+import { getUploadedDocument } from "../rag/uploadedDocumentStore";
 
 const MAX_ARGUMENT_LENGTH = 600;
 const MAX_RESULT_LENGTH = 1_200;
@@ -37,6 +38,7 @@ export const dynamicMemoryPromptMiddleware = createMiddleware({
       request.runtime.context.userId,
       THEME_PREFERENCE_KEY as "theme"
     );
+    const uploadedDocument = getUploadedDocument(request.runtime.context.threadId);
 
     const longTermMemoryPrompt = storedThemePreference
       ? [
@@ -70,10 +72,25 @@ export const dynamicMemoryPromptMiddleware = createMiddleware({
           "No structured tool history has been recorded in this thread yet."
         ].join("\n");
 
+    const uploadedDocumentPrompt = uploadedDocument
+      ? [
+          "[Uploaded document]",
+          `Current thread has an uploaded file: ${uploadedDocument.fileName}`,
+          `File type: ${uploadedDocument.fileType}`,
+          `Uploaded at: ${uploadedDocument.uploadedAt}`,
+          "Do not load the whole file into the model context.",
+          "Only call retrieve_uploaded_document_chunks when the user asks to use the file content. The tool retrieves the most relevant chunks for the current task, instead of loading every chunk.",
+          "If the returned chunks are not enough, ask the user for a narrower question or call the retrieval tool again with a more specific query."
+        ].join("\n")
+      : [
+          "[Uploaded document]",
+          "No uploaded document is currently attached to this thread."
+        ].join("\n");
+
     return handler({
       ...request,
       systemMessage: request.systemMessage.concat(
-        `\n\n${longTermMemoryPrompt}\n\n${shortTermMemoryPrompt}`
+        `\n\n${longTermMemoryPrompt}\n\n${shortTermMemoryPrompt}\n\n${uploadedDocumentPrompt}`
       )
     });
   }

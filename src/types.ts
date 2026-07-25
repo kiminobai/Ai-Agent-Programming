@@ -1,6 +1,5 @@
 /**
- * 项目跨层共享的领域类型。
- * Provider、服务端接口和 React 前端都以这里的契约为准。
+ * Shared domain types used across the server, providers, and React client.
  */
 export type ProviderId = "deepseek" | "openai" | "siliconflow";
 
@@ -37,11 +36,10 @@ export interface ChatRequestPayload {
   modelId: string;
   message: string;
   roleId: string;
-  // 同一对话复用 threadId，LangGraph 才能恢复消息和工具调用历史。
   threadId: string;
-  // 同一 userId 可跨 thread 共享长期记忆；不同 userId 彼此隔离。
   userId: string;
   reasoningEffort?: ReasoningEffort;
+  attachmentName?: string;
 }
 
 export interface ChatResponsePayload {
@@ -61,7 +59,6 @@ export interface ProviderConfig {
 }
 
 export interface ChatProvider {
-  // 所有 Provider 都提供相同调用方式，Registry 才能按模型动态选择实现。
   id: ProviderId;
   isAvailable(): boolean;
   sendChat(

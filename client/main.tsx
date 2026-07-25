@@ -32,6 +32,7 @@ type ChatEntry = {
   role: "user" | "assistant";
   content: string;
   meta?: string;
+  attachmentName?: string;
 };
 
 type ChatThread = {
@@ -109,6 +110,166 @@ function createWelcomeEntries(): ChatEntry[] {
 }
 
 const AUTO_SCROLL_THRESHOLD = 120;
+const ATTACHMENT_MARKER_PATTERN =
+  /\n*\[Attachment available in current thread: ([^\]]+)\]\n(?:If the user wants analysis, extraction, chunking, summarization, or document QA, call inspect_uploaded_document\.|If the user asks to use the file content, call chunk_uploaded_document to split it into bounded chunks before answering\.|If the user asks to use the file content, call retrieve_uploaded_document_chunks to retrieve only relevant chunks before answering\.)/;
+
+function extractAttachmentFromContent(content: string): {
+  content: string;
+  attachmentName?: string;
+} {
+  const match = content.match(ATTACHMENT_MARKER_PATTERN);
+  if (!match) {
+    return { content };
+  }
+
+  return {
+    content: content.replace(ATTACHMENT_MARKER_PATTERN, "").trim(),
+    attachmentName: match[1]
+  };
+}
+
+function renderInlineMarkdown(text: string): React.ReactNode[] {
+  const parts = text.split(/(`[^`]+`|\*\*[^*]+\*\*)/g);
+
+  return parts.map((part, index) => {
+    if (part.startsWith("`") && part.endsWith("`")) {
+      return <code key={index}>{part.slice(1, -1)}</code>;
+    }
+
+    if (part.startsWith("**") && part.endsWith("**")) {
+      return <strong key={index}>{part.slice(2, -2)}</strong>;
+    }
+
+    return <React.Fragment key={index}>{part}</React.Fragment>;
+  });
+}
+
+function isMarkdownTable(lines: string[], index: number): boolean {
+  return (
+    index + 1 < lines.length &&
+    lines[index].trim().startsWith("|") &&
+    lines[index + 1].trim().startsWith("|") &&
+    /^(\|\s*:?-{3,}:?\s*)+\|?$/.test(lines[index + 1].trim())
+  );
+}
+
+function renderMarkdown(content: string): React.ReactNode[] {
+  const blocks: React.ReactNode[] = [];
+  const lines = content.split(/\r?\n/);
+  let index = 0;
+
+  while (index < lines.length) {
+    const line = lines[index];
+
+    if (line.trim().startsWith("```")) {
+      const codeLines: string[] = [];
+      index += 1;
+      while (index < lines.length && !lines[index].trim().startsWith("```")) {
+        codeLines.push(lines[index]);
+        index += 1;
+      }
+      index += 1;
+      blocks.push(
+        <pre className="markdown-code-block" key={`code-${index}`}>
+          <code>{codeLines.join("\n")}</code>
+        </pre>
+      );
+      continue;
+    }
+
+    if (isMarkdownTable(lines, index)) {
+      const tableLines: string[] = [];
+      while (index < lines.length && lines[index].trim().startsWith("|")) {
+        tableLines.push(lines[index]);
+        index += 1;
+      }
+      const rows = tableLines
+        .filter((_, rowIndex) => rowIndex !== 1)
+        .map((row) =>
+          row
+            .trim()
+            .replace(/^\|/, "")
+            .replace(/\|$/, "")
+            .split("|")
+            .map((cell) => cell.trim())
+        );
+      const [header, ...bodyRows] = rows;
+      blocks.push(
+        <div className="markdown-table-wrap" key={`table-${index}`}>
+          <table>
+            <thead>
+              <tr>
+                {header.map((cell, cellIndex) => (
+                  <th key={cellIndex}>{renderInlineMarkdown(cell)}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {bodyRows.map((row, rowIndex) => (
+                <tr key={rowIndex}>
+                  {row.map((cell, cellIndex) => (
+                    <td key={cellIndex}>{renderInlineMarkdown(cell)}</td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      );
+      continue;
+    }
+
+    if (!line.trim()) {
+      index += 1;
+      continue;
+    }
+
+    const headingMatch = line.match(/^(#{1,4})\s+(.+)$/);
+    if (headingMatch) {
+      const Tag = `h${headingMatch[1].length}` as "h1" | "h2" | "h3" | "h4";
+      blocks.push(<Tag key={`heading-${index}`}>{renderInlineMarkdown(headingMatch[2])}</Tag>);
+      index += 1;
+      continue;
+    }
+
+    if (/^\s*[-*]\s+/.test(line)) {
+      const items: string[] = [];
+      while (index < lines.length && /^\s*[-*]\s+/.test(lines[index])) {
+        items.push(lines[index].replace(/^\s*[-*]\s+/, ""));
+        index += 1;
+      }
+      blocks.push(
+        <ul key={`list-${index}`}>
+          {items.map((item, itemIndex) => (
+            <li key={itemIndex}>{renderInlineMarkdown(item)}</li>
+          ))}
+        </ul>
+      );
+      continue;
+    }
+
+    const paragraphLines = [line];
+    index += 1;
+    while (
+      index < lines.length &&
+      lines[index].trim() &&
+      !lines[index].trim().startsWith("```") &&
+      !lines[index].match(/^(#{1,4})\s+/) &&
+      !/^\s*[-*]\s+/.test(lines[index]) &&
+      !isMarkdownTable(lines, index)
+    ) {
+      paragraphLines.push(lines[index]);
+      index += 1;
+    }
+    blocks.push(
+      <p key={`paragraph-${index}`}>
+        {renderInlineMarkdown(paragraphLines.join("\n"))}
+      </p>
+    );
+  }
+
+  return blocks;
+}
 
 function App() {
   const [models, setModels] = useState<ModelOption[]>([]);
@@ -127,12 +288,14 @@ function App() {
   const [renamingTitle, setRenamingTitle] = useState("");
   const [error, setError] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [userId, setUserId] = useState(() => getOrCreateStoredId("chat-demo-user-id"));
+  const [userId] = useState(() => getOrCreateStoredId("chat-demo-user-id"));
+  const [attachment, setAttachment] = useState<File | null>(null);
   const chatLayoutRef = useRef<HTMLElement | null>(null);
   const composerShellRef = useRef<HTMLElement | null>(null);
-  const messageEndRef = useRef<HTMLDivElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const shouldAutoScrollRef = useRef(true);
   const pendingInitialScrollRef = useRef(false);
+  const lastScrollTopRef = useRef(0);
 
   useLayoutEffect(() => {
     if (!shouldAutoScrollRef.current && !pendingInitialScrollRef.current) {
@@ -148,11 +311,11 @@ function App() {
           top: container.scrollHeight - container.clientHeight + composerHeight,
           behavior
         });
+        lastScrollTopRef.current = container.scrollTop;
       }
       pendingInitialScrollRef.current = false;
     };
 
-    // 首次刷新恢复线程时，等布局和 sticky 输入框都稳定后再定位到底部。
     requestAnimationFrame(() => {
       requestAnimationFrame(scrollToBottom);
     });
@@ -166,10 +329,6 @@ function App() {
     () => roles.find((item) => item.id === roleId),
     [roles, roleId]
   );
-  const activeThread = useMemo(
-    () => threads.find((thread) => thread.threadId === activeThreadId),
-    [threads, activeThreadId]
-  );
   const canSubmit = Boolean(
     !isSubmitting &&
       !isLoading &&
@@ -177,7 +336,7 @@ function App() {
       activeThreadId &&
       modelId &&
       roleId &&
-      message.trim()
+      (message.trim() || attachment)
   );
 
   useEffect(() => {
@@ -228,7 +387,7 @@ function App() {
     }
 
     void bootstrap();
-  }, []);
+  }, [userId]);
 
   async function loadThreads(
     nextUserId: string,
@@ -345,9 +504,9 @@ function App() {
         role: "user" | "assistant";
         content: string;
       }>).map((entry, index) => ({
+        ...extractAttachmentFromContent(entry.content),
         id: `${thread.threadId}-${index}`,
         role: entry.role,
-        content: entry.content,
         meta: `${thread.roleId} | ${thread.modelId} | ${thread.userId}`
       }));
 
@@ -373,12 +532,13 @@ function App() {
   }
 
   async function refreshThreads(preferredThreadId?: string) {
-    if (!userId.trim()) {
+    const trimmedUserId = userId.trim();
+    if (!trimmedUserId) {
       return;
     }
 
     const response = await fetch(
-      `/api/threads?userId=${encodeURIComponent(userId.trim())}`
+      `/api/threads?userId=${encodeURIComponent(trimmedUserId)}`
     );
     const data = await readJsonResponse(response, "/api/threads");
     if (!response.ok) {
@@ -447,7 +607,10 @@ function App() {
     event?.preventDefault();
 
     const trimmedMessage = message.trim();
-    if (!trimmedMessage || !modelId || !roleId || !userId.trim() || !activeThreadId) {
+    const outgoingMessage =
+      trimmedMessage || (attachment ? `I uploaded a file named ${attachment.name}.` : "");
+
+    if (!outgoingMessage || !modelId || !roleId || !userId.trim() || !activeThreadId) {
       return;
     }
 
@@ -459,8 +622,9 @@ function App() {
     const userEntry: ChatEntry = {
       id: `user-${Date.now()}`,
       role: "user",
-      content: trimmedMessage,
-      meta: `${currentRole?.label || roleId} | ${currentModel?.label || modelId} | ${userId}`
+      content: outgoingMessage,
+      meta: `${currentRole?.label || roleId} | ${currentModel?.label || modelId} | ${userId}`,
+      attachmentName: attachment?.name
     };
 
     setEntries((prev) => [
@@ -476,19 +640,23 @@ function App() {
     setMessage("");
 
     try {
+      const formData = new FormData();
+      formData.append("modelId", modelId);
+      formData.append("roleId", roleId);
+      formData.append("threadId", activeThreadId);
+      formData.append("userId", userId.trim());
+      // 即使用户只上传文件不输入文字，也给后端一条明确消息，保证本轮会进入 Agent。
+      formData.append("message", outgoingMessage);
+      formData.append("reasoningEffort", reasoningEffort);
+
+      if (attachment) {
+        formData.append("attachment", attachment);
+        formData.append("attachmentName", attachment.name);
+      }
+
       const response = await fetch("/api/chat", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          modelId,
-          roleId,
-          threadId: activeThreadId,
-          userId: userId.trim(),
-          message: trimmedMessage,
-          reasoningEffort: currentModel?.provider === "openai" ? reasoningEffort : undefined
-        })
+        body: formData
       });
 
       if (!response.ok) {
@@ -565,6 +733,11 @@ function App() {
         applyStreamEvent(buffer, handleEvent);
       }
 
+      setAttachment(null);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
+
       await refreshThreads(activeThreadId);
     } catch (submitError) {
       const messageText =
@@ -603,9 +776,18 @@ function App() {
       return;
     }
 
+    const isScrollingUp = container.scrollTop < lastScrollTopRef.current;
     const distanceToBottom =
       container.scrollHeight - container.scrollTop - container.clientHeight;
-    shouldAutoScrollRef.current = distanceToBottom <= AUTO_SCROLL_THRESHOLD;
+    shouldAutoScrollRef.current =
+      !isScrollingUp && distanceToBottom <= AUTO_SCROLL_THRESHOLD;
+    lastScrollTopRef.current = container.scrollTop;
+  }
+
+  function handleChatLayoutWheel(event: React.WheelEvent<HTMLElement>) {
+    if (event.deltaY < 0) {
+      shouldAutoScrollRef.current = false;
+    }
   }
 
   return (
@@ -694,6 +876,7 @@ function App() {
         ref={chatLayoutRef}
         className="chat-layout"
         onScroll={handleChatLayoutScroll}
+        onWheel={handleChatLayoutWheel}
       >
         <header className="chat-header">
           <div className="chat-header-left">
@@ -736,16 +919,48 @@ function App() {
                     <span>{entry.role === "user" ? "You" : currentRole?.label || "Assistant"}</span>
                     {entry.meta ? <span className="chat-meta">{entry.meta}</span> : null}
                   </div>
-                  <div className={`chat-bubble ${entry.role}`}>{entry.content}</div>
+                  <div className={`chat-bubble ${entry.role}`}>
+                    {entry.attachmentName ? (
+                      <div className="message-attachment-card">
+                        <div className="message-attachment-icon">FILE</div>
+                        <div className="message-attachment-info">
+                          <div className="message-attachment-name">
+                            {entry.attachmentName}
+                          </div>
+                          <div className="message-attachment-copy">Uploaded document</div>
+                        </div>
+                      </div>
+                    ) : null}
+                    {entry.role === "assistant" ? (
+                      <div className="markdown-body">{renderMarkdown(entry.content)}</div>
+                    ) : (
+                      <div className="message-text">{entry.content}</div>
+                    )}
+                  </div>
                 </div>
               </div>
             ))}
-
-          <div ref={messageEndRef} />
         </section>
 
         <footer ref={composerShellRef} className="composer-shell">
           <form className="composer-card" onSubmit={handleSubmit}>
+            {attachment ? (
+              <div className="composer-attachment-chip">
+                <span>{attachment.name}</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAttachment(null);
+                    if (fileInputRef.current) {
+                      fileInputRef.current.value = "";
+                    }
+                  }}
+                >
+                  Remove
+                </button>
+              </div>
+            ) : null}
+
             <textarea
               value={message}
               onChange={(event) => setMessage(event.target.value)}
@@ -754,8 +969,27 @@ function App() {
               rows={1}
               required
             />
+
+            <input
+              ref={fileInputRef}
+              className="hidden-file-input"
+              type="file"
+              accept=".md,.markdown,.txt,.pdf"
+              onChange={(event) => {
+                setAttachment(event.target.files?.[0] || null);
+              }}
+            />
+
             <div className="composer-actions">
               <div className="composer-controls">
+                <button
+                  type="button"
+                  className="attach-button"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={isSubmitting || isThreadLoading}
+                >
+                  Attach
+                </button>
                 <label className="composer-role-picker" htmlFor="composer-model-select">
                   <span>Model</span>
                   <select

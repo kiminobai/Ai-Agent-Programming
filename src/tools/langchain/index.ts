@@ -6,12 +6,14 @@ import { calculatorTool } from "./calculatorTool";
 import { currentTimeTool } from "./currentTimeTool";
 import { recallPreferenceTool } from "./recallPreferenceTool";
 import { rememberPreferenceTool } from "./rememberPreferenceTool";
+import { uploadedDocumentTool } from "./uploadedDocumentTool";
 import { weatherTool } from "./weatherTool";
 
 export { calculatorTool } from "./calculatorTool";
 export { currentTimeTool } from "./currentTimeTool";
 export { recallPreferenceTool } from "./recallPreferenceTool";
 export { rememberPreferenceTool } from "./rememberPreferenceTool";
+export { uploadedDocumentTool } from "./uploadedDocumentTool";
 export { weatherTool } from "./weatherTool";
 
 export const langChainTools = [
@@ -20,5 +22,6 @@ export const langChainTools = [
   calculatorTool,
   currentTimeTool,
   rememberPreferenceTool,
-  recallPreferenceTool
+  recallPreferenceTool,
+  uploadedDocumentTool
 ];

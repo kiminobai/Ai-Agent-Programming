@@ -79,7 +79,7 @@ export class LangChainToolAgent {
       { messages: this.toLangChainMessages(messages) },
       {
         configurable: { thread_id: threadId },
-        context: this.createContext(userId)
+        context: this.createContext(userId, threadId)
       }
     );
 
@@ -97,14 +97,17 @@ export class LangChainToolAgent {
       {
         streamMode: "messages",
         configurable: { thread_id: threadId },
-        context: this.createContext(userId)
+        context: this.createContext(userId, threadId)
       }
     );
 
     let fullText = "";
 
     for await (const [token, metadata] of stream) {
-      if (metadata.langgraph_node === "tools") {
+      if (
+        metadata.langgraph_node &&
+        metadata.langgraph_node !== "model"
+      ) {
         continue;
       }
 
@@ -118,7 +121,14 @@ export class LangChainToolAgent {
     }
 
     if (!fullText) {
-      throw new Error("LangChain Tool Agent returned an empty response.");
+      fullText = await this.getLatestAssistantText(threadId);
+      if (fullText) {
+        onDelta(fullText);
+      }
+    }
+
+    if (!fullText) {
+      return "文件已经读取并切分完成，但模型没有生成最终文本回复。请继续输入你希望我基于文件完成的具体任务，例如总结、提取重点、按章节分析或对比内容。";
     }
 
     return fullText;
@@ -155,6 +165,33 @@ export class LangChainToolAgent {
       .filter((message): message is ToolAgentMessage => Boolean(message));
   }
 
+  private async getLatestAssistantText(threadId: string): Promise<string> {
+    const snapshot = (await (this.agent as {
+      getState: (config: { configurable: { thread_id: string } }) => Promise<{
+        values?: unknown;
+      }>;
+    }).getState({
+      configurable: { thread_id: threadId }
+    })) as {
+      values?: unknown;
+    };
+
+    const messages = this.getStateMessages(snapshot.values);
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (message.getType() !== "ai") {
+        continue;
+      }
+
+      const text = this.extractMessageText(message.content).trim();
+      if (text) {
+        return text;
+      }
+    }
+
+    return "";
+  }
+
   private getStateMessages(values: unknown): BaseMessage[] {
     if (!values || typeof values !== "object") {
       return [];
@@ -182,9 +219,10 @@ export class LangChainToolAgent {
     };
   }
 
-  private createContext(userId: string): AgentContext {
+  private createContext(userId: string, threadId: string): AgentContext {
     return AgentContextSchema.parse({
-      userId: userId.trim()
+      userId: userId.trim(),
+      threadId: threadId.trim()
     });
   }
 

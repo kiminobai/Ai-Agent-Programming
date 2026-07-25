@@ -1,13 +1,22 @@
 /**
- * Express 应用入口：提供模型/角色、线程列表和 SSE 流式聊天接口。
+ * Express entrypoint for the chat demo.
+ *
+ * Responsibilities:
+ * - serve static assets
+ * - expose models, roles, threads, and message history
+ * - stream chat responses over SSE
+ * - accept optional user-uploaded attachments inside the chat request
  */
 import express, { Request, RequestHandler, Response } from "express";
+import multer from "multer";
 import path from "path";
 import { appConfig } from "./config";
 import { getModelById, getPublicModels } from "./modelRegistry";
 import { getPromptRoleById, promptRoles } from "./prompts";
 import { createProviderRegistry } from "./providerRegistry";
 import { LangChainProvider } from "./providers/langChainProvider";
+import { createUploadedDocumentRecord } from "./rag/documentChunkLab";
+import { saveUploadedDocument } from "./rag/uploadedDocumentStore";
 import {
   createThread,
   getThreadById,
@@ -17,8 +26,32 @@ import {
 } from "./threads/threadRepository";
 import { ChatRequestPayload, PromptRole, ReasoningEffort } from "./types";
 
+type MulterRequest = Request & {
+  file?: Express.Multer.File;
+};
+
 const app = express();
 const providers = createProviderRegistry();
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    // Attachments are meant for prompt/RAG experiments, not bulk archival uploads.
+    fileSize: 10 * 1024 * 1024
+  }
+});
+
+/**
+ * Chat requests may arrive as JSON or multipart/form-data.
+ * We only invoke multer when the client actually sends multipart content.
+ */
+const maybeChatUpload: RequestHandler = (req, res, next) => {
+  if (req.is("multipart/form-data")) {
+    upload.single("attachment")(req, res, next);
+    return;
+  }
+
+  next();
+};
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "..", "public")));
@@ -207,22 +240,26 @@ app.get("/api/threads/:threadId/messages", async (req: Request, res: Response) =
   }
 });
 
-const chatHandler: RequestHandler<
-  Record<string, string>,
-  { error: string },
-  ChatRequestPayload
-> = async (
-  req: Request<Record<string, string>, { error: string }, ChatRequestPayload>,
+const chatHandler: RequestHandler = async (
+  rawReq,
   res: Response<{ error: string }>
 ): Promise<void> => {
-  const userMessage = req.body?.message?.trim();
-  const modelId = req.body?.modelId?.trim();
-  const roleId = req.body?.roleId?.trim() || appConfig.defaultRoleId;
-  const threadId = req.body?.threadId?.trim();
-  const userId = req.body?.userId?.trim();
-  const reasoningEffort = req.body?.reasoningEffort;
+  const req = rawReq as MulterRequest;
+  const body = req.body as Partial<ChatRequestPayload>;
+  const attachment = req.file;
 
-  if (!userMessage) {
+  const userMessage = body?.message?.trim();
+  const modelId = body?.modelId?.trim();
+  const roleId = body?.roleId?.trim() || appConfig.defaultRoleId;
+  const threadId = body?.threadId?.trim();
+  const userId = body?.userId?.trim();
+  const reasoningEffort = body?.reasoningEffort;
+  const attachmentName = body?.attachmentName?.trim() || attachment?.originalname?.trim();
+  const effectiveUserMessage =
+    userMessage ||
+    (attachmentName ? `I uploaded a file named ${attachmentName}.` : "");
+
+  if (!effectiveUserMessage) {
     res.status(400).json({ error: "message is required." });
     return;
   }
@@ -269,6 +306,21 @@ const chatHandler: RequestHandler<
   }
 
   try {
+    /**
+     * If the user attached a document to this message, we parse it once here and
+     * bind it to the current thread. The model may later decide whether to use the
+     * uploaded-document tool based on the user's intent.
+     */
+    if (attachment) {
+      const uploadedDocument = await createUploadedDocumentRecord({
+        threadId,
+        userId,
+        fileName: attachment.originalname,
+        fileBuffer: attachment.buffer
+      });
+      saveUploadedDocument(uploadedDocument);
+    }
+
     res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
     res.setHeader("Cache-Control", "no-cache, no-transform");
     res.setHeader("Connection", "keep-alive");
@@ -285,9 +337,22 @@ const chatHandler: RequestHandler<
 
     res.write(`data: ${JSON.stringify({ type: "meta", meta })}\n\n`);
 
+    /**
+     * 把“本轮确实带了附件”显式写进发给模型的用户消息里。
+     * 这样模型在当前回合就能感知附件存在，而不是只依赖中间件里的通用背景提示。
+     */
+    const messageForModel = attachmentName
+      ? [
+          effectiveUserMessage,
+          "",
+          `[Attachment available in current thread: ${attachmentName}]`,
+          "If the user asks to use the file content, call retrieve_uploaded_document_chunks to retrieve only relevant chunks before answering."
+        ].join("\n")
+      : effectiveUserMessage;
+
     const reply = await provider.streamChat(
       model.id,
-      userMessage,
+      messageForModel,
       role.systemPrompt,
       (chunk) => {
         res.write(`data: ${JSON.stringify({ type: "delta", chunk })}\n\n`);
@@ -305,7 +370,7 @@ const chatHandler: RequestHandler<
       modelId: model.id,
       roleId: role.id,
       reasoningEffort: model.provider === "openai" ? reasoningEffort : undefined,
-      userMessage
+      userMessage: effectiveUserMessage
     });
 
     res.write(`data: ${JSON.stringify({ type: "done", reply, meta })}\n\n`);
@@ -324,7 +389,7 @@ const chatHandler: RequestHandler<
   }
 };
 
-app.post("/api/chat", chatHandler);
+app.post("/api/chat", maybeChatUpload, chatHandler);
 
 app.listen(appConfig.port, appConfig.host, () => {
   console.log(`Chat Demo is running at http://${appConfig.host}:${appConfig.port}`);
