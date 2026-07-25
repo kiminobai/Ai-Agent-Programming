@@ -16,9 +16,11 @@ import { getPromptRoleById, promptRoles } from "./prompts";
 import { createProviderRegistry } from "./providerRegistry";
 import { LangChainProvider } from "./providers/langChainProvider";
 import { createUploadedDocumentRecord } from "./rag/documentChunkLab";
+import { deleteUploadThreadDirectory, saveUploadFile } from "./rag/uploadFileStorage";
 import { saveUploadedDocument } from "./rag/uploadedDocumentStore";
 import {
   createThread,
+  deleteThread,
   getThreadById,
   listThreadsByUser,
   renameThread,
@@ -196,6 +198,31 @@ app.patch(
   }
 );
 
+app.delete("/api/threads/:threadId", async (req: Request, res: Response) => {
+  const userId = String(req.query.userId || "").trim();
+  const threadId = String(req.params.threadId || "").trim();
+
+  if (!userId || !threadId) {
+    res.status(400).json({ error: "userId and threadId are required." });
+    return;
+  }
+
+  try {
+    const deleted = deleteThread(threadId, userId);
+    if (!deleted) {
+      res.status(404).json({ error: "Thread was not found." });
+      return;
+    }
+
+    await deleteUploadThreadDirectory({ userId, threadId });
+    res.json({ ok: true });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "Failed to delete thread.";
+    res.status(500).json({ error: message });
+  }
+});
+
 app.get("/api/threads/:threadId/messages", async (req: Request, res: Response) => {
   const userId = String(req.query.userId || "").trim();
   const threadId = String(req.params.threadId || "").trim();
@@ -312,10 +339,20 @@ const chatHandler: RequestHandler = async (
      * uploaded-document tool based on the user's intent.
      */
     if (attachment) {
+      const storedUpload = await saveUploadFile({
+        userId,
+        threadId,
+        originalName: attachment.originalname,
+        buffer: attachment.buffer
+      });
       const uploadedDocument = await createUploadedDocumentRecord({
         threadId,
         userId,
+        fileId: storedUpload.fileId,
         fileName: attachment.originalname,
+        storageKey: storedUpload.storageKey,
+        mimeType: attachment.mimetype,
+        fileSize: attachment.size,
         fileBuffer: attachment.buffer
       });
       saveUploadedDocument(uploadedDocument);

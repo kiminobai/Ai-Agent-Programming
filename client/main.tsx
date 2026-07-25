@@ -603,6 +603,65 @@ function App() {
     }
   }
 
+  async function deleteChatThread(threadId: string) {
+    if (!threadId || !userId.trim()) {
+      return;
+    }
+
+    const thread = threads.find((item) => item.threadId === threadId);
+    const confirmed = window.confirm(
+      `Delete "${thread?.title || "this chat"}"? This will remove its messages, short-term memory, uploaded files, and RAG index.`
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    setError("");
+    setIsThreadLoading(true);
+
+    try {
+      const response = await fetch(
+        `/api/threads/${encodeURIComponent(threadId)}?userId=${encodeURIComponent(userId.trim())}`,
+        {
+          method: "DELETE"
+        }
+      );
+      const data = await readJsonResponse(response, "/api/threads/:threadId");
+
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to delete thread.");
+      }
+
+      const remainingThreads = threads.filter((item) => item.threadId !== threadId);
+      setThreads(remainingThreads);
+
+      if (activeThreadId !== threadId) {
+        return;
+      }
+
+      const nextThread = remainingThreads[0];
+      if (nextThread) {
+        await openThread(nextThread.threadId, userId.trim(), remainingThreads);
+        return;
+      }
+
+      sessionStorage.removeItem("chat-demo-active-thread-id");
+      await handleCreateThread({
+        nextUserId: userId.trim(),
+        nextModelId: modelId,
+        nextRoleId: roleId,
+        nextReasoningEffort: reasoningEffort
+      });
+    } catch (deleteError) {
+      setError(
+        deleteError instanceof Error ? deleteError.message : "Failed to delete thread."
+      );
+    } finally {
+      setIsThreadLoading(false);
+    }
+  }
+
   async function handleSubmit(event?: FormEvent<HTMLFormElement>) {
     event?.preventDefault();
 
@@ -855,16 +914,25 @@ function App() {
                   )}
                 </button>
                 {renamingThreadId === thread.threadId ? null : (
-                  <button
-                    type="button"
-                    className="thread-rename-button"
-                    onClick={() => {
-                      setRenamingThreadId(thread.threadId);
-                      setRenamingTitle(thread.title);
-                    }}
-                  >
-                    Rename
-                  </button>
+                  <div className="thread-actions">
+                    <button
+                      type="button"
+                      className="thread-rename-button"
+                      onClick={() => {
+                        setRenamingThreadId(thread.threadId);
+                        setRenamingTitle(thread.title);
+                      }}
+                    >
+                      Rename
+                    </button>
+                    <button
+                      type="button"
+                      className="thread-delete-button"
+                      onClick={() => void deleteChatThread(thread.threadId)}
+                    >
+                      Delete
+                    </button>
+                  </div>
                 )}
               </div>
             ))}

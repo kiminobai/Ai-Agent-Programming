@@ -79,7 +79,7 @@ export const dynamicMemoryPromptMiddleware = createMiddleware({
           `File type: ${uploadedDocument.fileType}`,
           `Uploaded at: ${uploadedDocument.uploadedAt}`,
           "Do not load the whole file into the model context.",
-          "Only call retrieve_uploaded_document_chunks when the user asks to use the file content. The tool retrieves the most relevant chunks for the current task, instead of loading every chunk.",
+          "Only call retrieve_uploaded_document_chunks when the user asks to use the file content. The tool uses a simple vector index to retrieve the most relevant chunks for the current task, instead of loading every chunk.",
           "If the returned chunks are not enough, ask the user for a narrower question or call the retrieval tool again with a more specific query."
         ].join("\n")
       : [

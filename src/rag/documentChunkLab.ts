@@ -1,6 +1,6 @@
 import { PDFParse } from "pdf-parse";
 import { RecursiveCharacterTextSplitter } from "@langchain/textsplitters";
-import { UploadedDocumentRecord } from "./uploadedDocumentStore";
+import type { UploadedDocumentRecord } from "./uploadedDocumentStore";
 
 /**
  * Backend-owned RAG policy.
@@ -25,21 +25,13 @@ export interface DocumentChunk {
   endChar: number;
 }
 
-export interface RetrievedDocumentChunk extends DocumentChunk {
-  score: number;
-  matchedTerms: string[];
-}
-
-export interface UploadedDocumentRetrievalResult {
-  fileName: string;
-  fileType: "markdown" | "pdf" | "text";
-  totalCharacters: number;
-  totalChunkCount: number;
-  returnedChunkCount: number;
-  retrievalStrategy: "keyword-overlap";
-  query: string;
-  chunks: RetrievedDocumentChunk[];
-}
+export type UploadedFileType =
+  | "markdown"
+  | "pdf"
+  | "text"
+  | "presentation"
+  | "image"
+  | "binary";
 
 /**
  * Parses the uploaded file once and stores normalized plain text on the thread.
@@ -49,71 +41,39 @@ export interface UploadedDocumentRetrievalResult {
 export async function createUploadedDocumentRecord(input: {
   threadId: string;
   userId: string;
+  fileId: string;
   fileName: string;
+  storageKey: string;
+  mimeType: string;
+  fileSize: number;
   fileBuffer: Buffer;
 }): Promise<UploadedDocumentRecord> {
   const fileType = getFileType(getExtension(input.fileName));
-  const text = normalizeText(
-    await extractTextFromUpload(input.fileBuffer, fileType)
-  );
-
-  if (!text) {
-    throw new Error("The uploaded document did not contain readable text.");
-  }
+  const canParseText =
+    fileType === "markdown" || fileType === "pdf" || fileType === "text";
+  const text = canParseText
+    ? normalizeText(await extractTextFromUpload(input.fileBuffer, fileType))
+    : "";
+  const parseStatus = canParseText ? (text ? "parsed" : "empty") : "unsupported";
 
   return {
     threadId: input.threadId,
     userId: input.userId,
+    fileId: input.fileId,
     fileName: input.fileName,
+    originalName: input.fileName,
+    storageKey: input.storageKey,
+    mimeType: input.mimeType,
     fileType,
+    fileSize: input.fileSize,
     text,
-    uploadedAt: new Date().toISOString()
+    uploadedAt: new Date().toISOString(),
+    parseStatus,
+    indexStatus: text ? "pending" : "unsupported"
   };
 }
 
-/**
- * Retrieves the most relevant chunks for the current user task.
- *
- * This is the actual context-control step for RAG: chunk all text internally,
- * score chunks against the user's query, then return only Top-K chunks.
- */
-export async function retrieveUploadedDocumentChunks(
-  document: UploadedDocumentRecord,
-  query: string
-): Promise<UploadedDocumentRetrievalResult> {
-  const allChunks = await splitDocumentText(document);
-  const queryTerms = extractQueryTerms(query);
-  const scoredChunks = allChunks.map((chunk) => scoreChunk(chunk, query, queryTerms));
-  const hasUsefulMatch = scoredChunks.some((chunk) => chunk.score > 0);
-  const rankedChunks = [...scoredChunks].sort((left, right) => {
-    if (right.score !== left.score) {
-      return right.score - left.score;
-    }
-
-    return left.index - right.index;
-  });
-
-  const selectedChunks = (hasUsefulMatch ? rankedChunks : scoredChunks)
-    .slice(0, RAG_RETRIEVAL_CONFIG.topK)
-    .sort((left, right) => left.index - right.index)
-    .map((chunk) => ({
-      ...chunk,
-      content: truncateChunk(chunk.content)
-    }));
-
-  return {
-    fileName: document.fileName,
-    fileType: document.fileType,
-    totalCharacters: document.text.length,
-    totalChunkCount: allChunks.length,
-    returnedChunkCount: selectedChunks.length,
-    retrievalStrategy: "keyword-overlap",
-    query,
-    chunks: selectedChunks
-  };
-}
-
-async function splitDocumentText(
+export async function splitUploadedDocument(
   document: UploadedDocumentRecord
 ): Promise<DocumentChunk[]> {
   const splitter = new RecursiveCharacterTextSplitter({
@@ -133,50 +93,6 @@ async function splitDocumentText(
     })),
     document.text
   );
-}
-
-function scoreChunk(
-  chunk: DocumentChunk,
-  rawQuery: string,
-  queryTerms: string[]
-): RetrievedDocumentChunk {
-  const normalizedContent = chunk.content.toLowerCase();
-  const normalizedQuery = rawQuery.trim().toLowerCase();
-  const matchedTerms = queryTerms.filter((term) => normalizedContent.includes(term));
-  const uniqueMatchedTerms = [...new Set(matchedTerms)];
-  const exactPhraseBoost =
-    normalizedQuery.length >= 4 && normalizedContent.includes(normalizedQuery) ? 8 : 0;
-  const headingBoost = /^#{1,6}\s/m.test(chunk.content) ? 1 : 0;
-
-  return {
-    ...chunk,
-    score: uniqueMatchedTerms.length * 3 + exactPhraseBoost + headingBoost,
-    matchedTerms: uniqueMatchedTerms
-  };
-}
-
-function extractQueryTerms(query: string): string[] {
-  const normalizedQuery = query.toLowerCase();
-  const latinTerms = normalizedQuery.match(/[a-z0-9_+-]{2,}/g) ?? [];
-  const cjkText = normalizedQuery.replace(/[^\u4e00-\u9fff]/g, "");
-  const cjkTerms: string[] = [];
-
-  for (let index = 0; index < cjkText.length - 1; index += 1) {
-    cjkTerms.push(cjkText.slice(index, index + 2));
-  }
-
-  return [...new Set([...latinTerms, ...cjkTerms])].slice(
-    0,
-    RAG_RETRIEVAL_CONFIG.maxQueryTerms
-  );
-}
-
-function truncateChunk(content: string): string {
-  if (content.length <= RAG_RETRIEVAL_CONFIG.maxChunkCharacters) {
-    return content;
-  }
-
-  return `${content.slice(0, RAG_RETRIEVAL_CONFIG.maxChunkCharacters)}...(truncated)`;
 }
 
 function annotateChunkOffsets(
@@ -204,7 +120,7 @@ function getExtension(fileName: string): string {
   return lastDotIndex >= 0 ? fileName.slice(lastDotIndex).toLowerCase() : "";
 }
 
-function getFileType(extension: string): "markdown" | "pdf" | "text" {
+function getFileType(extension: string): UploadedFileType {
   if (extension === ".pdf") {
     return "pdf";
   }
@@ -217,12 +133,20 @@ function getFileType(extension: string): "markdown" | "pdf" | "text" {
     return "text";
   }
 
-  throw new Error("Only .md, .markdown, .txt, and .pdf files are supported.");
+  if ([".ppt", ".pptx", ".key"].includes(extension)) {
+    return "presentation";
+  }
+
+  if ([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"].includes(extension)) {
+    return "image";
+  }
+
+  return "binary";
 }
 
 async function extractTextFromUpload(
   fileBuffer: Buffer,
-  fileType: "markdown" | "pdf" | "text"
+  fileType: UploadedFileType
 ): Promise<string> {
   if (fileType === "pdf") {
     const parser = new PDFParse({ data: new Uint8Array(fileBuffer) });
@@ -238,7 +162,7 @@ async function extractTextFromUpload(
   return fileBuffer.toString("utf8");
 }
 
-function getSeparators(fileType: "markdown" | "pdf" | "text"): string[] {
+function getSeparators(fileType: UploadedFileType): string[] {
   if (fileType === "markdown") {
     return ["\n# ", "\n## ", "\n### ", "\n\n", "\n", "。", "！", "？", ". ", " ", ""];
   }

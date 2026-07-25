@@ -247,3 +247,50 @@ export function renameThread(
 
   return getThreadById(threadId, userId);
 }
+
+export function deleteThread(threadId: string, userId: string): boolean {
+  const thread = getThreadById(threadId, userId);
+  if (!thread) {
+    return false;
+  }
+
+  const deleteRowsWithThreadId = (tableName: string) => {
+    const columns = sqliteDb.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{
+      name: string;
+    }>;
+
+    if (!columns.some((column) => column.name === "thread_id")) {
+      return;
+    }
+
+    sqliteDb.prepare(`DELETE FROM ${tableName} WHERE thread_id = ?`).run(threadId);
+  };
+
+  const deleteTransaction = sqliteDb.transaction(() => {
+    sqliteDb.prepare("DELETE FROM document_chunks WHERE thread_id = ?").run(threadId);
+    sqliteDb.prepare("DELETE FROM uploaded_documents WHERE thread_id = ?").run(threadId);
+
+    for (const tableName of ["checkpoint_writes", "checkpoint_blobs", "checkpoints"]) {
+      const exists = sqliteDb
+        .prepare(
+          `
+            SELECT name
+            FROM sqlite_master
+            WHERE type = 'table' AND name = ?
+          `
+        )
+        .get(tableName);
+
+      if (exists) {
+        deleteRowsWithThreadId(tableName);
+      }
+    }
+
+    sqliteDb
+      .prepare("DELETE FROM chat_threads WHERE thread_id = ? AND user_id = ?")
+      .run(threadId, userId);
+  });
+
+  deleteTransaction();
+  return true;
+}
