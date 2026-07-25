@@ -17,7 +17,8 @@ import { createProviderRegistry } from "./providerRegistry";
 import { LangChainProvider } from "./providers/langChainProvider";
 import { createUploadedDocumentRecord } from "./rag/documentChunkLab";
 import { deleteUploadThreadDirectory, saveUploadFile } from "./rag/uploadFileStorage";
-import { saveUploadedDocument } from "./rag/uploadedDocumentStore";
+import { getUploadedDocument, saveUploadedDocument } from "./rag/uploadedDocumentStore";
+import { searchVectorDocumentIndex } from "./rag/vectorDocumentIndex";
 import {
   createThread,
   deleteThread,
@@ -266,6 +267,146 @@ app.get("/api/threads/:threadId/messages", async (req: Request, res: Response) =
     res.status(500).json({ error: message });
   }
 });
+
+app.post(
+  "/api/documents/qa",
+  async (
+    req: Request<
+      Record<string, string>,
+      { error: string },
+      {
+        userId: string;
+        threadId: string;
+        modelId: string;
+        roleId?: string;
+        question: string;
+        reasoningEffort?: ReasoningEffort;
+      }
+    >,
+    res: Response
+  ) => {
+    const userId = req.body?.userId?.trim();
+    const threadId = req.body?.threadId?.trim();
+    const modelId = req.body?.modelId?.trim();
+    const roleId = req.body?.roleId?.trim() || appConfig.defaultRoleId;
+    const question = req.body?.question?.trim();
+    const reasoningEffort = req.body?.reasoningEffort;
+
+    if (!userId || !threadId || !modelId || !question) {
+      res.status(400).json({
+        error: "userId, threadId, modelId, and question are required."
+      });
+      return;
+    }
+
+    const thread = getThreadById(threadId, userId);
+    if (!thread) {
+      res.status(404).json({ error: "Thread was not found." });
+      return;
+    }
+
+    const model = getModelById(modelId);
+    if (!model) {
+      res.status(404).json({ error: "Model was not found." });
+      return;
+    }
+
+    const role = getPromptRoleById(roleId);
+    if (!role) {
+      res.status(404).json({ error: "Role was not found." });
+      return;
+    }
+
+    const provider = providers.get(model.provider);
+    if (!provider || !provider.isAvailable()) {
+      res.status(400).json({
+        error: `${model.label} is not available. Check the related API key configuration.`
+      });
+      return;
+    }
+
+    const document = getUploadedDocument(threadId);
+    if (!document) {
+      res.status(404).json({
+        error: "No uploaded document is attached to this thread."
+      });
+      return;
+    }
+
+    if (!document.text.trim()) {
+      res.status(400).json({
+        error:
+          "The uploaded file was saved, but this file type has no extracted text for document QA yet."
+      });
+      return;
+    }
+
+    try {
+      const retrieval = await searchVectorDocumentIndex(document, question);
+      const sources = retrieval.chunks.map((chunk) => ({
+        chunkIndex: chunk.index,
+        similarity: chunk.similarity,
+        startChar: chunk.startChar,
+        endChar: chunk.endChar,
+        matchedTerms: chunk.matchedTerms
+      }));
+      const context = retrieval.chunks
+        .map((chunk) =>
+          [
+            `[Source chunk ${chunk.index}]`,
+            `Similarity: ${chunk.similarity}`,
+            `Character range: ${chunk.startChar}-${chunk.endChar}`,
+            chunk.content
+          ].join("\n")
+        )
+        .join("\n\n---\n\n");
+      const qaPrompt = [
+        "Answer the user's question using only the retrieved document context below.",
+        "If the answer is not present in the context, say that the current retrieved document chunks do not contain enough information.",
+        "Cite the source chunk indexes you used in a short 'Sources' line.",
+        "",
+        `Document: ${document.fileName}`,
+        "",
+        "[Retrieved document context]",
+        context,
+        "",
+        "[Question]",
+        question
+      ].join("\n");
+      const answer = await provider.sendChat(
+        model.id,
+        qaPrompt,
+        role.systemPrompt,
+        role.fewShotExamples,
+        model.provider === "openai" ? reasoningEffort : undefined,
+        `${threadId}:document-qa`,
+        userId
+      );
+
+      res.json({
+        answer,
+        document: {
+          fileId: document.fileId,
+          fileName: document.fileName,
+          fileType: document.fileType,
+          storageKey: document.storageKey,
+          parseStatus: document.parseStatus,
+          indexStatus: document.indexStatus
+        },
+        retrieval: {
+          strategy: "local-vector-cosine",
+          topK: retrieval.chunks.length,
+          totalChunks: retrieval.index.chunkCount,
+          sources
+        }
+      });
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Document QA request failed.";
+      res.status(500).json({ error: message });
+    }
+  }
+);
 
 const chatHandler: RequestHandler = async (
   rawReq,
