@@ -28,13 +28,13 @@ Content-Type: application/json
 3. 如果文档还没有向量索引，就切分并建立本地向量索引。
 4. 用问题向量检索 Top-K 文档片段。
 5. 把检索片段作为上下文交给模型。
-6. 返回回答和 sources。
+6. 返回回答、来源 metadata、命中文档片段预览。
 
 ## 返回示例
 
 ```json
 {
-  "answer": "文档主要介绍了 AI Agent 的学习阶段和工具调用流程。\n\nSources: chunk 0, chunk 3",
+  "answer": "文档主要介绍了 AI Agent 的学习阶段和工具调用流程 [chunk-0]。\n\nSources: [chunk-0]",
   "document": {
     "fileId": "xxx",
     "fileName": "agent-notes.pdf",
@@ -49,11 +49,13 @@ Content-Type: application/json
     "totalChunks": 20,
     "sources": [
       {
+        "sourceId": "chunk-0",
         "chunkIndex": 0,
         "similarity": 0.42,
         "startChar": 0,
         "endChar": 800,
-        "matchedTerms": ["文档", "主要"]
+        "matchedTerms": ["文档", "主要"],
+        "contentPreview": "命中的文档片段内容..."
       }
     ]
   }

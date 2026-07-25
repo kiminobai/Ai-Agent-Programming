@@ -344,16 +344,18 @@ app.post(
     try {
       const retrieval = await searchVectorDocumentIndex(document, question);
       const sources = retrieval.chunks.map((chunk) => ({
+        sourceId: `chunk-${chunk.index}`,
         chunkIndex: chunk.index,
         similarity: chunk.similarity,
         startChar: chunk.startChar,
         endChar: chunk.endChar,
-        matchedTerms: chunk.matchedTerms
+        matchedTerms: chunk.matchedTerms,
+        contentPreview: chunk.content
       }));
       const context = retrieval.chunks
         .map((chunk) =>
           [
-            `[Source chunk ${chunk.index}]`,
+            `[Source: chunk-${chunk.index}]`,
             `Similarity: ${chunk.similarity}`,
             `Character range: ${chunk.startChar}-${chunk.endChar}`,
             chunk.content
@@ -363,7 +365,8 @@ app.post(
       const qaPrompt = [
         "Answer the user's question using only the retrieved document context below.",
         "If the answer is not present in the context, say that the current retrieved document chunks do not contain enough information.",
-        "Cite the source chunk indexes you used in a short 'Sources' line.",
+        "When you use a source, cite it inline with the format [chunk-N].",
+        "End with a short 'Sources' line listing the source ids you used, such as: Sources: [chunk-0], [chunk-3].",
         "",
         `Document: ${document.fileName}`,
         "",
