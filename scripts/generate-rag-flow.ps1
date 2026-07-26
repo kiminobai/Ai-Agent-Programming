@@ -2,8 +2,8 @@
 
 $scriptDirectory = if ($PSScriptRoot) { $PSScriptRoot } else { Join-Path (Get-Location) "scripts" }
 $outputPath = [System.IO.Path]::GetFullPath((Join-Path $scriptDirectory "..\docs\rag-flow.png"))
-$width = 1800
-$height = 1320
+$width = 1900
+$height = 1380
 
 $bitmap = [System.Drawing.Bitmap]::new($width, $height)
 $bitmap.SetResolution(144, 144)
@@ -11,40 +11,46 @@ $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
 $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
 $graphics.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::ClearTypeGridFit
 
-$background = [System.Drawing.ColorTranslator]::FromHtml("#F6F1EA")
-$panelFill = [System.Drawing.ColorTranslator]::FromHtml("#FFF9F2")
-$indexFill = [System.Drawing.ColorTranslator]::FromHtml("#F5E5D2")
-$onlineFill = [System.Drawing.ColorTranslator]::FromHtml("#EAF4EE")
-$feedbackFill = [System.Drawing.ColorTranslator]::FromHtml("#E9F0FA")
-$accent = [System.Drawing.ColorTranslator]::FromHtml("#B65A24")
-$border = [System.Drawing.ColorTranslator]::FromHtml("#5B4335")
-$ink = [System.Drawing.ColorTranslator]::FromHtml("#2E241D")
-$muted = [System.Drawing.ColorTranslator]::FromHtml("#6E5A4D")
-$line = [System.Drawing.ColorTranslator]::FromHtml("#D7C8BA")
-$white = [System.Drawing.ColorTranslator]::FromHtml("#FFFDF9")
+$background = [System.Drawing.ColorTranslator]::FromHtml("#F7F2EA")
+$panelFill = [System.Drawing.ColorTranslator]::FromHtml("#FFF9F0")
+$sourceFill = [System.Drawing.ColorTranslator]::FromHtml("#F4E3CD")
+$routeFill = [System.Drawing.ColorTranslator]::FromHtml("#EAF0FA")
+$twoStepFill = [System.Drawing.ColorTranslator]::FromHtml("#E9F4EC")
+$agenticFill = [System.Drawing.ColorTranslator]::FromHtml("#F4E8F6")
+$hybridFill = [System.Drawing.ColorTranslator]::FromHtml("#F6E8EA")
+$answerFill = [System.Drawing.ColorTranslator]::FromHtml("#FFF3D8")
+$accent = [System.Drawing.ColorTranslator]::FromHtml("#B85B24")
+$border = [System.Drawing.ColorTranslator]::FromHtml("#4F4036")
+$ink = [System.Drawing.ColorTranslator]::FromHtml("#2A221D")
+$muted = [System.Drawing.ColorTranslator]::FromHtml("#6A584B")
+$line = [System.Drawing.ColorTranslator]::FromHtml("#D9CAB8")
+$white = [System.Drawing.ColorTranslator]::FromHtml("#FFFDF8")
 
 $graphics.Clear($background)
 
 $fontFamily = [System.Drawing.FontFamily]::new("Microsoft YaHei UI")
-$titleFont = [System.Drawing.Font]::new($fontFamily, 30, [System.Drawing.FontStyle]::Bold, [System.Drawing.GraphicsUnit]::Pixel)
+$titleFont = [System.Drawing.Font]::new($fontFamily, 32, [System.Drawing.FontStyle]::Bold, [System.Drawing.GraphicsUnit]::Pixel)
 $subtitleFont = [System.Drawing.Font]::new($fontFamily, 16, [System.Drawing.FontStyle]::Regular, [System.Drawing.GraphicsUnit]::Pixel)
-$sectionFont = [System.Drawing.Font]::new($fontFamily, 22, [System.Drawing.FontStyle]::Bold, [System.Drawing.GraphicsUnit]::Pixel)
+$sectionFont = [System.Drawing.Font]::new($fontFamily, 21, [System.Drawing.FontStyle]::Bold, [System.Drawing.GraphicsUnit]::Pixel)
 $nodeFont = [System.Drawing.Font]::new($fontFamily, 14, [System.Drawing.FontStyle]::Bold, [System.Drawing.GraphicsUnit]::Pixel)
-$smallFont = [System.Drawing.Font]::new($fontFamily, 13, [System.Drawing.FontStyle]::Regular, [System.Drawing.GraphicsUnit]::Pixel)
+$smallFont = [System.Drawing.Font]::new($fontFamily, 12, [System.Drawing.FontStyle]::Regular, [System.Drawing.GraphicsUnit]::Pixel)
 
 $inkBrush = [System.Drawing.SolidBrush]::new($ink)
 $mutedBrush = [System.Drawing.SolidBrush]::new($muted)
 $panelBrush = [System.Drawing.SolidBrush]::new($panelFill)
-$indexBrush = [System.Drawing.SolidBrush]::new($indexFill)
-$onlineBrush = [System.Drawing.SolidBrush]::new($onlineFill)
-$feedbackBrush = [System.Drawing.SolidBrush]::new($feedbackFill)
+$sourceBrush = [System.Drawing.SolidBrush]::new($sourceFill)
+$routeBrush = [System.Drawing.SolidBrush]::new($routeFill)
+$twoStepBrush = [System.Drawing.SolidBrush]::new($twoStepFill)
+$agenticBrush = [System.Drawing.SolidBrush]::new($agenticFill)
+$hybridBrush = [System.Drawing.SolidBrush]::new($hybridFill)
+$answerBrush = [System.Drawing.SolidBrush]::new($answerFill)
 $whiteBrush = [System.Drawing.SolidBrush]::new($white)
 $accentBrush = [System.Drawing.SolidBrush]::new($accent)
 
-$borderPen = [System.Drawing.Pen]::new($border, 2.2)
-$linePen = [System.Drawing.Pen]::new($muted, 2.8)
-$accentPen = [System.Drawing.Pen]::new($accent, 3.2)
-$dividerPen = [System.Drawing.Pen]::new($line, 1.4)
+$borderPen = [System.Drawing.Pen]::new($border, 2.1)
+$linePen = [System.Drawing.Pen]::new($muted, 2.5)
+$accentPen = [System.Drawing.Pen]::new($accent, 3.0)
+$dividerPen = [System.Drawing.Pen]::new($line, 1.3)
 $linePen.CustomEndCap = [System.Drawing.Drawing2D.AdjustableArrowCap]::new(6, 8, $true)
 $accentPen.CustomEndCap = [System.Drawing.Drawing2D.AdjustableArrowCap]::new(6, 8, $true)
 
@@ -53,13 +59,7 @@ $centerFormat.Alignment = [System.Drawing.StringAlignment]::Center
 $centerFormat.LineAlignment = [System.Drawing.StringAlignment]::Center
 
 function New-RoundedPath {
-    param(
-        [float] $X,
-        [float] $Y,
-        [float] $Width,
-        [float] $Height,
-        [float] $Radius
-    )
+    param([float] $X, [float] $Y, [float] $Width, [float] $Height, [float] $Radius)
 
     $diameter = $Radius * 2
     $path = [System.Drawing.Drawing2D.GraphicsPath]::new()
@@ -72,13 +72,7 @@ function New-RoundedPath {
 }
 
 function Draw-RoundedPanel {
-    param(
-        [float] $X,
-        [float] $Y,
-        [float] $Width,
-        [float] $Height,
-        [System.Drawing.Brush] $Fill
-    )
+    param([float] $X, [float] $Y, [float] $Width, [float] $Height, [System.Drawing.Brush] $Fill)
 
     $path = New-RoundedPath $X $Y $Width $Height 28
     $graphics.FillPath($Fill, $path)
@@ -99,7 +93,7 @@ function Draw-Node {
     $path = New-RoundedPath $X $Y $Width $Height 18
     $graphics.FillPath($Fill, $path)
     $graphics.DrawPath($borderPen, $path)
-    $graphics.DrawString($Text, $nodeFont, $inkBrush, [System.Drawing.RectangleF]::new($X, $Y, $Width, $Height), $centerFormat)
+    $graphics.DrawString($Text, $nodeFont, $inkBrush, [System.Drawing.RectangleF]::new($X + 8, $Y, $Width - 16, $Height), $centerFormat)
     $path.Dispose()
 }
 
@@ -115,145 +109,181 @@ function Draw-Arrow {
 }
 
 function Draw-Label {
-    param(
-        [string] $Text,
-        [float] $X,
-        [float] $Y
-    )
+    param([string] $Text, [float] $X, [float] $Y)
 
     $size = $graphics.MeasureString($Text, $smallFont)
     $graphics.FillRectangle($panelBrush, $X - 4, $Y - 2, $size.Width + 8, $size.Height + 4)
     $graphics.DrawString($Text, $smallFont, $accentBrush, $X, $Y)
 }
 
-$graphics.DrawString("RAG 完整流程图", $titleFont, $inkBrush, 72, 38)
-$graphics.DrawString("离线索引构建、在线检索生成、反馈优化与记忆回流", $subtitleFont, $mutedBrush, 74, 82)
-$graphics.DrawLine($dividerPen, 70, 112, 1730, 112)
+$graphics.DrawString("当前项目 RAG 实际流程图", $titleFont, $inkBrush, 72, 38)
+$graphics.DrawString("三种 RAG architecture 是路由后的并列分支：默认 2-step；复杂任务 Agentic；全文/知识库/多文档 Hybrid", $subtitleFont, $mutedBrush, 74, 84)
+$graphics.DrawLine($dividerPen, 70, 116, 1830, 116)
 
-Draw-RoundedPanel 60 150 500 1070 $indexBrush
-Draw-RoundedPanel 650 150 520 1070 $onlineBrush
-Draw-RoundedPanel 1260 150 480 1070 $feedbackBrush
+Draw-RoundedPanel 60 150 410 1110 $sourceBrush
+Draw-RoundedPanel 520 150 420 1110 $routeBrush
+Draw-RoundedPanel 990 150 410 1110 $panelBrush
+Draw-RoundedPanel 1450 150 390 1110 $answerBrush
 
-$graphics.DrawString("离线知识准备 / Indexing", $sectionFont, $inkBrush, 92, 182)
-$graphics.DrawString("在线问答 / Retrieval + Generation", $sectionFont, $inkBrush, 682, 182)
-$graphics.DrawString("反馈优化 / Feedback Loop", $sectionFont, $inkBrush, 1292, 182)
+$graphics.DrawString("资料进入系统", $sectionFont, $inkBrush, 94, 184)
+$graphics.DrawString("问题与路由", $sectionFont, $inkBrush, 554, 184)
+$graphics.DrawString("并列 RAG 分支", $sectionFont, $inkBrush, 1024, 184)
+$graphics.DrawString("回答与保存", $sectionFont, $inkBrush, 1484, 184)
 
-$indexX = 110
-$indexW = 400
-$indexH = 78
-$indexYs = @(250, 355, 460, 565, 670, 775, 880)
-$indexTexts = @(
-    "原始数据源`nPDF / Web / DB / API / Markdown",
-    "文档采集与导入`nLoaders / ETL",
-    "文本解析与清洗`n去噪 / 去重 / 结构化",
-    "切分 Chunking`n字数 / 段落 / 语义切分",
-    "元数据补充`n标题 / 来源 / 时间 / 标签 / 权限",
-    "向量化 Embedding",
-    "索引存储`nVector DB / BM25 / Hybrid"
+$sourceX = 100
+$sourceW = 330
+$sourceH = 72
+$sourceYs = @(250, 350, 450, 550, 650, 750, 850)
+$sourceTexts = @(
+    "资料来源`n1 上传文件  2 知识库目录",
+    "保存原文件`ndata/uploads 或 data/knowledge-bases",
+    "解析文本`nPDF / MD / DOCX / PPTX / XLSX / 图片文字",
+    "文本清洗`n统一换行 / 去空白 / 保留结构",
+    "Chunk 切分`n后端固定配置，不暴露给用户",
+    "文档 Embedding`n每个 chunk -> 向量",
+    "索引持久化`nChroma 向量 + SQLite 元数据/FTS5"
 )
 
-for ($i = 0; $i -lt $indexTexts.Length; $i++) {
-    Draw-Node $indexX $indexYs[$i] $indexW $indexH $indexTexts[$i]
-    if ($i -lt $indexTexts.Length - 1) {
+for ($i = 0; $i -lt $sourceTexts.Length; $i++) {
+    Draw-Node $sourceX $sourceYs[$i] $sourceW $sourceH $sourceTexts[$i]
+    if ($i -lt $sourceTexts.Length - 1) {
         Draw-Arrow $linePen @(
-            [System.Drawing.PointF]::new($indexX + ($indexW / 2), $indexYs[$i] + $indexH),
-            [System.Drawing.PointF]::new($indexX + ($indexW / 2), $indexYs[$i + 1])
+            [System.Drawing.PointF]::new($sourceX + ($sourceW / 2), $sourceYs[$i] + $sourceH),
+            [System.Drawing.PointF]::new($sourceX + ($sourceW / 2), $sourceYs[$i + 1])
         )
     }
 }
 
-$onlineX = 705
-$onlineW = 410
-$onlineH = 72
-$onlineYs = @(250, 340, 430, 520, 610, 700, 790, 880, 970, 1060)
-$onlineTexts = @(
-    "用户问题",
-    "读取上下文`n短期记忆 / 长期记忆 / 用户偏好",
-    "查询理解与改写`n意图识别 / Query Rewrite",
-    "查询向量化",
-    "检索器 Retriever`n向量 / 关键词 / 混合检索",
-    "候选结果过滤`n权限 / 时间 / 去重",
-    "重排 Rerank`n相关性重新排序",
-    "上下文组装`nTop-K Chunk + Metadata + History",
-    "Prompt 构建`nSystem + Context + User Query",
-    "LLM 生成答案并附引用"
+$routeX = 560
+$routeW = 340
+$routeH = 72
+$routeYs = @(250, 350, 450, 550, 650, 750, 850)
+$routeTexts = @(
+    "用户提问`n输入框文字 + 可选附件",
+    "选择资料范围 sourceScope`nuploaded-document / knowledge-base / multi-document",
+    "关键词路由`n生成/对比/继续 -> Agentic`n总结/全文/目录 -> Hybrid",
+    "问题 Embedding`n关键词不明确时做语义兜底",
+    "语义匹配样例`n更像 Agentic 或 Hybrid",
+    "默认策略`n不明确则 2-step RAG",
+    "输出决策`narchitecture + sourceScope + reason"
 )
 
-for ($i = 0; $i -lt $onlineTexts.Length; $i++) {
-    Draw-Node $onlineX $onlineYs[$i] $onlineW $onlineH $onlineTexts[$i]
-    if ($i -lt $onlineTexts.Length - 1) {
+for ($i = 0; $i -lt $routeTexts.Length; $i++) {
+    Draw-Node $routeX $routeYs[$i] $routeW $routeH $routeTexts[$i]
+    if ($i -lt $routeTexts.Length - 1) {
         Draw-Arrow $linePen @(
-            [System.Drawing.PointF]::new($onlineX + ($onlineW / 2), $onlineYs[$i] + $onlineH),
-            [System.Drawing.PointF]::new($onlineX + ($onlineW / 2), $onlineYs[$i + 1])
+            [System.Drawing.PointF]::new($routeX + ($routeW / 2), $routeYs[$i] + $routeH),
+            [System.Drawing.PointF]::new($routeX + ($routeW / 2), $routeYs[$i + 1])
         )
     }
 }
 
-$feedbackX = 1310
-$feedbackW = 380
-$feedbackH = 86
-$feedbackYs = @(300, 435, 570, 705, 840, 975)
-$feedbackTexts = @(
-    "用户反馈`n有帮助 / 无帮助 / 继续追问",
-    "日志与观测`nQuery / Recall / Latency / Trace",
-    "召回质量评估`n命中率 / 覆盖率 / Top-K 质量",
-    "Prompt 优化`nRole / Prompt / Output Contract",
-    "知识库更新`n新增文档 / 重新切分 / 重建索引",
-    "记忆写入`n偏好 / 事实 / 任务状态"
+$archX = 1030
+$archW = 330
+Draw-Node $archX 245 $archW 115 "2-step RAG（默认）`n问题 embedding`n向量检索 TopK`n直接组装 Prompt 生成" $twoStepBrush
+Draw-Node $archX 460 $archW 135 "Agentic RAG`n进入 LangChain Agent`nAgent 决定是否调用文档工具`n工具内部复用 Hybrid 检索`n生成/对比/改写/多步骤" $agenticBrush
+Draw-Node $archX 715 $archW 155 "Hybrid RAG`nQuery Enhancement`nVector Search + FTS5/BM25`nScore Fusion + Rerank`nRetrieval Validation`n全文/知识库/多文档" $hybridBrush
+
+$answerX = 1490
+$answerW = 310
+$answerH = 76
+$answerYs = @(260, 370, 480, 590, 700, 810, 920)
+$answerTexts = @(
+    "组装 Prompt`nSystem + 检索上下文 + Question",
+    "调用 LLM`nDeepSeek / OpenAI 兼容模型",
+    "2-step`n直接返回生成结果",
+    "Hybrid`n再做 Answer Validation",
+    "Agentic`nAgent 汇总工具结果后回答",
+    "保存记录`nSQLite 对话/附件/QA 历史",
+    "返回用户`n隐藏 chunk id / 分数 / Chroma 细节"
 )
 
-for ($i = 0; $i -lt $feedbackTexts.Length; $i++) {
-    Draw-Node $feedbackX $feedbackYs[$i] $feedbackW $feedbackH $feedbackTexts[$i]
-    if ($i -lt $feedbackTexts.Length - 1) {
+for ($i = 0; $i -lt $answerTexts.Length; $i++) {
+    Draw-Node $answerX $answerYs[$i] $answerW $answerH $answerTexts[$i]
+    if ($i -lt $answerTexts.Length - 1) {
         Draw-Arrow $linePen @(
-            [System.Drawing.PointF]::new($feedbackX + ($feedbackW / 2), $feedbackYs[$i] + $feedbackH),
-            [System.Drawing.PointF]::new($feedbackX + ($feedbackW / 2), $feedbackYs[$i + 1])
+            [System.Drawing.PointF]::new($answerX + ($answerW / 2), $answerYs[$i] + $answerH),
+            [System.Drawing.PointF]::new($answerX + ($answerW / 2), $answerYs[$i + 1])
         )
     }
 }
 
 Draw-Arrow $accentPen @(
-    [System.Drawing.PointF]::new(510, 919),
-    [System.Drawing.PointF]::new(600, 919),
-    [System.Drawing.PointF]::new(600, 646),
-    [System.Drawing.PointF]::new(705, 646)
+    [System.Drawing.PointF]::new(430, 886),
+    [System.Drawing.PointF]::new(500, 886),
+    [System.Drawing.PointF]::new(500, 286),
+    [System.Drawing.PointF]::new(560, 286)
 )
-Draw-Label "索引供在线检索使用" 525 935
+Draw-Label "附件上传后按用户命令进入 QA；知识库可预先索引" 420 904
 
 Draw-Arrow $accentPen @(
-    [System.Drawing.PointF]::new(1115, 1096),
-    [System.Drawing.PointF]::new(1210, 1096),
-    [System.Drawing.PointF]::new(1210, 343),
-    [System.Drawing.PointF]::new(1310, 343)
+    [System.Drawing.PointF]::new(900, 886),
+    [System.Drawing.PointF]::new(960, 886),
+    [System.Drawing.PointF]::new(960, 293),
+    [System.Drawing.PointF]::new(1030, 293)
 )
-Draw-Label "答案进入反馈与观测" 1160 1112
+Draw-Label "默认：2-step RAG" 900 905
 
 Draw-Arrow $accentPen @(
-    [System.Drawing.PointF]::new(1500, 926),
-    [System.Drawing.PointF]::new(1500, 1190),
-    [System.Drawing.PointF]::new(310, 1190),
-    [System.Drawing.PointF]::new(310, 328)
+    [System.Drawing.PointF]::new(900, 486),
+    [System.Drawing.PointF]::new(960, 486),
+    [System.Drawing.PointF]::new(960, 528),
+    [System.Drawing.PointF]::new(1030, 528)
 )
-Draw-Label "知识更新后回流到索引构建" 1060 1162
+Draw-Label "多步骤/生成/对比：Agentic" 862 505
 
 Draw-Arrow $accentPen @(
-    [System.Drawing.PointF]::new(1310, 1018),
-    [System.Drawing.PointF]::new(1215, 1018),
-    [System.Drawing.PointF]::new(1215, 376),
-    [System.Drawing.PointF]::new(1115, 376)
+    [System.Drawing.PointF]::new(900, 586),
+    [System.Drawing.PointF]::new(960, 586),
+    [System.Drawing.PointF]::new(960, 792),
+    [System.Drawing.PointF]::new(1030, 792)
 )
-Draw-Label "记忆回写影响后续对话" 1150 392
+Draw-Label "全文/宽范围/知识库：Hybrid" 858 604
 
-$legendY = 1245
-$graphics.FillRectangle($indexBrush, 100, $legendY, 26, 16)
+Draw-Arrow $accentPen @(
+    [System.Drawing.PointF]::new(1360, 302),
+    [System.Drawing.PointF]::new(1425, 302),
+    [System.Drawing.PointF]::new(1425, 298),
+    [System.Drawing.PointF]::new(1490, 298)
+)
+Draw-Arrow $accentPen @(
+    [System.Drawing.PointF]::new(1360, 528),
+    [System.Drawing.PointF]::new(1425, 528),
+    [System.Drawing.PointF]::new(1425, 298),
+    [System.Drawing.PointF]::new(1490, 298)
+)
+Draw-Arrow $accentPen @(
+    [System.Drawing.PointF]::new(1360, 792),
+    [System.Drawing.PointF]::new(1425, 792),
+    [System.Drawing.PointF]::new(1425, 298),
+    [System.Drawing.PointF]::new(1490, 298)
+)
+Draw-Label "三个分支最终都进入回答链路" 1348 965
+
+$noteY = 1160
+Draw-Node 105 $noteY 440 70 "Embedding 两处使用：`n1 chunk 检索  2 路由语义判断" $whiteBrush
+Draw-Node 610 $noteY 440 70 "sourceScope 不是架构：`n只表示上传文档 / 知识库 / 多文档" $whiteBrush
+Draw-Node 1115 $noteY 440 70 "三种架构是并列选择：`n2-step / Agentic / Hybrid" $whiteBrush
+
+$legendY = 1295
+$graphics.FillRectangle($sourceBrush, 100, $legendY, 26, 16)
 $graphics.DrawRectangle($borderPen, 100, $legendY, 26, 16)
-$graphics.DrawString("离线索引阶段", $smallFont, $inkBrush, 136, $legendY - 1)
-$graphics.FillRectangle($onlineBrush, 420, $legendY, 26, 16)
-$graphics.DrawRectangle($borderPen, 420, $legendY, 26, 16)
-$graphics.DrawString("在线检索与生成", $smallFont, $inkBrush, 456, $legendY - 1)
-$graphics.FillRectangle($feedbackBrush, 820, $legendY, 26, 16)
-$graphics.DrawRectangle($borderPen, 820, $legendY, 26, 16)
-$graphics.DrawString("反馈优化与记忆", $smallFont, $inkBrush, 856, $legendY - 1)
+$graphics.DrawString("资料索引", $smallFont, $inkBrush, 136, $legendY - 1)
+$graphics.FillRectangle($routeBrush, 360, $legendY, 26, 16)
+$graphics.DrawRectangle($borderPen, 360, $legendY, 26, 16)
+$graphics.DrawString("路由判断", $smallFont, $inkBrush, 396, $legendY - 1)
+$graphics.FillRectangle($twoStepBrush, 620, $legendY, 26, 16)
+$graphics.DrawRectangle($borderPen, 620, $legendY, 26, 16)
+$graphics.DrawString("2-step", $smallFont, $inkBrush, 656, $legendY - 1)
+$graphics.FillRectangle($agenticBrush, 840, $legendY, 26, 16)
+$graphics.DrawRectangle($borderPen, 840, $legendY, 26, 16)
+$graphics.DrawString("Agentic", $smallFont, $inkBrush, 876, $legendY - 1)
+$graphics.FillRectangle($hybridBrush, 1060, $legendY, 26, 16)
+$graphics.DrawRectangle($borderPen, 1060, $legendY, 26, 16)
+$graphics.DrawString("Hybrid", $smallFont, $inkBrush, 1096, $legendY - 1)
+$graphics.FillRectangle($answerBrush, 1280, $legendY, 26, 16)
+$graphics.DrawRectangle($borderPen, 1280, $legendY, 26, 16)
+$graphics.DrawString("生成回答", $smallFont, $inkBrush, 1316, $legendY - 1)
 
 $outputDirectory = Split-Path -Parent $outputPath
 if (-not (Test-Path -LiteralPath $outputDirectory)) {
@@ -270,9 +300,12 @@ $dividerPen.Dispose()
 $inkBrush.Dispose()
 $mutedBrush.Dispose()
 $panelBrush.Dispose()
-$indexBrush.Dispose()
-$onlineBrush.Dispose()
-$feedbackBrush.Dispose()
+$sourceBrush.Dispose()
+$routeBrush.Dispose()
+$twoStepBrush.Dispose()
+$agenticBrush.Dispose()
+$hybridBrush.Dispose()
+$answerBrush.Dispose()
 $whiteBrush.Dispose()
 $accentBrush.Dispose()
 $titleFont.Dispose()

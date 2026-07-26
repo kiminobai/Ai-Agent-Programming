@@ -37,8 +37,8 @@ export class LangChainProvider implements ChatProvider {
     systemPrompt: string,
     fewShotExamples: FewShotExample[] = [],
     reasoningEffort?: ReasoningEffort,
-    threadId = crypto.randomUUID(),
-    userId = "default-user"
+    threadId: string = crypto.randomUUID(),
+    userId: string = "default-user"
   ): Promise<string> {
     this.requireApiKey();
 
@@ -63,8 +63,8 @@ export class LangChainProvider implements ChatProvider {
     onDelta: (chunk: string) => void,
     fewShotExamples: FewShotExample[] = [],
     reasoningEffort?: ReasoningEffort,
-    threadId = crypto.randomUUID(),
-    userId = "default-user"
+    threadId: string = crypto.randomUUID(),
+    userId: string = "default-user"
   ): Promise<string> {
     this.requireApiKey();
 

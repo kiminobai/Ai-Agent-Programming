@@ -21503,6 +21503,49 @@
       attachmentName: match[1]
     };
   }
+  function isImageFile(fileName) {
+    const extension = fileName.split(".").pop()?.toLowerCase() || "";
+    return ["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"].includes(extension);
+  }
+  function normalizeFileName(fileName) {
+    if (!fileName) {
+      return fileName;
+    }
+    const hasMojibake = /[\u00c3\u00c2]|\u00e5.|\u00e6.|\u00e4./.test(fileName);
+    if (!hasMojibake) {
+      return fileName;
+    }
+    try {
+      const bytes = Uint8Array.from([...fileName].map((char) => char.charCodeAt(0) & 255));
+      const decoded = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      const chineseCount = (value) => [...value].filter((char) => /[\u4e00-\u9fff]/.test(char)).length;
+      return chineseCount(decoded) >= chineseCount(fileName) ? decoded : fileName;
+    } catch {
+      return fileName;
+    }
+  }
+  function getAttachmentKind(fileName) {
+    const extension = fileName.split(".").pop()?.toLowerCase() || "";
+    if (isImageFile(fileName)) {
+      return "\u56FE\u7247\u6587\u4EF6";
+    }
+    if (extension === "pptx") {
+      return "\u6F14\u793A\u6587\u7A3F";
+    }
+    if (extension === "docx") {
+      return "Word \u6587\u6863";
+    }
+    if (["xlsx", "xls", "csv"].includes(extension)) {
+      return "\u8868\u683C\u6587\u4EF6";
+    }
+    if (["html", "htm"].includes(extension)) {
+      return "\u7F51\u9875\u6587\u4EF6";
+    }
+    if (extension === "pdf") {
+      return "PDF \u6587\u6863";
+    }
+    return "\u77E5\u8BC6\u5E93\u6587\u4EF6";
+  }
   function renderInlineMarkdown(text) {
     const parts = text.split(/(`[^`]+`|\*\*[^*]+\*\*)/g);
     return parts.map((part, index) => {
@@ -21605,6 +21648,7 @@
     const [sidebarOpen, setSidebarOpen] = (0, import_react.useState)(false);
     const [userId] = (0, import_react.useState)(() => getOrCreateStoredId("chat-demo-user-id"));
     const [attachment, setAttachment] = (0, import_react.useState)(null);
+    const [activeDocumentName, setActiveDocumentName] = (0, import_react.useState)("");
     const chatLayoutRef = (0, import_react.useRef)(null);
     const composerShellRef = (0, import_react.useRef)(null);
     const fileInputRef = (0, import_react.useRef)(null);
@@ -21738,6 +21782,7 @@
         setThreads(nextThreads);
         setActiveThreadId(thread.threadId);
         setEntries(createWelcomeEntries());
+        setActiveDocumentName("");
         setModelId(thread.modelId);
         setRoleId(thread.roleId);
         setReasoningEffort(thread.reasoningEffort || "low");
@@ -21765,16 +21810,29 @@
           throw new Error(data.error || "Failed to load thread.");
         }
         const thread = data.thread;
-        const nextEntries = (data.messages || []).map((entry, index) => ({
-          ...extractAttachmentFromContent(entry.content),
-          id: `${thread.threadId}-${index}`,
-          role: entry.role,
-          meta: `${thread.roleId} | ${thread.modelId} | ${thread.userId}`
-        }));
+        const nextEntries = (data.messages || []).map((entry, index) => {
+          const extracted = extractAttachmentFromContent(entry.content);
+          const attachmentName = normalizeFileName(
+            entry.attachmentName || extracted.attachmentName || ""
+          );
+          return {
+            ...extracted,
+            id: `${thread.threadId}-${index}`,
+            role: entry.role,
+            meta: `${thread.roleId} | ${thread.modelId} | ${thread.userId}`,
+            attachmentName: attachmentName || void 0,
+            attachmentFileId: entry.attachmentFileId,
+            attachmentPreviewUrl: attachmentName && entry.attachmentFileId && isImageFile(attachmentName) ? `/api/files/${encodeURIComponent(entry.attachmentFileId)}?userId=${encodeURIComponent(nextUserId)}` : void 0,
+            sources: entry.sources
+          };
+        });
         shouldAutoScrollRef.current = true;
         pendingInitialScrollRef.current = true;
         setActiveThreadId(thread.threadId);
         setEntries(nextEntries.length ? nextEntries : createWelcomeEntries());
+        setActiveDocumentName(
+          nextEntries.find((entry) => entry.attachmentName)?.attachmentName || ""
+        );
         setModelId(thread.modelId);
         setRoleId(thread.roleId);
         setReasoningEffort(thread.reasoningEffort || "low");
@@ -21903,6 +21961,61 @@
         setIsThreadLoading(false);
       }
     }
+    async function uploadDocumentForThread(file) {
+      if (!activeThreadId || !userId.trim()) {
+        throw new Error("No active thread is available for document upload.");
+      }
+      const formData = new FormData();
+      formData.append("threadId", activeThreadId);
+      formData.append("userId", userId.trim());
+      formData.append("attachment", file);
+      const response = await fetch("/api/documents/upload", {
+        method: "POST",
+        body: formData
+      });
+      const data = await readJsonResponse(response, "/api/documents/upload");
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to upload document.");
+      }
+      return data;
+    }
+    async function askUploadedDocument(question) {
+      const response = await fetch("/api/documents/qa", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          userId: userId.trim(),
+          threadId: activeThreadId,
+          modelId,
+          roleId,
+          reasoningEffort,
+          question
+        })
+      });
+      const data = await readJsonResponse(response, "/api/documents/qa");
+      if (!response.ok) {
+        return {
+          answer: data.error || "Document QA request failed.",
+          document: {
+            fileId: "",
+            fileName: activeDocumentName,
+            fileType: "unknown",
+            storageKey: "",
+            parseStatus: "unsupported",
+            indexStatus: "unsupported"
+          },
+          retrieval: {
+            strategy: "error",
+            topK: 0,
+            totalChunks: 0,
+            sources: []
+          }
+        };
+      }
+      return data;
+    }
     async function handleSubmit(event) {
       event?.preventDefault();
       const trimmedMessage = message.trim();
@@ -21914,12 +22027,14 @@
       setIsSubmitting(true);
       shouldAutoScrollRef.current = true;
       const assistantEntryId = `assistant-${Date.now()}`;
+      const attachmentPreviewUrl = attachment && isImageFile(attachment.name) ? URL.createObjectURL(attachment) : void 0;
       const userEntry = {
         id: `user-${Date.now()}`,
         role: "user",
         content: outgoingMessage,
         meta: `${currentRole?.label || roleId} | ${currentModel?.label || modelId} | ${userId}`,
-        attachmentName: attachment?.name
+        attachmentName: attachment ? normalizeFileName(attachment.name) : void 0,
+        attachmentPreviewUrl
       };
       setEntries((prev) => [
         ...prev,
@@ -21933,6 +22048,40 @@
       ]);
       setMessage("");
       try {
+        const shouldUseDocumentQa = Boolean(attachment || activeDocumentName);
+        if (shouldUseDocumentQa) {
+          let nextDocumentName = activeDocumentName;
+          if (attachment) {
+            const uploadResult = await uploadDocumentForThread(attachment);
+            nextDocumentName = normalizeFileName(uploadResult.document.fileName);
+            setActiveDocumentName(nextDocumentName);
+            setEntries(
+              (prev) => prev.map(
+                (entry) => entry.id === userEntry.id ? {
+                  ...entry,
+                  attachmentFileId: uploadResult.document.fileId
+                } : entry
+              )
+            );
+          }
+          const qaResult = await askUploadedDocument(outgoingMessage);
+          setEntries(
+            (prev) => prev.map(
+              (entry) => entry.id === assistantEntryId ? {
+                ...entry,
+                content: qaResult.answer || "Document QA returned no content.",
+                meta: `${currentRole?.label || roleId} | ${currentModel?.label || modelId} | ${userId}`,
+                sources: qaResult.retrieval.sources
+              } : entry
+            )
+          );
+          setAttachment(null);
+          if (fileInputRef.current) {
+            fileInputRef.current.value = "";
+          }
+          await refreshThreads(activeThreadId);
+          return;
+        }
         const formData = new FormData();
         formData.append("modelId", modelId);
         formData.append("roleId", roleId);
@@ -22060,7 +22209,7 @@
         className: "sidebar-close",
         onClick: () => setSidebarOpen(false)
       },
-      "\xD7"
+      "\u8133"
     )), /* @__PURE__ */ import_react.default.createElement("section", { className: "sidebar-panel sidebar-thread-panel" }, /* @__PURE__ */ import_react.default.createElement(
       "button",
       {
@@ -22139,11 +22288,37 @@
           className: "menu-button",
           onClick: () => setSidebarOpen((value) => !value)
         },
-        "\u2630"
+        "\u923D?            "
       ), /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-header-title" }, "Role ChatGPT UI")))),
       error ? /* @__PURE__ */ import_react.default.createElement("div", { className: "top-error" }, error) : null,
-      /* @__PURE__ */ import_react.default.createElement("section", { className: "conversation" }, isLoading || isThreadLoading ? /* @__PURE__ */ import_react.default.createElement("div", { className: "empty-state" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "empty-state-title" }, isLoading ? "Loading configuration" : "Loading thread"), /* @__PURE__ */ import_react.default.createElement("div", { className: "empty-state-copy" }, isLoading ? "Fetching models and roles." : "Restoring messages from SQLite checkpoints.")) : null, !isLoading && !isThreadLoading && entries.map((entry) => /* @__PURE__ */ import_react.default.createElement("div", { key: entry.id, className: `chat-row ${entry.role}` }, /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-avatar" }, entry.role === "user" ? "You" : "AI"), /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-bubble-wrap" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-bubble-header" }, /* @__PURE__ */ import_react.default.createElement("span", null, entry.role === "user" ? "You" : currentRole?.label || "Assistant"), entry.meta ? /* @__PURE__ */ import_react.default.createElement("span", { className: "chat-meta" }, entry.meta) : null), /* @__PURE__ */ import_react.default.createElement("div", { className: `chat-bubble ${entry.role}` }, entry.attachmentName ? /* @__PURE__ */ import_react.default.createElement("div", { className: "message-attachment-card" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "message-attachment-icon" }, "FILE"), /* @__PURE__ */ import_react.default.createElement("div", { className: "message-attachment-info" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "message-attachment-name" }, entry.attachmentName), /* @__PURE__ */ import_react.default.createElement("div", { className: "message-attachment-copy" }, "Uploaded document"))) : null, entry.role === "assistant" ? /* @__PURE__ */ import_react.default.createElement("div", { className: "markdown-body" }, renderMarkdown(entry.content)) : /* @__PURE__ */ import_react.default.createElement("div", { className: "message-text" }, entry.content)))))),
-      /* @__PURE__ */ import_react.default.createElement("footer", { ref: composerShellRef, className: "composer-shell" }, /* @__PURE__ */ import_react.default.createElement("form", { className: "composer-card", onSubmit: handleSubmit }, attachment ? /* @__PURE__ */ import_react.default.createElement("div", { className: "composer-attachment-chip" }, /* @__PURE__ */ import_react.default.createElement("span", null, attachment.name), /* @__PURE__ */ import_react.default.createElement(
+      /* @__PURE__ */ import_react.default.createElement("section", { className: "conversation" }, isLoading || isThreadLoading ? /* @__PURE__ */ import_react.default.createElement("div", { className: "empty-state" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "empty-state-title" }, isLoading ? "Loading configuration" : "Loading thread"), /* @__PURE__ */ import_react.default.createElement("div", { className: "empty-state-copy" }, isLoading ? "Fetching models and roles." : "Restoring messages from SQLite checkpoints.")) : null, !isLoading && !isThreadLoading && entries.map((entry) => /* @__PURE__ */ import_react.default.createElement("div", { key: entry.id, className: `chat-row ${entry.role}` }, /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-avatar" }, entry.role === "user" ? "You" : "AI"), /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-bubble-wrap" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-bubble-header" }, /* @__PURE__ */ import_react.default.createElement("span", null, entry.role === "user" ? "You" : currentRole?.label || "Assistant"), entry.meta ? /* @__PURE__ */ import_react.default.createElement("span", { className: "chat-meta" }, entry.meta) : null), /* @__PURE__ */ import_react.default.createElement("div", { className: `chat-bubble ${entry.role}` }, entry.attachmentName ? /* @__PURE__ */ import_react.default.createElement(
+        "button",
+        {
+          type: "button",
+          className: "message-attachment-card",
+          onClick: () => {
+            if (entry.attachmentFileId) {
+              window.open(
+                `/api/files/${encodeURIComponent(entry.attachmentFileId)}?userId=${encodeURIComponent(userId.trim())}`,
+                "_blank",
+                "noopener,noreferrer"
+              );
+            }
+          },
+          disabled: !entry.attachmentFileId,
+          title: entry.attachmentFileId ? "Open uploaded file" : "File preview will be available after upload"
+        },
+        entry.attachmentPreviewUrl ? /* @__PURE__ */ import_react.default.createElement(
+          "img",
+          {
+            className: "message-attachment-preview",
+            src: entry.attachmentPreviewUrl,
+            alt: entry.attachmentName
+          }
+        ) : /* @__PURE__ */ import_react.default.createElement("div", { className: "message-attachment-icon" }, "FILE"),
+        /* @__PURE__ */ import_react.default.createElement("div", { className: "message-attachment-info" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "message-attachment-name" }, entry.attachmentName), /* @__PURE__ */ import_react.default.createElement("div", { className: "message-attachment-copy" }, getAttachmentKind(entry.attachmentName)))
+      ) : null, entry.role === "assistant" ? /* @__PURE__ */ import_react.default.createElement("div", { className: "markdown-body" }, renderMarkdown(entry.content)) : /* @__PURE__ */ import_react.default.createElement("div", { className: "message-text" }, entry.content)))))),
+      /* @__PURE__ */ import_react.default.createElement("footer", { ref: composerShellRef, className: "composer-shell" }, /* @__PURE__ */ import_react.default.createElement("form", { className: "composer-card", onSubmit: handleSubmit }, activeDocumentName ? /* @__PURE__ */ import_react.default.createElement("div", { className: "knowledge-chip" }, /* @__PURE__ */ import_react.default.createElement("span", null, "\u77E5\u8BC6\u5E93\u6587\u4EF6"), /* @__PURE__ */ import_react.default.createElement("strong", null, normalizeFileName(activeDocumentName))) : null, attachment ? /* @__PURE__ */ import_react.default.createElement("div", { className: "composer-attachment-chip" }, /* @__PURE__ */ import_react.default.createElement("span", null, attachment.name), /* @__PURE__ */ import_react.default.createElement(
         "button",
         {
           type: "button",
@@ -22171,7 +22346,6 @@
           ref: fileInputRef,
           className: "hidden-file-input",
           type: "file",
-          accept: ".md,.markdown,.txt,.pdf",
           onChange: (event) => {
             setAttachment(event.target.files?.[0] || null);
           }

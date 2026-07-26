@@ -9,7 +9,16 @@ export interface UploadedDocumentRecord {
   originalName: string;
   storageKey: string;
   mimeType: string;
-  fileType: "markdown" | "pdf" | "text" | "presentation" | "image" | "binary";
+  fileType:
+    | "markdown"
+    | "pdf"
+    | "text"
+    | "presentation"
+    | "word"
+    | "spreadsheet"
+    | "html"
+    | "image"
+    | "binary";
   fileSize: number;
   text: string;
   uploadedAt: string;
@@ -34,6 +43,8 @@ type UploadedDocumentRow = {
 };
 
 export function saveUploadedDocument(record: UploadedDocumentRecord): void {
+  // 学习点：uploaded_documents 保存“当前 thread 绑定了哪份文档”。
+  // 文件本体不进数据库，只保存 storageKey；可检索文本会保存，方便后续切分和重建索引。
   sqliteDb
     .prepare(
       `
@@ -83,16 +94,15 @@ export function saveUploadedDocument(record: UploadedDocumentRecord): void {
       record.indexStatus
     );
 
-  // 新文件替换当前 thread 的旧文档时，旧 chunks 和 embedding 必须失效。
-  sqliteDb
-    .prepare("DELETE FROM document_chunks WHERE thread_id = ?")
-    .run(record.threadId);
+  // 学习点：同一个 thread 上传新文件时，旧 chunk 和旧 embedding 必须失效。
   clearVectorDocumentIndex(record.threadId);
 }
 
 export function getUploadedDocument(
   threadId: string
 ): UploadedDocumentRecord | undefined {
+  // 学习点：普通上传文件问答按 threadId 查文档。
+  // 当前对话上传的文件，只影响当前对话。
   const row = sqliteDb
     .prepare(
       `
@@ -120,6 +130,46 @@ export function getUploadedDocument(
     return undefined;
   }
 
+  return mapUploadedDocumentRow(row);
+}
+
+export function getUploadedDocumentByFileId(
+  fileId: string,
+  userId: string
+): UploadedDocumentRecord | undefined {
+  // 学习点：文件预览/下载按 fileId 查，同时校验 userId，避免跨用户读取。
+  const row = sqliteDb
+    .prepare(
+      `
+        SELECT
+          thread_id,
+          user_id,
+          file_id,
+          file_name,
+          original_name,
+          storage_key,
+          mime_type,
+          file_type,
+          file_size,
+          text,
+          uploaded_at,
+          parse_status,
+          index_status
+        FROM uploaded_documents
+        WHERE file_id = ? AND user_id = ?
+      `
+    )
+    .get(fileId, userId) as UploadedDocumentRow | undefined;
+
+  if (!row) {
+    return undefined;
+  }
+
+  return mapUploadedDocumentRow(row);
+}
+
+function mapUploadedDocumentRow(row: UploadedDocumentRow): UploadedDocumentRecord {
+  // 学习点：数据库字段是 snake_case，TypeScript 代码里统一转成 camelCase。
   return {
     threadId: row.thread_id,
     userId: row.user_id,

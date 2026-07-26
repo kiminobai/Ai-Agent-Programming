@@ -8,12 +8,13 @@ import {
 import {
   RAG_RETRIEVAL_CONFIG
 } from "../../rag/documentChunkLab";
-import { searchVectorDocumentIndex } from "../../rag/vectorDocumentIndex";
+import { searchHybridDocumentIndex } from "../../rag/vectorDocumentIndex";
 import { getUploadedDocument } from "../../rag/uploadedDocumentStore";
 
 export const uploadedDocumentTool = tool(
   async ({ task }, runtime: ToolMemoryRuntime) => {
     const context = (runtime.context ?? {}) as AgentContext;
+    // 工具只读取当前 thread 绑定的文件，避免把其他对话上传的文档混进来。
     const document = getUploadedDocument(context.threadId);
 
     if (!document) {
@@ -29,6 +30,7 @@ export const uploadedDocumentTool = tool(
     }
 
     if (!document.text.trim()) {
+      // 文件保存成功但没有可用文本时，不把内部 OCR/解析细节暴露给用户，只返回模型可理解的限制信息。
       return writeToolContext(
         runtime,
         "retrieve_uploaded_document_chunks",
@@ -40,12 +42,24 @@ export const uploadedDocumentTool = tool(
           fileName: document.fileName,
           fileType: document.fileType,
           parseStatus: document.parseStatus,
-          supportedForRag: ["markdown", "pdf", "text"]
+          supportedForRag: [
+            "markdown",
+            "pdf",
+            "text",
+            "pptx",
+            "docx",
+            "xlsx",
+            "xls",
+            "csv",
+            "html",
+            "image text recognition"
+          ]
         }
       );
     }
 
-    const result = await searchVectorDocumentIndex(document, task);
+    // 真正的文档问答从这里进入 Hybrid RAG：检索、重排、验证，然后把精选上下文交给模型回答。
+    const result = await searchHybridDocumentIndex(document, task);
     const selectedChunks = result.chunks
       .sort((left, right) => left.index - right.index)
       .map(({ embedding, ...chunk }) => ({
@@ -62,10 +76,11 @@ export const uploadedDocumentTool = tool(
       { task, threadId: context.threadId, fileName: document.fileName },
       {
         ok: true,
+        // answeringRule 是给模型看的输出约束，防止把 chunk id、score 等开发者信息展示给用户。
         purpose:
-          "The uploaded document was searched with a local vector index. Only the most relevant chunks were returned to avoid overflowing the model context.",
+          "The uploaded document was searched with Hybrid RAG: query enhancement, vector similarity, SQLite FTS5/BM25 keyword retrieval, algorithmic rerank, retrieval validation, and whole-document representative retrieval when needed.",
         answeringRule:
-          "Answer from the returned chunks first. Do not ask for or print every chunk unless the user narrows the request.",
+          "Answer from the returned chunks first. Do not print raw chunk ids, scores, or internal retrieval metadata to the user.",
         task,
         retrievalQuery: task,
         fileName: document.fileName,
@@ -73,7 +88,9 @@ export const uploadedDocumentTool = tool(
         totalCharacters: document.text.length,
         totalChunkCount: result.index.chunkCount,
         returnedChunkCount: selectedChunks.length,
-        retrievalStrategy: "local-vector-cosine",
+        enhancedQuery: result.enhancedQuery,
+        retrievalStrategy: result.validation.retrievalStrategy,
+        retrievalValidation: result.validation,
         vectorIndex: {
           dimensions: result.index.dimensions,
           builtAt: result.index.builtAt,
@@ -87,7 +104,7 @@ export const uploadedDocumentTool = tool(
   {
     name: "retrieve_uploaded_document_chunks",
     description:
-      "Retrieve only the most relevant chunks from the uploaded Markdown, TXT, or PDF document with a simple vector index. Use this RAG tool when the user asks to analyze, summarize, extract, compare, or answer questions based on the uploaded file. Do not load the whole document into context.",
+      "Retrieve document context from uploaded Markdown, TXT, PDF, PPTX, DOCX, XLSX/XLS/CSV, HTML, or images with recognized text using Hybrid RAG. The tool enhances queries, combines vector similarity with keyword matching, validates retrieval quality, and returns representative context for whole-document analysis.",
     schema: z.object({
       task: z
         .string()

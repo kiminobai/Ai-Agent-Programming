@@ -11,6 +11,7 @@ export interface ModelOption {
   provider: ProviderId;
   description: string;
   enabled: boolean;
+  supportsVision?: boolean;
   unavailableReason?: string;
 }
 

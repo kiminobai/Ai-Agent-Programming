@@ -1,4 +1,4 @@
-import React, {
+﻿import React, {
   FormEvent,
   KeyboardEvent,
   useEffect,
@@ -33,6 +33,49 @@ type ChatEntry = {
   content: string;
   meta?: string;
   attachmentName?: string;
+  attachmentFileId?: string;
+  attachmentPreviewUrl?: string;
+  sources?: DocumentSource[];
+};
+
+type DocumentSource = {
+  sourceId: string;
+  chunkIndex: number;
+  similarity: number;
+  startChar: number;
+  endChar: number;
+  matchedTerms: string[];
+  contentPreview: string;
+};
+
+type DocumentUploadResult = {
+  document: {
+    fileId: string;
+    fileName: string;
+    fileType: string;
+    fileSize: number;
+    storageKey: string;
+    parseStatus: string;
+    indexStatus: string;
+  };
+};
+
+type DocumentQaResult = {
+  answer: string;
+  document: {
+    fileId: string;
+    fileName: string;
+    fileType: string;
+    storageKey: string;
+    parseStatus: string;
+    indexStatus: string;
+  };
+  retrieval: {
+    strategy: string;
+    topK: number;
+    totalChunks: number;
+    sources: DocumentSource[];
+  };
 };
 
 type ChatThread = {
@@ -126,6 +169,62 @@ function extractAttachmentFromContent(content: string): {
     content: content.replace(ATTACHMENT_MARKER_PATTERN, "").trim(),
     attachmentName: match[1]
   };
+}
+
+function isImageFile(fileName: string): boolean {
+  const extension = fileName.split(".").pop()?.toLowerCase() || "";
+  return ["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"].includes(extension);
+}
+
+function normalizeFileName(fileName: string): string {
+  if (!fileName) {
+    return fileName;
+  }
+
+  const hasMojibake = /[\u00c3\u00c2]|\u00e5.|\u00e6.|\u00e4./.test(fileName);
+  if (!hasMojibake) {
+    return fileName;
+  }
+
+  try {
+    const bytes = Uint8Array.from([...fileName].map((char) => char.charCodeAt(0) & 0xff));
+    const decoded = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    const chineseCount = (value: string) =>
+      [...value].filter((char) => /[\u4e00-\u9fff]/.test(char)).length;
+    return chineseCount(decoded) >= chineseCount(fileName) ? decoded : fileName;
+  } catch {
+    return fileName;
+  }
+}
+
+function getAttachmentKind(fileName: string): string {
+  const extension = fileName.split(".").pop()?.toLowerCase() || "";
+
+  if (isImageFile(fileName)) {
+    return "\u56fe\u7247\u6587\u4ef6";
+  }
+
+  if (extension === "pptx") {
+    return "\u6f14\u793a\u6587\u7a3f";
+  }
+
+  if (extension === "docx") {
+    return "Word \u6587\u6863";
+  }
+
+  if (["xlsx", "xls", "csv"].includes(extension)) {
+    return "\u8868\u683c\u6587\u4ef6";
+  }
+
+  if (["html", "htm"].includes(extension)) {
+    return "\u7f51\u9875\u6587\u4ef6";
+  }
+
+  if (extension === "pdf") {
+    return "PDF \u6587\u6863";
+  }
+
+  return "\u77e5\u8bc6\u5e93\u6587\u4ef6";
 }
 
 function renderInlineMarkdown(text: string): React.ReactNode[] {
@@ -290,6 +389,7 @@ function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [userId] = useState(() => getOrCreateStoredId("chat-demo-user-id"));
   const [attachment, setAttachment] = useState<File | null>(null);
+  const [activeDocumentName, setActiveDocumentName] = useState("");
   const chatLayoutRef = useRef<HTMLElement | null>(null);
   const composerShellRef = useRef<HTMLElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -464,6 +564,7 @@ function App() {
       setThreads(nextThreads);
       setActiveThreadId(thread.threadId);
       setEntries(createWelcomeEntries());
+      setActiveDocumentName("");
       setModelId(thread.modelId);
       setRoleId(thread.roleId);
       setReasoningEffort(thread.reasoningEffort || "low");
@@ -503,17 +604,37 @@ function App() {
       const nextEntries = ((data.messages || []) as Array<{
         role: "user" | "assistant";
         content: string;
-      }>).map((entry, index) => ({
-        ...extractAttachmentFromContent(entry.content),
-        id: `${thread.threadId}-${index}`,
-        role: entry.role,
-        meta: `${thread.roleId} | ${thread.modelId} | ${thread.userId}`
-      }));
+        attachmentName?: string;
+        attachmentFileId?: string;
+        sources?: DocumentSource[];
+      }>).map((entry, index) => {
+        const extracted = extractAttachmentFromContent(entry.content);
+        const attachmentName = normalizeFileName(
+          entry.attachmentName || extracted.attachmentName || ""
+        );
+
+        return {
+          ...extracted,
+          id: `${thread.threadId}-${index}`,
+          role: entry.role,
+          meta: `${thread.roleId} | ${thread.modelId} | ${thread.userId}`,
+          attachmentName: attachmentName || undefined,
+          attachmentFileId: entry.attachmentFileId,
+          attachmentPreviewUrl:
+            attachmentName && entry.attachmentFileId && isImageFile(attachmentName)
+              ? `/api/files/${encodeURIComponent(entry.attachmentFileId)}?userId=${encodeURIComponent(nextUserId)}`
+              : undefined,
+          sources: entry.sources
+        };
+      });
 
       shouldAutoScrollRef.current = true;
       pendingInitialScrollRef.current = true;
       setActiveThreadId(thread.threadId);
       setEntries(nextEntries.length ? nextEntries : createWelcomeEntries());
+      setActiveDocumentName(
+        nextEntries.find((entry) => entry.attachmentName)?.attachmentName || ""
+      );
       setModelId(thread.modelId);
       setRoleId(thread.roleId);
       setReasoningEffort(thread.reasoningEffort || "low");
@@ -662,6 +783,69 @@ function App() {
     }
   }
 
+  async function uploadDocumentForThread(file: File): Promise<DocumentUploadResult> {
+    if (!activeThreadId || !userId.trim()) {
+      throw new Error("No active thread is available for document upload.");
+    }
+
+    const formData = new FormData();
+    formData.append("threadId", activeThreadId);
+    formData.append("userId", userId.trim());
+    formData.append("attachment", file);
+
+    const response = await fetch("/api/documents/upload", {
+      method: "POST",
+      body: formData
+    });
+    const data = await readJsonResponse(response, "/api/documents/upload");
+
+    if (!response.ok) {
+      throw new Error(data.error || "Failed to upload document.");
+    }
+
+    return data as DocumentUploadResult;
+  }
+
+  async function askUploadedDocument(question: string): Promise<DocumentQaResult> {
+    const response = await fetch("/api/documents/qa", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        userId: userId.trim(),
+        threadId: activeThreadId,
+        modelId,
+        roleId,
+        reasoningEffort,
+        question
+      })
+    });
+    const data = await readJsonResponse(response, "/api/documents/qa");
+
+    if (!response.ok) {
+      return {
+        answer: data.error || "Document QA request failed.",
+        document: {
+          fileId: "",
+          fileName: activeDocumentName,
+          fileType: "unknown",
+          storageKey: "",
+          parseStatus: "unsupported",
+          indexStatus: "unsupported"
+        },
+        retrieval: {
+          strategy: "error",
+          topK: 0,
+          totalChunks: 0,
+          sources: []
+        }
+      };
+    }
+
+    return data as DocumentQaResult;
+  }
+
   async function handleSubmit(event?: FormEvent<HTMLFormElement>) {
     event?.preventDefault();
 
@@ -678,12 +862,15 @@ function App() {
     shouldAutoScrollRef.current = true;
 
     const assistantEntryId = `assistant-${Date.now()}`;
+    const attachmentPreviewUrl =
+      attachment && isImageFile(attachment.name) ? URL.createObjectURL(attachment) : undefined;
     const userEntry: ChatEntry = {
       id: `user-${Date.now()}`,
       role: "user",
       content: outgoingMessage,
       meta: `${currentRole?.label || roleId} | ${currentModel?.label || modelId} | ${userId}`,
-      attachmentName: attachment?.name
+      attachmentName: attachment ? normalizeFileName(attachment.name) : undefined,
+      attachmentPreviewUrl
     };
 
     setEntries((prev) => [
@@ -699,6 +886,48 @@ function App() {
     setMessage("");
 
     try {
+      const shouldUseDocumentQa = Boolean(attachment || activeDocumentName);
+
+      if (shouldUseDocumentQa) {
+        let nextDocumentName = activeDocumentName;
+
+        if (attachment) {
+          const uploadResult = await uploadDocumentForThread(attachment);
+          nextDocumentName = normalizeFileName(uploadResult.document.fileName);
+          setActiveDocumentName(nextDocumentName);
+          setEntries((prev) =>
+            prev.map((entry) =>
+              entry.id === userEntry.id
+                ? {
+                    ...entry,
+                    attachmentFileId: uploadResult.document.fileId
+                  }
+                : entry
+            )
+          );
+        }
+
+        const qaResult = await askUploadedDocument(outgoingMessage);
+        setEntries((prev) =>
+          prev.map((entry) =>
+            entry.id === assistantEntryId
+              ? {
+                  ...entry,
+                  content: qaResult.answer || "Document QA returned no content.",
+                  meta: `${currentRole?.label || roleId} | ${currentModel?.label || modelId} | ${userId}`,
+                  sources: qaResult.retrieval.sources
+                }
+              : entry
+          )
+        );
+        setAttachment(null);
+        if (fileInputRef.current) {
+          fileInputRef.current.value = "";
+        }
+        await refreshThreads(activeThreadId);
+        return;
+      }
+
       const formData = new FormData();
       formData.append("modelId", modelId);
       formData.append("roleId", roleId);
@@ -861,7 +1090,7 @@ function App() {
             className="sidebar-close"
             onClick={() => setSidebarOpen(false)}
           >
-            ×
+            脳
           </button>
         </div>
 
@@ -953,8 +1182,7 @@ function App() {
               className="menu-button"
               onClick={() => setSidebarOpen((value) => !value)}
             >
-              ☰
-            </button>
+              鈽?            </button>
             <div>
               <div className="chat-header-title">Role ChatGPT UI</div>
             </div>
@@ -989,15 +1217,43 @@ function App() {
                   </div>
                   <div className={`chat-bubble ${entry.role}`}>
                     {entry.attachmentName ? (
-                      <div className="message-attachment-card">
-                        <div className="message-attachment-icon">FILE</div>
+                      <button
+                        type="button"
+                        className="message-attachment-card"
+                        onClick={() => {
+                          if (entry.attachmentFileId) {
+                            window.open(
+                              `/api/files/${encodeURIComponent(entry.attachmentFileId)}?userId=${encodeURIComponent(userId.trim())}`,
+                              "_blank",
+                              "noopener,noreferrer"
+                            );
+                          }
+                        }}
+                        disabled={!entry.attachmentFileId}
+                        title={
+                          entry.attachmentFileId
+                            ? "Open uploaded file"
+                            : "File preview will be available after upload"
+                        }
+                      >
+                        {entry.attachmentPreviewUrl ? (
+                          <img
+                            className="message-attachment-preview"
+                            src={entry.attachmentPreviewUrl}
+                            alt={entry.attachmentName}
+                          />
+                        ) : (
+                          <div className="message-attachment-icon">FILE</div>
+                        )}
                         <div className="message-attachment-info">
                           <div className="message-attachment-name">
                             {entry.attachmentName}
                           </div>
-                          <div className="message-attachment-copy">Uploaded document</div>
+                          <div className="message-attachment-copy">
+                            {getAttachmentKind(entry.attachmentName)}
+                          </div>
                         </div>
-                      </div>
+                      </button>
                     ) : null}
                     {entry.role === "assistant" ? (
                       <div className="markdown-body">{renderMarkdown(entry.content)}</div>
@@ -1012,6 +1268,12 @@ function App() {
 
         <footer ref={composerShellRef} className="composer-shell">
           <form className="composer-card" onSubmit={handleSubmit}>
+            {activeDocumentName ? (
+              <div className="knowledge-chip">
+                <span>{"\u77e5\u8bc6\u5e93\u6587\u4ef6"}</span>
+                <strong>{normalizeFileName(activeDocumentName)}</strong>
+              </div>
+            ) : null}
             {attachment ? (
               <div className="composer-attachment-chip">
                 <span>{attachment.name}</span>
@@ -1042,7 +1304,6 @@ function App() {
               ref={fileInputRef}
               className="hidden-file-input"
               type="file"
-              accept=".md,.markdown,.txt,.pdf"
               onChange={(event) => {
                 setAttachment(event.target.files?.[0] || null);
               }}

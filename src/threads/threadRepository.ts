@@ -1,5 +1,6 @@
 import crypto from "crypto";
 import { sqliteDb } from "../db/sqlite";
+import { sqliteVectorStore } from "../rag/sqliteVectorStore";
 import { ProviderId, ReasoningEffort } from "../types";
 
 export interface ChatThreadRecord {
@@ -267,7 +268,8 @@ export function deleteThread(threadId: string, userId: string): boolean {
   };
 
   const deleteTransaction = sqliteDb.transaction(() => {
-    sqliteDb.prepare("DELETE FROM document_chunks WHERE thread_id = ?").run(threadId);
+    sqliteDb.prepare("DELETE FROM document_qa_messages WHERE thread_id = ?").run(threadId);
+    sqliteVectorStore.clearIndex(threadId);
     sqliteDb.prepare("DELETE FROM uploaded_documents WHERE thread_id = ?").run(threadId);
 
     for (const tableName of ["checkpoint_writes", "checkpoint_blobs", "checkpoints"]) {

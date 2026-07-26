@@ -1,9 +1,16 @@
 node_modules
+.venv
 .env
 dist
 data/*.sqlite
 data/*.sqlite-shm
 data/*.sqlite-wal
+data/chroma/*
+!data/chroma/.gitkeep
+data/knowledge-bases/**/*
+!data/knowledge-bases/**/
+!data/knowledge-bases/**/.gitkeep
+!data/knowledge-bases/**/README.md
 
 # Logs
 npm-debug.log*

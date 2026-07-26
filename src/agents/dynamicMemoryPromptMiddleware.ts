@@ -13,6 +13,8 @@ import {
 } from "../memory/longTermMemory";
 import { getUploadedDocument } from "../rag/uploadedDocumentStore";
 
+// 这个 middleware 不直接改历史 messages，而是在每次模型调用前临时追加动态 System Prompt。
+// 好处是长期记忆、工具上下文、上传文件状态都能影响本轮回答，但不会重复写入对话历史。
 const MAX_ARGUMENT_LENGTH = 600;
 const MAX_RESULT_LENGTH = 1_200;
 
@@ -34,12 +36,14 @@ export const dynamicMemoryPromptMiddleware = createMiddleware({
   wrapModelCall: async (request, handler) => {
     const { messages, toolContextHistory } = request.state;
     const lastToolContext = toolContextHistory?.at(-1);
+    // 长期记忆按 userId 隔离：换 thread_id 仍可读取，换 userId 就读不到。
     const storedThemePreference = getUserPreference(
       request.runtime.context.userId,
       THEME_PREFERENCE_KEY as "theme"
     );
     const uploadedDocument = getUploadedDocument(request.runtime.context.threadId);
 
+    // 长期记忆示例：用户偏好深色主题会被注入给模型，但不会作为普通聊天消息展示。
     const longTermMemoryPrompt = storedThemePreference
       ? [
           "[Long-term memory]",
@@ -54,6 +58,7 @@ export const dynamicMemoryPromptMiddleware = createMiddleware({
           "No saved theme preference found for this user yet."
         ].join("\n");
 
+    // 短期记忆示例：工具刚刚调用的参数和结果，让用户说“继续/刚才那个”时模型有上下文。
     const shortTermMemoryPrompt = lastToolContext
       ? [
           "[Short-term memory]",
@@ -72,6 +77,7 @@ export const dynamicMemoryPromptMiddleware = createMiddleware({
           "No structured tool history has been recorded in this thread yet."
         ].join("\n");
 
+    // 文档状态只告诉模型“有文件可用”，真正内容必须由工具按需检索，避免上下文过大。
     const uploadedDocumentPrompt = uploadedDocument
       ? [
           "[Uploaded document]",
@@ -79,8 +85,8 @@ export const dynamicMemoryPromptMiddleware = createMiddleware({
           `File type: ${uploadedDocument.fileType}`,
           `Uploaded at: ${uploadedDocument.uploadedAt}`,
           "Do not load the whole file into the model context.",
-          "Only call retrieve_uploaded_document_chunks when the user asks to use the file content. The tool uses a simple vector index to retrieve the most relevant chunks for the current task, instead of loading every chunk.",
-          "If the returned chunks are not enough, ask the user for a narrower question or call the retrieval tool again with a more specific query."
+          "Only call retrieve_uploaded_document_chunks when the user asks to use the file content. The tool uses Hybrid RAG: query enhancement, vector similarity, keyword matching, and retrieval validation.",
+          "If the user asks for whole-document analysis, the retriever will return representative chunks across the document instead of only a narrow TopK set."
         ].join("\n")
       : [
           "[Uploaded document]",

@@ -8,7 +8,8 @@ fs.mkdirSync(dataDir, { recursive: true });
 
 export const SQLITE_DB_PATH = path.join(dataDir, "chat-demo.sqlite");
 
-// 所有持久化能力共用一个 SQLite 文件。
+// 当前项目共用一个 SQLite 文件：
+// 对话列表、上传文档元数据、RAG chunk、FTS5 关键词索引、长期记忆和 LangGraph 短期记忆都放这里。
 export const sqliteDb = new Database(SQLITE_DB_PATH);
 sqliteDb.pragma("journal_mode = WAL");
 sqliteDb.pragma("foreign_keys = ON");
@@ -75,6 +76,46 @@ sqliteDb.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_document_chunks_thread
   ON document_chunks(thread_id, chunk_index);
+
+  CREATE VIRTUAL TABLE IF NOT EXISTS document_chunks_fts USING fts5(
+    thread_id UNINDEXED,
+    chunk_index UNINDEXED,
+    content,
+    tokenize = 'unicode61'
+  );
+
+  CREATE TABLE IF NOT EXISTS document_qa_messages (
+    message_id TEXT PRIMARY KEY,
+    thread_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    attachment_name TEXT,
+    attachment_file_id TEXT,
+    sources_json TEXT,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_document_qa_messages_thread_created
+  ON document_qa_messages(thread_id, created_at ASC);
+
+  CREATE TABLE IF NOT EXISTS knowledge_base_documents (
+    document_id TEXT PRIMARY KEY,
+    knowledge_base_id TEXT NOT NULL,
+    version TEXT,
+    file_name TEXT NOT NULL,
+    storage_key TEXT NOT NULL,
+    file_type TEXT NOT NULL,
+    file_size INTEGER NOT NULL,
+    text_length INTEGER NOT NULL,
+    chunk_count INTEGER NOT NULL,
+    parse_status TEXT NOT NULL,
+    index_status TEXT NOT NULL,
+    indexed_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_knowledge_base_documents_base
+  ON knowledge_base_documents(knowledge_base_id, version);
 `);
 
 function addColumnIfMissing(
@@ -82,6 +123,7 @@ function addColumnIfMissing(
   columnName: string,
   definition: string
 ): void {
+  // 轻量迁移：老数据库启动时自动补新列，避免学习项目每次改表都要手动删库。
   const rows = sqliteDb.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{
     name: string;
   }>;
@@ -111,5 +153,5 @@ sqliteDb.exec(`
   WHERE file_id IS NOT NULL;
 `);
 
-// LangGraph 短期记忆改为 SQLite Checkpointer，项目重启后仍可恢复 thread。
+// LangGraph 短期记忆使用 SQLite Checkpointer，项目重启后仍可恢复 thread state。
 export const sqliteCheckpointer = SqliteSaver.fromConnString(SQLITE_DB_PATH);

@@ -1,78 +1,87 @@
 import {
-  DocumentChunk,
   RAG_RETRIEVAL_CONFIG,
   splitUploadedDocument
 } from "./documentChunkLab";
 import { sqliteDb } from "../db/sqlite";
+import { embeddingProvider } from "./embeddingProvider";
+import { vectorStore } from "./vectorStoreProvider";
 import type { UploadedDocumentRecord } from "./uploadedDocumentStore";
+import type { VectorDocumentIndex, VectorIndexedChunk } from "./vectorStore";
 
-const VECTOR_DIMENSIONS = 384;
 const MIN_TOKEN_LENGTH = 2;
 
-export interface VectorIndexedChunk extends DocumentChunk {
-  embedding: number[];
-}
-
-export interface VectorDocumentIndex {
-  threadId: string;
-  userId: string;
-  fileName: string;
-  builtAt: string;
-  dimensions: number;
-  chunkCount: number;
-  chunks: VectorIndexedChunk[];
-}
-
+// 学习点：这是检索返回给后续 Prompt 的 chunk。
+// 除了原始文本，还会带上相似度、关键词分数、重排分数等内部信息。
 export interface VectorSearchChunk extends VectorIndexedChunk {
   similarity: number;
+  keywordScore: number;
+  bm25Score: number;
+  hybridScore: number;
+  rerankScore: number;
   matchedTerms: string[];
 }
 
+// 学习点：Hybrid RAG 比 2-step 多一些中间结果。
+// 这些字段主要给后端判断“检索质量够不够”，不应该直接展示给普通用户。
+export interface HybridDocumentRetrievalResult {
+  index: VectorDocumentIndex;
+  queryEmbedding: number[];
+  queryTerms: string[];
+  enhancedQuery: string;
+  chunks: VectorSearchChunk[];
+  validation: {
+    isWholeDocumentRequest: boolean;
+    isLikelySufficient: boolean;
+    bestHybridScore: number;
+    bestRerankScore: number;
+    matchedTermCount: number;
+    retrievalStrategy: "hybrid-rag" | "hybrid-rag-whole-document";
+    note: string;
+  };
+}
+
+// 学习点：数据库负责长期保存，Map 只是当前 Node 进程里的临时缓存。
+// 重启后 Map 会清空，但数据库/Chroma 里的索引还在。
 const indexByThread = new Map<string, VectorDocumentIndex>();
 
-type DocumentChunkRow = {
-  thread_id: string;
-  chunk_index: number;
-  content: string;
-  char_count: number;
-  start_char: number;
-  end_char: number;
-  embedding_json: string;
-  dimensions: number;
-  built_at: string;
-};
-
 /**
- * Builds and caches a small in-memory vector index for one uploaded document.
- * The embedding is local hashing-based vectorization, so it works without an
- * external embedding API and can later be swapped for a real embedding model.
+ * 学习点：这是 RAG 的“建索引”阶段。
+ *
+ * 第 1 步：把文档切成很多 chunk。
+ * 第 2 步：把每个 chunk 变成 embedding 向量。
+ * 第 3 步：把索引写入 Chroma/SQLite，保证重启后还能用。
+ * 第 4 步：当前进程里也缓存一份，避免同一文档反复读取数据库。
  */
 export async function buildVectorDocumentIndex(
   document: UploadedDocumentRecord
 ): Promise<VectorDocumentIndex> {
   const chunks = await splitUploadedDocument(document);
+  const embeddings = await embeddingProvider.embedTexts(
+    chunks.map((chunk) => chunk.content)
+  );
   const builtAt = new Date().toISOString();
   const index: VectorDocumentIndex = {
     threadId: document.threadId,
     userId: document.userId,
     fileName: document.fileName,
     builtAt,
-    dimensions: VECTOR_DIMENSIONS,
+    dimensions: embeddings[0]?.length || 0,
     chunkCount: chunks.length,
-    chunks: chunks.map((chunk) => ({
+    chunks: chunks.map((chunk, index) => ({
       ...chunk,
-      embedding: embedText(chunk.content)
+      embedding: embeddings[index] || []
     }))
   };
 
   indexByThread.set(document.threadId, index);
-  saveVectorDocumentIndex(index);
+  await vectorStore.saveIndex(index);
   markVectorIndexPersisted(document.threadId);
   return index;
 }
 
 export function clearVectorDocumentIndex(threadId: string): void {
   indexByThread.delete(threadId);
+  vectorStore.clearIndex(threadId);
 }
 
 export async function getOrBuildVectorDocumentIndex(
@@ -80,6 +89,8 @@ export async function getOrBuildVectorDocumentIndex(
 ): Promise<VectorDocumentIndex> {
   const existingIndex = indexByThread.get(document.threadId);
 
+  // 学习点：先查内存缓存。
+  // 如果用户连续追问同一个文档，就不用每次重新读数据库。
   if (
     existingIndex &&
     existingIndex.fileName === document.fileName &&
@@ -88,15 +99,31 @@ export async function getOrBuildVectorDocumentIndex(
     return existingIndex;
   }
 
-  const persistedIndex = getPersistedVectorDocumentIndex(document);
+  const persistedIndex = vectorStore.loadIndex(document.threadId);
   if (persistedIndex) {
-    indexByThread.set(document.threadId, persistedIndex);
-    return persistedIndex;
+    // 学习点：如果内存没有，就从持久化索引恢复。
+    // 这就是为什么项目重启后仍然能继续使用已经建好的索引。
+    const hydratedIndex = {
+      ...persistedIndex,
+      userId: document.userId,
+      fileName: document.fileName
+    };
+    indexByThread.set(document.threadId, hydratedIndex);
+    return hydratedIndex;
   }
 
   return buildVectorDocumentIndex(document);
 }
 
+/**
+ * 学习点：这是最简单的 RAG。
+ *
+ * 第 1 步：把用户问题变成 query embedding。
+ * 第 2 步：用 query embedding 去向量库找最相似的 chunk。
+ * 第 3 步：把 TopK chunk 塞进 Prompt，让模型回答。
+ *
+ * 它不做 BM25、Rerank、Answer Validation，所以速度更快、逻辑更好理解。
+ */
 export async function searchVectorDocumentIndex(
   document: UploadedDocumentRecord,
   query: string
@@ -106,14 +133,13 @@ export async function searchVectorDocumentIndex(
   chunks: VectorSearchChunk[];
 }> {
   const index = await getOrBuildVectorDocumentIndex(document);
-  const queryEmbedding = embedText(query);
-  const queryTerms = extractTerms(query);
-  const rankedChunks = index.chunks
-    .map((chunk) => ({
-      ...chunk,
-      similarity: cosineSimilarity(queryEmbedding, chunk.embedding),
-      matchedTerms: getMatchedTerms(chunk.content, queryTerms)
-    }))
+  const queryEmbedding = await embeddingProvider.embedText(query);
+  const vectorScores = await vectorStore.searchVectorScores(
+    index,
+    queryEmbedding,
+    RAG_RETRIEVAL_CONFIG.topK
+  );
+  const rankedChunks = rankVectorChunks(index.chunks, queryEmbedding, vectorScores.scores)
     .sort((left, right) => {
       if (right.similarity !== left.similarity) {
         return right.similarity - left.similarity;
@@ -129,110 +155,285 @@ export async function searchVectorDocumentIndex(
   };
 }
 
-function embedText(text: string): number[] {
-  const vector = new Array<number>(VECTOR_DIMENSIONS).fill(0);
-
-  for (const token of extractTerms(text)) {
-    const bucket = positiveHash(token) % VECTOR_DIMENSIONS;
-    vector[bucket] += 1;
-  }
-
-  return normalizeVector(vector);
-}
-
-function saveVectorDocumentIndex(index: VectorDocumentIndex): void {
-  const insertChunk = sqliteDb.prepare(
-    `
-      INSERT INTO document_chunks (
-        thread_id,
-        chunk_index,
-        content,
-        char_count,
-        start_char,
-        end_char,
-        embedding_json,
-        dimensions,
-        built_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(thread_id, chunk_index) DO UPDATE SET
-        content = excluded.content,
-        char_count = excluded.char_count,
-        start_char = excluded.start_char,
-        end_char = excluded.end_char,
-        embedding_json = excluded.embedding_json,
-        dimensions = excluded.dimensions,
-        built_at = excluded.built_at
-    `
+/**
+ * 学习点：这是增强版 RAG。
+ *
+ * 当用户问“总结全文、分析整份文档、查知识库、多文档对比”时，
+ * 只靠一次向量检索可能不够，所以这里会多做几步增强。
+ *
+ * 当前流程：
+ * Query Enhancement -> Vector Search -> FTS5/BM25 ->
+ * Score Fusion -> Rule-based Rerank -> Retrieval Validation。
+ */
+export async function searchHybridDocumentIndex(
+  document: UploadedDocumentRecord,
+  query: string
+): Promise<HybridDocumentRetrievalResult> {
+  const index = await getOrBuildVectorDocumentIndex(document);
+  const isWholeDocumentRequest = isWholeDocumentAnalysisRequest(query);
+  const enhancedQuery = enhanceRetrievalQuery(query, document);
+  const queryEmbedding = await embeddingProvider.embedText(enhancedQuery);
+  const queryTerms = extractTerms(enhancedQuery);
+  const bm25Scores = searchFtsBm25Scores(document.threadId, enhancedQuery);
+  // 学习点：这里同时拿“向量检索结果”和“关键词检索结果”。
+  // 向量检索擅长语义相似，BM25/FTS5 擅长精确词、编号、代码、术语。
+  const vectorScores = await vectorStore.searchVectorScores(
+    index,
+    queryEmbedding,
+    RAG_RETRIEVAL_CONFIG.hybridCandidateK
   );
+  const hybridCandidates = rankChunks(
+    index.chunks,
+    queryEmbedding,
+    queryTerms,
+    bm25Scores,
+    vectorScores.scores
+  )
+    .sort((left, right) => {
+      if (right.hybridScore !== left.hybridScore) {
+        return right.hybridScore - left.hybridScore;
+      }
 
-  const saveChunks = sqliteDb.transaction(() => {
-    sqliteDb
-      .prepare("DELETE FROM document_chunks WHERE thread_id = ?")
-      .run(index.threadId);
-
-    for (const chunk of index.chunks) {
-      insertChunk.run(
-        index.threadId,
-        chunk.index,
-        chunk.content,
-        chunk.charCount,
-        chunk.startChar,
-        chunk.endChar,
-        JSON.stringify(chunk.embedding),
-        index.dimensions,
-        index.builtAt
-      );
-    }
-  });
-
-  saveChunks();
-}
-
-function getPersistedVectorDocumentIndex(
-  document: UploadedDocumentRecord
-): VectorDocumentIndex | null {
-  const rows = sqliteDb
-    .prepare(
-      `
-        SELECT
-          thread_id,
-          chunk_index,
-          content,
-          char_count,
-          start_char,
-          end_char,
-          embedding_json,
-          dimensions,
-          built_at
-        FROM document_chunks
-        WHERE thread_id = ?
-        ORDER BY chunk_index ASC
-      `
-    )
-    .all(document.threadId) as DocumentChunkRow[];
-
-  if (rows.length === 0) {
-    return null;
-  }
-
-  const firstRow = rows[0];
+      return left.index - right.index;
+    })
+    .slice(0, RAG_RETRIEVAL_CONFIG.rerankCandidateK);
+  // 学习点：第一次融合后，还要 rerank。
+  // rerank 的目的不是重新检索，而是把候选 chunk 再排得更合理。
+  const rankedChunks = rerankChunks(hybridCandidates, queryTerms);
+  // 学习点：如果用户要“全文总结”，不能只拿最相似的几个片段。
+  // 所以这里会尽量覆盖文档不同位置，减少只看到局部的情况。
+  const selectedChunks = isWholeDocumentRequest
+    ? selectWholeDocumentContext(rankedChunks)
+    : rankedChunks.slice(0, RAG_RETRIEVAL_CONFIG.topK);
+  const bestHybridScore = selectedChunks[0]?.hybridScore ?? 0;
+  const bestRerankScore = selectedChunks[0]?.rerankScore ?? 0;
+  const matchedTermCount = new Set(
+    selectedChunks.flatMap((chunk) => chunk.matchedTerms)
+  ).size;
+  const isLikelySufficient =
+    isWholeDocumentRequest ||
+    bestHybridScore >= RAG_RETRIEVAL_CONFIG.minimumUsefulHybridScore ||
+    matchedTermCount >= Math.min(3, queryTerms.length);
 
   return {
-    threadId: document.threadId,
-    userId: document.userId,
-    fileName: document.fileName,
-    builtAt: firstRow.built_at,
-    dimensions: firstRow.dimensions,
-    chunkCount: rows.length,
-    chunks: rows.map((row) => ({
-      index: row.chunk_index,
-      content: row.content,
-      charCount: row.char_count,
-      startChar: row.start_char,
-      endChar: row.end_char,
-      embedding: JSON.parse(row.embedding_json) as number[]
-    }))
+    index,
+    queryEmbedding,
+    queryTerms,
+    enhancedQuery,
+    chunks: selectedChunks,
+    validation: {
+      isWholeDocumentRequest,
+      isLikelySufficient,
+      bestHybridScore,
+      bestRerankScore,
+      matchedTermCount,
+      retrievalStrategy: isWholeDocumentRequest
+        ? "hybrid-rag-whole-document"
+        : "hybrid-rag",
+      note: isLikelySufficient
+        ? "Retrieval passed hybrid relevance validation."
+        : "Retrieved chunks may be weakly related; ask a narrower question or refine the query."
+    }
   };
+}
+
+function rankChunks(
+  chunks: VectorIndexedChunk[],
+  queryEmbedding: number[],
+  queryTerms: string[],
+  bm25Scores: Map<number, number>,
+  vectorScores: Map<number, number> = new Map()
+): VectorSearchChunk[] {
+  return chunks.map((chunk) => {
+    const matchedTerms = getMatchedTerms(chunk.content, queryTerms);
+    const similarity =
+      vectorScores.get(chunk.index) ?? cosineSimilarity(queryEmbedding, chunk.embedding);
+    const keywordScore = calculateKeywordScore(chunk.content, queryTerms, matchedTerms);
+    const bm25Score = bm25Scores.get(chunk.index) ?? 0;
+    // 学习点：hybridScore 是把多种检索信号合成一个分数。
+    // 这样既能照顾“语义像”，也能照顾“关键词精确命中”。
+    const hybridScore = Number(
+      (similarity * 0.55 + keywordScore * 0.2 + bm25Score * 0.25).toFixed(6)
+    );
+
+    return {
+      ...chunk,
+      similarity,
+      keywordScore,
+      bm25Score,
+      hybridScore,
+      rerankScore: hybridScore,
+      matchedTerms
+    };
+  });
+}
+
+function rankVectorChunks(
+  chunks: VectorIndexedChunk[],
+  queryEmbedding: number[],
+  vectorScores: Map<number, number> = new Map()
+): VectorSearchChunk[] {
+  return chunks.map((chunk) => {
+    const similarity =
+      vectorScores.get(chunk.index) ?? cosineSimilarity(queryEmbedding, chunk.embedding);
+
+    return {
+      ...chunk,
+      similarity,
+      keywordScore: 0,
+      bm25Score: 0,
+      hybridScore: similarity,
+      rerankScore: similarity,
+      matchedTerms: []
+    };
+  });
+}
+
+// 学习点：rerank 是“候选结果重排”。
+// 当前项目先用规则版 rerank，后面如果接入专门的 reranker 模型，可以替换这里。
+function rerankChunks(
+  chunks: VectorSearchChunk[],
+  queryTerms: string[]
+): VectorSearchChunk[] {
+  return chunks
+    .map((chunk) => {
+      const coverageScore =
+        queryTerms.length > 0
+          ? chunk.matchedTerms.length / Math.min(queryTerms.length, 12)
+          : 0;
+      const headingBoost = /^#{1,4}\s|^\d+[.、]\s|^第.+章|^第.+节/m.test(
+        chunk.content
+      )
+        ? 0.04
+        : 0;
+      const lengthPenalty = chunk.charCount > RAG_RETRIEVAL_CONFIG.maxChunkCharacters
+        ? 0.03
+        : 0;
+      const positionBoost = chunk.index <= 2 ? 0.02 : 0;
+      const rerankScore = Number(
+        (
+          chunk.hybridScore * 0.65 +
+          coverageScore * 0.2 +
+          chunk.bm25Score * 0.1 +
+          headingBoost +
+          positionBoost -
+          lengthPenalty
+        ).toFixed(6)
+      );
+
+      return {
+        ...chunk,
+        rerankScore
+      };
+    })
+    .sort((left, right) => {
+      if (right.rerankScore !== left.rerankScore) {
+        return right.rerankScore - left.rerankScore;
+      }
+
+      return left.index - right.index;
+    });
+}
+
+function enhanceRetrievalQuery(
+  query: string,
+  document: UploadedDocumentRecord
+): string {
+  const fileNameContext = document.fileName.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ");
+  // 学习点：短问题可能信息太少，所以给检索器补一点上下文。
+  // 例如把文件名、整体分析提示加入 query，可以提高召回概率。
+  const wholeDocumentHint = isWholeDocumentAnalysisRequest(query)
+    ? "整体 总结 目录 章节 结构 重点 overview summary full document"
+    : "";
+
+  return [query, fileNameContext, wholeDocumentHint].filter(Boolean).join("\n");
+}
+
+function isWholeDocumentAnalysisRequest(query: string): boolean {
+  const normalized = query.toLowerCase();
+  return [
+    "全文",
+    "整份",
+    "整个",
+    "整体",
+    "全篇",
+    "总结",
+    "概括",
+    "概览",
+    "分析这个",
+    "分析文档",
+    "讲一下",
+    "目录",
+    "大纲",
+    "overview",
+    "summarize",
+    "summary",
+    "whole document",
+    "entire document"
+  ].some((keyword) => normalized.includes(keyword));
+}
+
+// 学习点：全文问题需要“覆盖面”，不是只拿最高分。
+function selectWholeDocumentContext(chunks: VectorSearchChunk[]): VectorSearchChunk[] {
+  const selected = new Map<number, VectorSearchChunk>();
+  let usedCharacters = 0;
+
+  for (const chunk of chunks) {
+    if (usedCharacters >= RAG_RETRIEVAL_CONFIG.wholeDocumentMaxContextCharacters) {
+      break;
+    }
+
+    selected.set(chunk.index, chunk);
+    usedCharacters += Math.min(
+      chunk.content.length,
+      RAG_RETRIEVAL_CONFIG.wholeDocumentChunkPreviewCharacters
+    );
+  }
+
+  const stride = Math.max(1, Math.floor(chunks.length / RAG_RETRIEVAL_CONFIG.topK));
+
+  for (let index = 0; index < chunks.length; index += stride) {
+    if (usedCharacters >= RAG_RETRIEVAL_CONFIG.wholeDocumentMaxContextCharacters) {
+      break;
+    }
+
+    const chunk = chunks[index];
+    if (!chunk || selected.has(chunk.index)) {
+      continue;
+    }
+
+    selected.set(chunk.index, chunk);
+    usedCharacters += Math.min(
+      chunk.content.length,
+      RAG_RETRIEVAL_CONFIG.wholeDocumentChunkPreviewCharacters
+    );
+  }
+
+  return [...selected.values()].sort((left, right) => left.index - right.index);
+}
+
+function searchFtsBm25Scores(threadId: string, query: string): Map<number, number> {
+  const ftsQuery = buildFtsQuery(query);
+  if (!ftsQuery) {
+    return new Map();
+  }
+
+  return vectorStore.searchKeywordScores(
+    threadId,
+    ftsQuery,
+    RAG_RETRIEVAL_CONFIG.hybridCandidateK
+  );
+}
+
+// 学习点：SQLite FTS5 的 MATCH 查询需要安全拼接。
+// 这里把用户问题拆成多个词，再用 OR 连接起来做关键词检索。
+function buildFtsQuery(query: string): string {
+  const terms = extractTerms(query)
+    .filter((term) => /^[a-z0-9_+-]+$/i.test(term) || term.length >= 2)
+    .slice(0, RAG_RETRIEVAL_CONFIG.maxQueryTerms)
+    .map((term) => `"${term.replace(/"/g, '""')}"`);
+
+  return [...new Set(terms)].join(" OR ");
 }
 
 function markVectorIndexPersisted(threadId: string): void {
@@ -253,6 +454,8 @@ function extractTerms(text: string): string[] {
   const cjkText = normalizedText.replace(/[^\u4e00-\u9fff]/g, "");
   const cjkTerms: string[] = [];
 
+  // 学习点：中文不像英文有天然空格，所以这里用 bigram。
+  // 例如“知识库”会拆出“知识”“识库”，用于简单关键词匹配。
   for (let index = 0; index < cjkText.length - 1; index += 1) {
     cjkTerms.push(cjkText.slice(index, index + 2));
   }
@@ -270,35 +473,33 @@ function getMatchedTerms(content: string, queryTerms: string[]): string[] {
   );
 }
 
+function calculateKeywordScore(
+  content: string,
+  queryTerms: string[],
+  matchedTerms: string[]
+): number {
+  if (queryTerms.length === 0) {
+    return 0;
+  }
+
+  const normalizedContent = content.toLowerCase();
+  const coverageScore = matchedTerms.length / Math.min(queryTerms.length, 12);
+  const densityScore =
+    matchedTerms.reduce((score, term) => {
+      const occurrences = normalizedContent.split(term).length - 1;
+      return score + Math.min(occurrences, 3) * 0.04;
+    }, 0) || 0;
+
+  return Number(Math.min(1, coverageScore + densityScore).toFixed(6));
+}
+
 function cosineSimilarity(left: number[], right: number[]): number {
   let dotProduct = 0;
+  const length = Math.min(left.length, right.length);
 
-  for (let index = 0; index < left.length; index += 1) {
+  for (let index = 0; index < length; index += 1) {
     dotProduct += left[index] * right[index];
   }
 
   return Number(dotProduct.toFixed(6));
-}
-
-function normalizeVector(vector: number[]): number[] {
-  const magnitude = Math.sqrt(
-    vector.reduce((sum, value) => sum + value * value, 0)
-  );
-
-  if (magnitude === 0) {
-    return vector;
-  }
-
-  return vector.map((value) => value / magnitude);
-}
-
-function positiveHash(value: string): number {
-  let hash = 2166136261;
-
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-
-  return hash >>> 0;
 }

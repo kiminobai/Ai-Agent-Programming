@@ -9,7 +9,33 @@ dotenv.config();
 export const appConfig = {
   host: process.env.HOST || "127.0.0.1",
   port: Number(process.env.PORT || 3000),
-  defaultRoleId: process.env.DEFAULT_ROLE_ID || "python-engineer"
+  defaultRoleId: process.env.DEFAULT_ROLE_ID || "python-engineer",
+  vectorStoreProvider:
+    (process.env.VECTOR_STORE_PROVIDER as "sqlite" | "chroma" | undefined) || "sqlite",
+  chroma: {
+    path: process.env.CHROMA_URL || "http://localhost:8000",
+    collectionName: process.env.CHROMA_COLLECTION || "chat_demo_documents"
+  },
+  embedding: {
+    provider:
+      (process.env.EMBEDDING_PROVIDER as
+        | "hash"
+        | "openai"
+        | "siliconflow"
+        | "compatible"
+        | undefined) || "hash",
+    model: process.env.EMBEDDING_MODEL || "text-embedding-3-small",
+    apiKey:
+      process.env.EMBEDDING_API_KEY ||
+      process.env.OPENAI_API_KEY ||
+      process.env.SILICONFLOW_API_KEY ||
+      "",
+    apiUrl:
+      process.env.EMBEDDING_API_URL ||
+      process.env.OPENAI_EMBEDDING_API_URL ||
+      "https://api.openai.com/v1/embeddings",
+    hashDimensions: Number(process.env.HASH_EMBEDDING_DIMENSIONS || 384)
+  }
 };
 
 const providerConfigs: Record<ProviderId, ProviderConfig> = {
@@ -64,6 +90,7 @@ export const modelCatalog: ModelOption[] = [
     label: "OpenAI GPT-4o Mini",
     provider: "openai",
     description: "OpenAI 轻量通用模型",
+    supportsVision: true,
     enabled: true
   },
   {

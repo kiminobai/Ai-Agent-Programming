@@ -14,6 +14,9 @@ import { AgentContext, AgentContextSchema } from "./agentContext";
 import { dynamicMemoryPromptMiddleware } from "./dynamicMemoryPromptMiddleware";
 import { ToolMemoryState } from "./toolMemoryState";
 
+// LangChain 版 Tool Agent：
+// 模型、System Prompt、工具、短期记忆和 SQLite Checkpointer 都在这里组装进 createAgent。
+// 执行时由模型决定是否调用工具，工具结果再回到模型继续生成最终回答。
 export interface ToolAgentMessage {
   role: "user" | "assistant";
   content: string;
@@ -35,6 +38,7 @@ export class LangChainToolAgent {
   private readonly agent;
 
   constructor(options: LangChainToolAgentOptions) {
+    // ChatOpenAI 也可连接 DeepSeek/SiliconFlow 这类 OpenAI-compatible 接口，关键是 baseURL。
     const model = new ChatOpenAI({
       apiKey: options.apiKey,
       model: options.modelId,
@@ -49,6 +53,7 @@ export class LangChainToolAgent {
       }
     });
 
+    // 超过阈值时自动总结旧消息，避免短期记忆无限增长导致上下文超限。
     const memorySummarizer = summarizationMiddleware({
       model,
       trigger: {
@@ -65,7 +70,9 @@ export class LangChainToolAgent {
       systemPrompt: options.systemPrompt,
       stateSchema: ToolMemoryState,
       contextSchema: AgentContextSchema,
+      // 每次模型调用前动态拼接长期记忆、短期工具上下文和上传文档状态。
       middleware: [memorySummarizer, dynamicMemoryPromptMiddleware],
+      // LangGraph thread state 写入 SQLite，项目重启后仍可恢复该 thread 的上下文。
       checkpointer: sqliteCheckpointer
     });
   }
@@ -75,6 +82,7 @@ export class LangChainToolAgent {
     threadId: string,
     userId: string
   ): Promise<string> {
+    // thread_id 是 LangGraph 短期记忆的分区键；同一个 thread 会继续使用同一份状态。
     const result = await this.agent.invoke(
       { messages: this.toLangChainMessages(messages) },
       {
@@ -92,6 +100,7 @@ export class LangChainToolAgent {
     userId: string,
     onDelta: (chunk: string) => void
   ): Promise<string> {
+    // streamMode=messages 会持续返回模型 token；工具节点输出会被过滤，避免把内部过程展示给用户。
     const stream = await this.agent.stream(
       { messages: this.toLangChainMessages(messages) },
       {
@@ -121,6 +130,7 @@ export class LangChainToolAgent {
     }
 
     if (!fullText) {
+      // 某些模型/工具组合会把最终回答写进 checkpoint 但流里没有 token，这里从状态里兜底恢复。
       fullText = await this.getLatestAssistantText(threadId);
       if (fullText) {
         onDelta(fullText);
@@ -247,6 +257,7 @@ export class LangChainToolAgent {
   }
 
   private extractMessageText(content: unknown): string {
+    // LangChain 消息内容可能是纯字符串，也可能是多模态 block 数组；统一抽出 text。
     if (typeof content === "string") {
       return content;
     }
@@ -290,6 +301,7 @@ export class LangChainToolAgent {
   }
 
   private getBaseUrl(apiUrl: string): string {
+    // 用户配置通常是 /chat/completions 或 /responses 端点，LangChain 需要的是 baseURL。
     const url = new URL(apiUrl);
     url.pathname = url.pathname.replace(
       /\/(?:chat\/completions|responses)\/?$/,
