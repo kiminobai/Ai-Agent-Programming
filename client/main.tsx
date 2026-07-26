@@ -398,6 +398,8 @@ function App() {
   const lastScrollTopRef = useRef(0);
 
   useLayoutEffect(() => {
+    // 学习点：只有用户接近底部时，AI 新内容才自动滚到底部。
+    // 如果用户正在往上看历史，就保持当前位置，不强制打断。
     if (!shouldAutoScrollRef.current && !pendingInitialScrollRef.current) {
       return;
     }
@@ -441,6 +443,7 @@ function App() {
 
   useEffect(() => {
     async function bootstrap() {
+      // 学习点：页面启动时先加载模型和角色，后面发送消息时会一起提交给后端。
       try {
         const [modelsResponse, rolesResponse] = await Promise.all([
           fetch("/api/models"),
@@ -784,6 +787,8 @@ function App() {
   }
 
   async function uploadDocumentForThread(file: File): Promise<DocumentUploadResult> {
+    // 学习点：附件先单独上传。
+    // 后端保存原文件，并在 SQLite 里记录 fileId / storageKey / 解析状态。
     if (!activeThreadId || !userId.trim()) {
       throw new Error("No active thread is available for document upload.");
     }
@@ -807,6 +812,8 @@ function App() {
   }
 
   async function askUploadedDocument(question: string): Promise<DocumentQaResult> {
+    // 学习点：文档问答走单独接口。
+    // 后端会根据当前 thread 找到附件，再进入 RAG 检索和回答流程。
     const response = await fetch("/api/documents/qa", {
       method: "POST",
       headers: {
@@ -1067,6 +1074,7 @@ function App() {
     const isScrollingUp = container.scrollTop < lastScrollTopRef.current;
     const distanceToBottom =
       container.scrollHeight - container.scrollTop - container.clientHeight;
+    // 学习点：用户离底部较近时，才认为可以继续跟随 AI 输出。
     shouldAutoScrollRef.current =
       !isScrollingUp && distanceToBottom <= AUTO_SCROLL_THRESHOLD;
     lastScrollTopRef.current = container.scrollTop;

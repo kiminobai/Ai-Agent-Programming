@@ -1,8 +1,8 @@
 /**
- * LangChain 版 Tool Agent。
+ * 学习点：这是 LangChain 版 Tool Agent。
  *
- * 负责把模型、Prompt、工具和 SQLite 持久化记忆统一交给 createAgent，
- * 形成“模型判断 -> 工具执行 -> 再次判断”的标准 Agent Loop。
+ * 它把模型、System Prompt、Tools、短期记忆和 SQLite checkpointer
+ * 组装到 createAgent 里，形成标准 Agent Loop。
  */
 import { BaseMessage, HumanMessage, AIMessage } from "@langchain/core/messages";
 import { ChatOpenAI } from "@langchain/openai";
@@ -14,9 +14,8 @@ import { AgentContext, AgentContextSchema } from "./agentContext";
 import { dynamicMemoryPromptMiddleware } from "./dynamicMemoryPromptMiddleware";
 import { ToolMemoryState } from "./toolMemoryState";
 
-// LangChain 版 Tool Agent：
-// 模型、System Prompt、工具、短期记忆和 SQLite Checkpointer 都在这里组装进 createAgent。
-// 执行时由模型决定是否调用工具，工具结果再回到模型继续生成最终回答。
+// 学习点：ToolAgentMessage 是项目自己的简单消息格式。
+// 进入 LangChain 前，会再转换成 HumanMessage / AIMessage。
 export interface ToolAgentMessage {
   role: "user" | "assistant";
   content: string;
@@ -38,7 +37,8 @@ export class LangChainToolAgent {
   private readonly agent;
 
   constructor(options: LangChainToolAgentOptions) {
-    // ChatOpenAI 也可连接 DeepSeek/SiliconFlow 这类 OpenAI-compatible 接口，关键是 baseURL。
+    // 学习点：ChatOpenAI 也可以连接 DeepSeek/SiliconFlow 这类 OpenAI-compatible 接口。
+    // 关键是 apiKey、model 和 baseURL。
     const model = new ChatOpenAI({
       apiKey: options.apiKey,
       model: options.modelId,
@@ -53,7 +53,8 @@ export class LangChainToolAgent {
       }
     });
 
-    // 超过阈值时自动总结旧消息，避免短期记忆无限增长导致上下文超限。
+    // 学习点：短期记忆太长会超上下文。
+    // summarizationMiddleware 会在消息太多时，把旧消息压缩成摘要。
     const memorySummarizer = summarizationMiddleware({
       model,
       trigger: {
@@ -70,9 +71,9 @@ export class LangChainToolAgent {
       systemPrompt: options.systemPrompt,
       stateSchema: ToolMemoryState,
       contextSchema: AgentContextSchema,
-      // 每次模型调用前动态拼接长期记忆、短期工具上下文和上传文档状态。
+      // 学习点：每次模型调用前，动态拼接长期记忆、短期工具上下文和上传文档状态。
       middleware: [memorySummarizer, dynamicMemoryPromptMiddleware],
-      // LangGraph thread state 写入 SQLite，项目重启后仍可恢复该 thread 的上下文。
+      // 学习点：LangGraph thread state 写入 SQLite，项目重启后仍可恢复该 thread。
       checkpointer: sqliteCheckpointer
     });
   }
@@ -82,7 +83,8 @@ export class LangChainToolAgent {
     threadId: string,
     userId: string
   ): Promise<string> {
-    // thread_id 是 LangGraph 短期记忆的分区键；同一个 thread 会继续使用同一份状态。
+    // 学习点：thread_id 是 LangGraph 短期记忆的分区键。
+    // 同一个 thread 会继续使用同一份状态。
     const result = await this.agent.invoke(
       { messages: this.toLangChainMessages(messages) },
       {
@@ -100,7 +102,8 @@ export class LangChainToolAgent {
     userId: string,
     onDelta: (chunk: string) => void
   ): Promise<string> {
-    // streamMode=messages 会持续返回模型 token；工具节点输出会被过滤，避免把内部过程展示给用户。
+    // 学习点：streamMode=messages 会持续返回模型 token。
+    // 工具节点输出会被过滤，避免把内部过程展示给用户。
     const stream = await this.agent.stream(
       { messages: this.toLangChainMessages(messages) },
       {
@@ -130,7 +133,7 @@ export class LangChainToolAgent {
     }
 
     if (!fullText) {
-      // 某些模型/工具组合会把最终回答写进 checkpoint 但流里没有 token，这里从状态里兜底恢复。
+      // 学习点：如果流里没有 token，就从 LangGraph state 里兜底找最后一条 AI 消息。
       fullText = await this.getLatestAssistantText(threadId);
       if (fullText) {
         onDelta(fullText);
@@ -257,7 +260,8 @@ export class LangChainToolAgent {
   }
 
   private extractMessageText(content: unknown): string {
-    // LangChain 消息内容可能是纯字符串，也可能是多模态 block 数组；统一抽出 text。
+    // 学习点：LangChain 消息内容可能是字符串，也可能是 block 数组。
+    // 这里统一抽出可展示的 text。
     if (typeof content === "string") {
       return content;
     }

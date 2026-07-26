@@ -57,6 +57,8 @@ type MulterRequest = Request & {
 };
 
 function decodeUploadedFileName(fileName: string): string {
+  // 学习点：浏览器上传中文文件名时，multer 有时会按 latin1 读出来。
+  // 为什么这样：这里尝试转回 UTF-8，避免前端显示文件名乱码。
   const decoded = Buffer.from(fileName, "latin1").toString("utf8");
   const countChinese = (value: string) =>
     [...value].filter((char) => /[\u4e00-\u9fff]/.test(char)).length;
@@ -103,6 +105,8 @@ async function validateDocumentAnswer(input: {
   userId: string;
   reasoningEffort?: ReasoningEffort;
 }): Promise<string> {
+  // 学习点：这是 Answer Validation。
+  // 为什么这样：Hybrid RAG 检索到的片段可能不完整，先让模型检查回答是否被上下文支持，再返回给用户。
   const validationPrompt = [
     "You are validating a RAG answer before it is shown to the user.",
     "Check whether the answer is supported by the retrieved document context.",
@@ -397,6 +401,8 @@ app.post(
   "/api/documents/upload",
   maybeChatUpload,
   async (rawReq, res: Response) => {
+    // 学习点：上传接口只负责“保存文件 + 建立文档记录”，不会直接让 AI 分析。
+    // 为什么这样：是否分析、怎么分析，要等用户在聊天框里明确发送问题后再由 Agent/RAG 决定。
     const req = rawReq as MulterRequest;
     const userId = String(req.body?.userId || "").trim();
     const threadId = String(req.body?.threadId || "").trim();
@@ -417,12 +423,16 @@ app.post(
 
     try {
       const originalName = decodeUploadedFileName(attachment.originalname);
+      // 步骤 1：原始文件保存到 data/uploads，数据库只保存相对 storageKey。
+      // 这样部署时不会把文件路径和本机盘符写死。
       const storedUpload = await saveUploadFile({
         userId,
         threadId,
         originalName,
         buffer: attachment.buffer
       });
+      // 步骤 2：解析文件类型和可检索文本，形成 uploadedDocument 记录。
+      // PDF/Office/图片会在这里进入不同解析路径。
       const uploadedDocument = await createUploadedDocumentRecord({
         threadId,
         userId,
@@ -434,6 +444,8 @@ app.post(
         fileBuffer: attachment.buffer
       });
 
+      // 步骤 3：把文档元数据写入 SQLite。
+      // 后续刷新页面、继续对话、删除对话时都依赖这条记录。
       saveUploadedDocument(uploadedDocument);
 
       res.json({
@@ -472,6 +484,8 @@ app.post(
     >,
     res: Response
   ) => {
+    // 学习点：这是“当前对话上传文件”的问答接口。
+    // 为什么这样：它只查当前 thread 绑定的文件，不会自动查长期知识库，避免上下文来源混乱。
     const userId = req.body?.userId?.trim();
     const threadId = req.body?.threadId?.trim();
     const modelId = req.body?.modelId?.trim();
@@ -521,6 +535,8 @@ app.post(
     }
 
     if (document.fileType === "image") {
+      // 学习点：图片不是普通文本 RAG。
+      // 为什么这样：DeepSeek 当前配置不能直接看图，只有支持视觉的模型才适合进入图片理解流程。
       const sources = [
         {
           sourceId: "image-0",
@@ -735,8 +751,12 @@ app.post(
 
     try {
       const ragDecision = await selectDocumentRagArchitecture(question, document);
+      // 学习点：这里决定走 2-step、Agentic 还是 Hybrid RAG。
+      // 为什么这样：简单问题默认最快，全文/知识库问题需要更强检索，多步骤任务交给 Agent。
 
       if (ragDecision.architecture === "agentic-rag") {
+        // 学习点：Agentic RAG 不在这里手动拼 chunk，而是把“当前 thread 有附件”告诉 Agent。
+        // 为什么这样：生成、对比、改写这类任务可能需要 Agent 自己决定是否调用文档工具。
         const agentProvider = new LangChainProvider(model.provider, getProviderConfig(model.provider));
         const agentPrompt = [
           question,
@@ -798,6 +818,8 @@ app.post(
         ragDecision.architecture === "2-step-rag"
           ? await searchVectorDocumentIndex(document, question)
           : null;
+      // 学习点：2-step 只做一次向量检索；非 2-step 就进入 Hybrid 检索。
+      // 为什么这样：默认路径简单快速，只有复杂问题才付出 BM25、融合、重排、验证的成本。
       const hybridRetrieval = twoStepRetrieval
         ? null
         : await searchHybridDocumentIndex(document, question);
@@ -818,6 +840,8 @@ app.post(
         contentPreview: chunk.content
       }));
       const context = retrieval.chunks
+        // 学习点：这里只把命中的片段放进 Prompt，不把整份文档塞给模型。
+        // 为什么这样：避免上下文超限，也是 RAG 的核心价值。
         .map((chunk) =>
           [
             `[Source: chunk-${chunk.index}]`,
@@ -836,6 +860,8 @@ app.post(
         )
         .join("\n\n---\n\n");
       const qaPrompt = [
+        // 学习点：这个 Prompt 是“用户问题 + 检索上下文 + RAG 策略说明”。
+        // 为什么这样：模型只根据检索片段回答，降低胡说和超上下文风险。
         "Answer the user's question using the retrieved document context below.",
         `Selected RAG architecture: ${ragDecision.architecture}.`,
         `RAG source scope: ${ragDecision.sourceScope}.`,
@@ -952,6 +978,8 @@ app.post(
     >,
     res: Response
   ) => {
+    // 学习点：这是“长期知识库问答”接口。
+    // 为什么这样：它查询 data/knowledge-bases 已经索引的资料，不依赖用户本轮是否上传文件。
     const userId = req.body?.userId?.trim();
     const threadId = req.body?.threadId?.trim() || `${userId}:knowledge-base`;
     const knowledgeBaseId =
@@ -989,6 +1017,8 @@ app.post(
     }
 
     try {
+      // 步骤 1：跨知识库文档检索相关 chunk。
+      // 当前知识库统一使用 Hybrid RAG，提高多版本、多文档场景的召回率。
       const retrieval = await searchKnowledgeBase(knowledgeBaseId, question);
 
       if (retrieval.chunks.length === 0) {
@@ -999,6 +1029,8 @@ app.post(
       }
 
       const context = retrieval.chunks
+        // 步骤 2：把不同文档命中的片段拼成上下文，并保留文件名/版本给模型参考。
+        // 前端不显示原始 chunk 分数，避免影响用户体验。
         .map((chunk, index) =>
           [
             `[Knowledge document ${index + 1}]`,
@@ -1011,6 +1043,8 @@ app.post(
         )
         .join("\n\n---\n\n");
       const qaPrompt = [
+        // 步骤 3：把知识库上下文交给模型生成自然回答。
+        // 注意：这里不是把整个知识库交给模型，而是只交给检索命中的片段。
         "Answer the user's question using the retrieved knowledge base context below.",
         `Knowledge base: ${knowledgeBaseId}`,
         `Selected RAG architecture: ${retrieval.architecture}.`,
@@ -1058,6 +1092,8 @@ const chatHandler: RequestHandler = async (
   rawReq,
   res: Response<{ error: string }>
 ): Promise<void> => {
+  // 学习点：这是普通聊天接口，也是前端发送按钮最终调用的入口。
+  // 为什么这样：文本、角色、模型、附件、threadId 都在这里汇合，再交给 LangChain Agent。
   const req = rawReq as MulterRequest;
   const body = req.body as Partial<ChatRequestPayload>;
   const attachment = req.file;

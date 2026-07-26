@@ -20,6 +20,7 @@ export function saveKnowledgeBaseDocument(
 ): void {
   // 学习点：knowledge_base_documents 只保存知识库文档的“索引状态和元数据”。
   // 原文件仍在 data/knowledge-bases，chunk/embedding 仍在 vector store。
+  // 为什么这样：数据库保存路径和状态，文件系统保存大文件，避免把 PDF/PPT/图片塞进 SQLite。
   sqliteDb
     .prepare(
       `
@@ -87,6 +88,7 @@ export function listKnowledgeBaseDocuments(
 ): KnowledgeBaseDocumentRecord[] {
   // 学习点：问答时只读取已经 parsed + indexed 的文档。
   // 解析失败或还没索引的文件不会进入检索结果。
+  // 为什么这样：RAG 只能检索已经切分和向量化的内容，未完成索引的文件直接参与会导致空结果或错误上下文。
   const rows = sqliteDb
     .prepare(
       `
@@ -112,6 +114,8 @@ export function listKnowledgeBaseDocuments(
     )
     .all(knowledgeBaseId) as KnowledgeBaseDocumentRow[];
 
+  // 学习点：数据库字段是 snake_case，TypeScript 业务对象使用 camelCase。
+  // 为什么这样：数据库保持 SQL 习惯，业务层保持 JS/TS 习惯，两边通过这里统一转换。
   return rows.map((row) => ({
     documentId: row.document_id,
     knowledgeBaseId: row.knowledge_base_id,

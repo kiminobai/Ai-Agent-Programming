@@ -1,5 +1,5 @@
 /**
- * 原生 OpenAI 兼容接口使用的 Current Time JSON Schema。
+ * 学习点：这是原生 OpenAI-compatible Tool Calling 使用的 Current Time JSON Schema。
  */
 export interface CurrentTimeArguments {
   timeZone: string;

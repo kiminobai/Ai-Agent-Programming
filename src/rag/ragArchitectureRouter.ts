@@ -2,11 +2,11 @@ import { embeddingProvider } from "./embeddingProvider";
 import type { UploadedDocumentRecord } from "./uploadedDocumentStore";
 
 // 学习点：architecture 表示“这次 RAG 要怎么执行”。
-// 这里先只记住三种：2-step、Agentic、Hybrid。
+// 这里按官方学习顺序区分三种：2-step、Agentic、Hybrid。
 export type RagArchitecture = "2-step-rag" | "agentic-rag" | "hybrid-rag";
 
 // 学习点：sourceScope 表示“资料从哪里来”。
-// 它不是 RAG 架构，不要和上面的 architecture 混在一起。
+// 它不是 RAG 架构，不要和 architecture 混在一起。
 export type RagSourceScope =
   | "uploaded-document"
   | "knowledge-base"
@@ -102,7 +102,7 @@ const MULTI_DOCUMENT_PATTERNS = [
   "all documents"
 ];
 
-// 学习点：当关键词没命中时，用这些例子做语义判断。
+// 学习点：当关键词没有命中时，用这些例子做语义判断。
 // 用户问题和这些例子越像，就越可能走 Agentic RAG。
 const AGENTIC_EXAMPLES = [
   "根据这份文档生成一份学习计划",
@@ -130,10 +130,10 @@ let semanticExampleEmbeddingsPromise: Promise<{
 /**
  * 学习点：这是“上传文档问答”的 RAG 路由入口。
  *
- * 第 1 步：先看文件类型，图片需要模型能力判断，所以走 Agentic。
- * 第 2 步：看关键词，判断是 Agentic 还是 Hybrid。
- * 第 3 步：关键词不明显时，用 embedding 做语义兜底。
- * 第 4 步：还是不明确，就默认 2-step RAG。
+ * 步骤 1：先看文件类型，图片需要模型能力判断，所以走 Agentic。
+ * 步骤 2：看关键词，判断是 Agentic 还是 Hybrid。
+ * 步骤 3：关键词不明显时，用 embedding 做语义兜底。
+ * 步骤 4：还是不明确，就默认 2-step RAG，用户体验最简单。
  */
 export async function selectDocumentRagArchitecture(
   question: string,

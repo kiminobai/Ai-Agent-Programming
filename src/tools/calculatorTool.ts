@@ -1,6 +1,6 @@
 /**
- * 原生 OpenAI 兼容接口使用的 Calculator JSON Schema。
- * LangChain 模式使用 tools/langchain/calculatorTool.ts 中的 Zod Schema。
+ * 学习点：这是原生 OpenAI-compatible Tool Calling 使用的 Calculator JSON Schema。
+ * LangChain 模式使用 tools/langchain/calculatorTool.ts 里的 Zod Schema。
  */
 export type CalculatorOperation =
   | "add"
@@ -18,11 +18,12 @@ export const CALCULATOR_TOOL_DESCRIPTION =
   "执行两个数字之间的基础算术运算。适用于加、减、乘、除；除法的第二个操作数不能为 0。";
 
 export const calculatorTool = {
-  // strict + additionalProperties:false 可减少模型生成未知参数。
+  // 学习点：strict + additionalProperties:false 可以减少模型生成未知参数。
   type: "function",
   name: "calculator",
   description: CALCULATOR_TOOL_DESCRIPTION,
   strict: true,
+  // 学习点：parameters 是给模型看的“参数说明书”，不是 TypeScript 类型本身。
   parameters: {
     type: "object",
     properties: {

@@ -43,7 +43,7 @@ export async function searchKnowledgeBase(
 
   const retrievedGroups = await Promise.all(
     documents.map(async (record) => {
-      // 学习点：知识库文档在索引阶段被保存成 uploaded-like record。
+      // 步骤 1：知识库文档在索引阶段会保存成 uploaded-like record。
       // 这样可以复用上传文档的 chunk / embedding / hybrid 检索函数。
       const uploadedLikeDocument = getUploadedDocument(record.documentId);
 
@@ -51,8 +51,11 @@ export async function searchKnowledgeBase(
         return [];
       }
 
+      // 步骤 2：对每份文档单独执行 Hybrid RAG 检索。
       const result = await searchHybridDocumentIndex(uploadedLikeDocument, question);
-      // 学习点：给 chunk 补上来源文档和版本号，模型回答时才能知道内容来自哪份资料。
+
+      // 步骤 3：给 chunk 补上来源文档和版本号。
+      // 模型回答时才能知道内容来自哪份资料。
       return result.chunks.map((chunk) => ({
         ...chunk,
         documentId: record.documentId,
@@ -61,10 +64,11 @@ export async function searchKnowledgeBase(
       }));
     })
   );
+
   const chunks = retrievedGroups
     .flat()
     .sort((left, right) => {
-      // 学习点：多文档结果合并后统一按 rerankScore 排序。
+      // 步骤 4：多文档结果合并后统一按 rerankScore 排序。
       // 不是每份文档固定拿几个，而是让更相关的片段排在前面。
       if (right.rerankScore !== left.rerankScore) {
         return right.rerankScore - left.rerankScore;

@@ -1,5 +1,5 @@
 /**
- * Tool Agent 的自定义短期状态。
+ * 学习点：这是 Tool Agent 的自定义短期状态。
  *
  * messages 由 LangChain Agent 内置管理；这里额外保存结构化工具上下文，
  * 让工具本身能够通过 ToolRuntime 读取，并通过 Command 写回。
@@ -24,13 +24,13 @@ export const ToolContextSchema = z.object({
 export type ToolContext = z.infer<typeof ToolContextSchema>;
 
 export const ToolMemoryState = new StateSchema({
-  // createAgent 需要保留内置消息状态，摘要和 Tool Call 都依赖它。
+  // 学习点：createAgent 需要保留内置消息状态，摘要和 Tool Call 都依赖它。
   messages: MessagesValue,
-  // Reducer 允许并行工具在同一个图步骤中安全地追加状态。
+  // 学习点：Reducer 负责把新工具结果追加进历史，而不是覆盖旧结果。
   toolContextHistory: new ReducedValue(
     z.array(ToolContextSchema).default(() => []),
     {
-      // 初始化时 LangGraph 可能传入完整数组；工具更新时只传入单条记录。
+      // 学习点：初始化时可能是完整数组；工具更新时通常只传入单条记录。
       inputSchema: z.union([
         ToolContextSchema,
         z.array(ToolContextSchema)
@@ -49,7 +49,7 @@ export type ToolMemoryRuntime = ToolRuntime<typeof ToolMemoryState.State>;
 export function readLastToolContext(
   runtime: ToolMemoryRuntime
 ): ToolContext | undefined {
-  // 工具可在执行前读取同一 thread_id 中最近一次结构化工具状态。
+  // 学习点：工具可在执行前读取同一 thread_id 中最近一次结构化工具状态。
   return runtime.state.toolContextHistory?.at(-1);
 }
 

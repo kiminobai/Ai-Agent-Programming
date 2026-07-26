@@ -1,6 +1,8 @@
 /**
- * 原生 Tool Calling 的公共导出入口。
- * Schema 会发送给模型，Executor 只在服务端执行。
+ * 学习点：这是原生 Tool Calling 的公共导出入口。
+ *
+ * Schema 会发送给模型，让模型知道工具名称、描述和参数格式。
+ * Executor 只在服务端执行，LLM 自己不会真的调用天气 API 或计算器代码。
  */
 import { calculatorTool } from "./calculatorTool";
 import { currentTimeTool } from "./currentTimeTool";
@@ -40,7 +42,8 @@ export {
 export type { SupportedToolName } from "./toolExecutor";
 
 export const toolSchemas = [
-  // auto 模式下，模型可从这三个 Schema 中选择一个或多个工具。
+  // 学习点：auto 模式下，模型可以从这三个 Schema 中选择一个或多个工具。
+  // 学习点：这里只登记 Schema；真正的执行逻辑在 toolExecutor 里按工具名分发。
   getWeatherTool,
   calculatorTool,
   currentTimeTool

@@ -3,6 +3,8 @@ import { sqliteDb } from "../db/sqlite";
 export const USER_PREFERENCES_NAMESPACE = "user_preferences";
 export const THEME_PREFERENCE_KEY = "theme";
 
+// 学习点：长期记忆保存的是“跨对话仍然有用的信息”。
+// 这里先用最小例子：用户偏好深色主题。
 export interface UserPreferenceMemory {
   preferenceType: "theme";
   value: string;
@@ -14,6 +16,8 @@ export function saveUserPreference(
   userId: string,
   memory: UserPreferenceMemory
 ): void {
+  // 学习点：长期记忆按 userId 隔离。
+  // 换 thread_id 还能读到；换 userId 就读不到。
   sqliteDb
     .prepare(
       `
@@ -43,6 +47,7 @@ export function getUserPreference(
   userId: string,
   preferenceType: UserPreferenceMemory["preferenceType"]
 ): UserPreferenceMemory | null {
+  // 学习点：读取长期记忆时，只按当前 userId 和偏好类型查。
   const row = sqliteDb
     .prepare(
       `

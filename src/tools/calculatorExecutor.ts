@@ -1,6 +1,6 @@
 /**
- * Calculator 的确定性执行器。
- * 即使 Schema 开启 strict，也会把模型参数作为不可信输入再次校验。
+ * 学习点：Calculator 的确定性执行器。
+ * 即使 Schema 开启 strict，也要把模型参数当作不可信输入再次校验。
  */
 import {
   CalculatorArguments,
@@ -14,11 +14,11 @@ export interface CalculatorToolResult {
 }
 
 const OPERATION_SYMBOLS: Record<CalculatorOperation, string> = {
-  // 这些符号只用于可读表达式，不参与实际运算。
+  // 学习点：这些符号只用于展示表达式，不参与实际运算。
   add: "+",
   subtract: "-",
-  multiply: "×",
-  divide: "÷"
+  multiply: "*",
+  divide: "/"
 };
 
 function parseArguments(argumentsValue: unknown): CalculatorArguments {
@@ -86,6 +86,7 @@ export function executeCalculator(
     multiply: () => leftOperand * rightOperand,
     divide: () => leftOperand / rightOperand
   };
+
   // 步骤 9：执行运算，并将 JavaScript 的 -0 规范化为 0。
   const rawResult = resultByOperation[operation]();
   const result = Object.is(rawResult, -0) ? 0 : rawResult;

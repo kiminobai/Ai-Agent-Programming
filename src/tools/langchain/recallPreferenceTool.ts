@@ -12,9 +12,12 @@ import {
 
 export const recallPreferenceTool = tool(
   async ({ preferenceType }, runtime: ToolMemoryRuntime) => {
+    // 学习点：读取长期记忆时也要从 runtime.context 里拿 userId。
+    // 这样不同用户的偏好不会互相串。
     const context = (runtime.context ?? {}) as AgentContext;
     const memory = getUserPreference(context.userId, preferenceType);
 
+    // 学习点：工具读到的记忆会写回短期状态，供 Agent 本轮回答使用。
     return writeToolContext(
       runtime,
       "recall_preference",

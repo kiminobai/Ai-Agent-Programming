@@ -1,6 +1,8 @@
 /**
- * 基于当前线程 State 和长期记忆，为每次模型调用创建临时动态 System Prompt。
- * 这里不把动态内容写回 messages，因此不会被重复持久化。
+ * 学习点：这个中间件会在每次模型调用前，临时追加动态 System Prompt。
+ *
+ * 它会把长期记忆、短期工具状态、当前上传文件状态告诉模型，
+ * 但不会把这些动态内容重复写回 messages。
  */
 import { createMiddleware } from "langchain";
 import { z } from "zod";
@@ -13,8 +15,8 @@ import {
 } from "../memory/longTermMemory";
 import { getUploadedDocument } from "../rag/uploadedDocumentStore";
 
-// 这个 middleware 不直接改历史 messages，而是在每次模型调用前临时追加动态 System Prompt。
-// 好处是长期记忆、工具上下文、上传文件状态都能影响本轮回答，但不会重复写入对话历史。
+// 学习点：middleware 不直接改历史 messages。
+// 它只影响“本次模型调用”，避免动态提示越积越多。
 const MAX_ARGUMENT_LENGTH = 600;
 const MAX_RESULT_LENGTH = 1_200;
 
@@ -36,7 +38,8 @@ export const dynamicMemoryPromptMiddleware = createMiddleware({
   wrapModelCall: async (request, handler) => {
     const { messages, toolContextHistory } = request.state;
     const lastToolContext = toolContextHistory?.at(-1);
-    // 长期记忆按 userId 隔离：换 thread_id 仍可读取，换 userId 就读不到。
+    // 学习点：长期记忆按 userId 隔离。
+    // 换 thread_id 仍可读取，换 userId 就读不到。
     const storedThemePreference = getUserPreference(
       request.runtime.context.userId,
       THEME_PREFERENCE_KEY as "theme"

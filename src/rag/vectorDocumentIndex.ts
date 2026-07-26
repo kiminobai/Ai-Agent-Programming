@@ -41,16 +41,16 @@ export interface HybridDocumentRetrievalResult {
 }
 
 // 学习点：数据库负责长期保存，Map 只是当前 Node 进程里的临时缓存。
-// 重启后 Map 会清空，但数据库/Chroma 里的索引还在。
+// 重启后 Map 会清空，但 SQLite/Chroma 里的索引还在。
 const indexByThread = new Map<string, VectorDocumentIndex>();
 
 /**
  * 学习点：这是 RAG 的“建索引”阶段。
  *
- * 第 1 步：把文档切成很多 chunk。
- * 第 2 步：把每个 chunk 变成 embedding 向量。
- * 第 3 步：把索引写入 Chroma/SQLite，保证重启后还能用。
- * 第 4 步：当前进程里也缓存一份，避免同一文档反复读取数据库。
+ * 步骤 1：把文档切成很多 chunk。
+ * 步骤 2：把每个 chunk 变成 embedding 向量。
+ * 步骤 3：把索引写入 Chroma/SQLite，保证重启后还能用。
+ * 步骤 4：当前进程里也缓存一份，避免同一文档反复读取数据库。
  */
 export async function buildVectorDocumentIndex(
   document: UploadedDocumentRecord
@@ -89,7 +89,7 @@ export async function getOrBuildVectorDocumentIndex(
 ): Promise<VectorDocumentIndex> {
   const existingIndex = indexByThread.get(document.threadId);
 
-  // 学习点：先查内存缓存。
+  // 步骤 1：先查内存缓存。
   // 如果用户连续追问同一个文档，就不用每次重新读数据库。
   if (
     existingIndex &&
@@ -101,7 +101,7 @@ export async function getOrBuildVectorDocumentIndex(
 
   const persistedIndex = vectorStore.loadIndex(document.threadId);
   if (persistedIndex) {
-    // 学习点：如果内存没有，就从持久化索引恢复。
+    // 步骤 2：如果内存没有，就从持久化索引恢复。
     // 这就是为什么项目重启后仍然能继续使用已经建好的索引。
     const hydratedIndex = {
       ...persistedIndex,
@@ -112,15 +112,16 @@ export async function getOrBuildVectorDocumentIndex(
     return hydratedIndex;
   }
 
+  // 步骤 3：如果数据库也没有，才重新切分和向量化。
   return buildVectorDocumentIndex(document);
 }
 
 /**
- * 学习点：这是最简单的 RAG。
+ * 学习点：这是 2-step RAG。
  *
- * 第 1 步：把用户问题变成 query embedding。
- * 第 2 步：用 query embedding 去向量库找最相似的 chunk。
- * 第 3 步：把 TopK chunk 塞进 Prompt，让模型回答。
+ * 步骤 1：把用户问题变成 query embedding。
+ * 步骤 2：用 query embedding 去向量库找最相似的 chunk。
+ * 步骤 3：把 TopK chunk 塞进 Prompt，让模型回答。
  *
  * 它不做 BM25、Rerank、Answer Validation，所以速度更快、逻辑更好理解。
  */
@@ -156,7 +157,7 @@ export async function searchVectorDocumentIndex(
 }
 
 /**
- * 学习点：这是增强版 RAG。
+ * 学习点：这是增强版 Hybrid RAG。
  *
  * 当用户问“总结全文、分析整份文档、查知识库、多文档对比”时，
  * 只靠一次向量检索可能不够，所以这里会多做几步增强。
@@ -175,13 +176,16 @@ export async function searchHybridDocumentIndex(
   const queryEmbedding = await embeddingProvider.embedText(enhancedQuery);
   const queryTerms = extractTerms(enhancedQuery);
   const bm25Scores = searchFtsBm25Scores(document.threadId, enhancedQuery);
-  // 学习点：这里同时拿“向量检索结果”和“关键词检索结果”。
+
+  // 步骤 1：同时拿“向量检索结果”和“关键词检索结果”。
   // 向量检索擅长语义相似，BM25/FTS5 擅长精确词、编号、代码、术语。
   const vectorScores = await vectorStore.searchVectorScores(
     index,
     queryEmbedding,
     RAG_RETRIEVAL_CONFIG.hybridCandidateK
   );
+
+  // 步骤 2：把不同检索信号融合成候选 chunk。
   const hybridCandidates = rankChunks(
     index.chunks,
     queryEmbedding,
@@ -197,10 +201,12 @@ export async function searchHybridDocumentIndex(
       return left.index - right.index;
     })
     .slice(0, RAG_RETRIEVAL_CONFIG.rerankCandidateK);
-  // 学习点：第一次融合后，还要 rerank。
+
+  // 步骤 3：第一次融合后，还要 rerank。
   // rerank 的目的不是重新检索，而是把候选 chunk 再排得更合理。
   const rankedChunks = rerankChunks(hybridCandidates, queryTerms);
-  // 学习点：如果用户要“全文总结”，不能只拿最相似的几个片段。
+
+  // 步骤 4：如果用户要“全文总结”，不能只拿最相似的几个片段。
   // 所以这里会尽量覆盖文档不同位置，减少只看到局部的情况。
   const selectedChunks = isWholeDocumentRequest
     ? selectWholeDocumentContext(rankedChunks)
@@ -210,6 +216,9 @@ export async function searchHybridDocumentIndex(
   const matchedTermCount = new Set(
     selectedChunks.flatMap((chunk) => chunk.matchedTerms)
   ).size;
+
+  // 步骤 5：Answer Validation 的前置判断。
+  // 当前先用规则判断检索是否够用，后续可以换成模型验证。
   const isLikelySufficient =
     isWholeDocumentRequest ||
     bestHybridScore >= RAG_RETRIEVAL_CONFIG.minimumUsefulHybridScore ||
@@ -250,6 +259,7 @@ function rankChunks(
       vectorScores.get(chunk.index) ?? cosineSimilarity(queryEmbedding, chunk.embedding);
     const keywordScore = calculateKeywordScore(chunk.content, queryTerms, matchedTerms);
     const bm25Score = bm25Scores.get(chunk.index) ?? 0;
+
     // 学习点：hybridScore 是把多种检索信号合成一个分数。
     // 这样既能照顾“语义像”，也能照顾“关键词精确命中”。
     const hybridScore = Number(
@@ -301,7 +311,7 @@ function rerankChunks(
         queryTerms.length > 0
           ? chunk.matchedTerms.length / Math.min(queryTerms.length, 12)
           : 0;
-      const headingBoost = /^#{1,4}\s|^\d+[.、]\s|^第.+章|^第.+节/m.test(
+      const headingBoost = /^#{1,4}\s|^\d+[.\u3001]\s|^第.+章|^第.+节/m.test(
         chunk.content
       )
         ? 0.04
@@ -340,6 +350,7 @@ function enhanceRetrievalQuery(
   document: UploadedDocumentRecord
 ): string {
   const fileNameContext = document.fileName.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ");
+
   // 学习点：短问题可能信息太少，所以给检索器补一点上下文。
   // 例如把文件名、整体分析提示加入 query，可以提高召回概率。
   const wholeDocumentHint = isWholeDocumentAnalysisRequest(query)

@@ -13,6 +13,8 @@ import {
 
 export const rememberPreferenceTool = tool(
   async ({ preferenceType, value }, runtime: ToolMemoryRuntime) => {
+    // 学习点：工具运行时可以拿到 AgentContext。
+    // 这里用 userId 写长期记忆，保证换 thread_id 后偏好仍然存在。
     const context = (runtime.context ?? {}) as AgentContext;
     const memory: UserPreferenceMemory = {
       preferenceType,
@@ -23,6 +25,8 @@ export const rememberPreferenceTool = tool(
 
     saveUserPreference(context.userId, memory);
 
+    // 学习点：writeToolContext 会把本次工具调用结果写回短期状态。
+    // 这样 Agent 下一步回答时能知道“偏好已经保存成功”。
     return writeToolContext(
       runtime,
       "remember_preference",

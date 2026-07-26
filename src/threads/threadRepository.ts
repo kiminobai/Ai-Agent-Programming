@@ -16,6 +16,8 @@ export interface ChatThreadRecord {
   updatedAt: string;
 }
 
+// 学习点：SQLite 字段是 snake_case，前端/后端 TS 代码更习惯 camelCase。
+// 这个函数专门负责把数据库行转成项目里的对象。
 function mapThreadRow(
   row:
     | {
@@ -57,6 +59,8 @@ export function createThread(params: {
   roleId: string;
   reasoningEffort?: ReasoningEffort;
 }): ChatThreadRecord {
+  // 学习点：新建对话时先创建 thread 记录。
+  // 真正的消息、短期记忆、上传文件会在后续发送消息时逐步写入。
   const now = new Date().toISOString();
   const threadId = crypto.randomUUID();
 
@@ -104,6 +108,7 @@ export function createThread(params: {
 }
 
 export function listThreadsByUser(userId: string): ChatThreadRecord[] {
+  // 学习点：左侧会话列表按 userId 查询，避免不同用户看到彼此对话。
   const rows = sqliteDb
     .prepare(
       `
@@ -145,6 +150,7 @@ export function getThreadById(
   threadId: string,
   userId: string
 ): ChatThreadRecord | null {
+  // 学习点：查单个 thread 时同时带 userId，是为了做最基础的用户隔离。
   const row = sqliteDb
     .prepare(
       `
@@ -190,6 +196,8 @@ export function updateThreadAfterMessage(params: {
   reasoningEffort?: ReasoningEffort;
   userMessage: string;
 }): void {
+  // 学习点：每次用户发消息后，更新标题预览、模型、角色和更新时间。
+  // 如果还是 New chat，就用第一条用户消息自动生成标题。
   const now = new Date().toISOString();
   const preview = params.userMessage.trim().slice(0, 120);
 
@@ -229,6 +237,7 @@ export function renameThread(
   userId: string,
   title: string
 ): ChatThreadRecord | null {
+  // 学习点：重命名只改标题，不改对话内容和记忆。
   const trimmedTitle = title.trim();
   if (!trimmedTitle) {
     return null;
@@ -250,12 +259,16 @@ export function renameThread(
 }
 
 export function deleteThread(threadId: string, userId: string): boolean {
+  // 学习点：删除对话不是只删 chat_threads。
+  // 还要清理文档问答记录、上传文档记录、向量索引和 LangGraph checkpoint。
   const thread = getThreadById(threadId, userId);
   if (!thread) {
     return false;
   }
 
   const deleteRowsWithThreadId = (tableName: string) => {
+    // 学习点：LangGraph 的 checkpoint 表可能由库创建。
+    // 删除前先看表里有没有 thread_id 字段，避免误删不相关表。
     const columns = sqliteDb.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{
       name: string;
     }>;

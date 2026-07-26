@@ -1,10 +1,13 @@
 /**
- * Shared domain types used across the server, providers, and React client.
+ * 学习点：这里放服务端、Provider 和 React 前端都会用到的共享类型。
+ * 这些类型相当于项目内部的“数据契约”。
  */
 export type ProviderId = "deepseek" | "openai" | "siliconflow";
 
+// 学习点：reasoningEffort 主要给支持推理强度的模型使用。
 export type ReasoningEffort = "minimal" | "low" | "medium" | "high";
 
+// 学习点：前端模型下拉框展示的就是 ModelOption。
 export interface ModelOption {
   id: string;
   label: string;
@@ -25,6 +28,8 @@ export interface FewShotExample {
   assistant: string;
 }
 
+// 学习点：一个 PromptRole 就是一种系统角色。
+// 里面包含 systemPrompt 和可选 few-shot 示例。
 export interface PromptRole {
   id: string;
   label: string;
@@ -59,6 +64,8 @@ export interface ProviderConfig {
   reasoningEffort?: ReasoningEffort;
 }
 
+// 学习点：ChatProvider 是所有模型供应商必须实现的统一接口。
+// DeepSeek、OpenAI、SiliconFlow 都被包装成这个形状。
 export interface ChatProvider {
   id: ProviderId;
   isAvailable(): boolean;

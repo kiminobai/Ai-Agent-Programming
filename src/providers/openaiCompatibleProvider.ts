@@ -4,6 +4,9 @@
  * DeepSeek 使用兼容 Chat Completions，SiliconFlow 使用通用 HTTP，
  * OpenAI 使用 Responses API。DeepSeek 默认由 LangChainProvider 接管，
  * 本实现保留作原生 Tool Calling 学习和回退。
+ *
+ * 学习点：Provider 的职责是“把项目统一的聊天请求，翻译成不同厂商需要的 API 格式”。
+ * 为什么这样：上层业务只关心 sendChat/streamChat，不需要知道每个厂商的请求体差异。
  */
 import OpenAI from "openai";
 import {
@@ -123,6 +126,8 @@ export class OpenAICompatibleProvider implements ChatProvider {
     public readonly id: ProviderId,
     private readonly config: ProviderConfig
   ) {
+    // 学习点：DeepSeek 兼容 OpenAI SDK，所以这里可以复用 openai 包并改 baseURL。
+    // 为什么这样：不用额外引入 DeepSeek SDK，也能调用 DeepSeek 的 Chat Completions 接口。
     if (id === "deepseek" && config.apiKey) {
       this.deepSeekClient = new OpenAI({
         apiKey: config.apiKey,
@@ -160,11 +165,15 @@ export class OpenAICompatibleProvider implements ChatProvider {
     reasoningEffort?: ReasoningEffort,
     _threadId?: string
   ): Promise<string> {
+    // 学习点：非流式入口，一次请求拿完整回答。
+    // 为什么这样：Answer Validation、标题生成等内部流程更适合拿完整文本再处理。
     if (!this.config.apiKey) {
       throw new Error(`${this.id} has no API key configured.`);
     }
 
     if (this.id === "openai") {
+      // 学习点：OpenAI 分支走 Responses API。
+      // 为什么这样：Responses API 支持 reasoning、tool output 等更统一的新格式。
       return this.sendResponsesChat(
         modelId,
         message,
@@ -174,6 +183,8 @@ export class OpenAICompatibleProvider implements ChatProvider {
       );
     }
 
+    // 学习点：DeepSeek/SiliconFlow 这类兼容接口走 Chat Completions 风格。
+    // 为什么这样：不同厂商虽然协议相似，但和 Responses API 的消息结构不同。
     return this.sendCompatibleChat(modelId, message, systemPrompt, fewShotExamples);
   }
 
@@ -186,6 +197,8 @@ export class OpenAICompatibleProvider implements ChatProvider {
     reasoningEffort?: ReasoningEffort,
     _threadId?: string
   ): Promise<string> {
+    // 学习点：流式入口会把模型增量内容通过 onDelta 立即推给前端。
+    // 为什么这样：用户可以边生成边看到内容，体验更像 ChatGPT。
     if (!this.config.apiKey) {
       throw new Error(`${this.id} has no API key configured.`);
     }
@@ -215,6 +228,8 @@ export class OpenAICompatibleProvider implements ChatProvider {
     systemPrompt: string,
     fewShotExamples: FewShotExample[]
   ) {
+    // 学习点：Chat Completions 使用 messages 数组表达 system/user/assistant 历史。
+    // 为什么这样：few-shot 示例要放在真实用户问题之前，让模型先看到回答示范。
     // Few-shot 示例位于真实用户问题之前，用来示范目标回答方式。
     const exampleMessages = fewShotExamples.flatMap((example) => [
       {
@@ -636,7 +651,11 @@ export class OpenAICompatibleProvider implements ChatProvider {
     systemPrompt: string,
     fewShotExamples: FewShotExample[]
   ): Promise<string> {
+    // 学习点：compatible 分支服务 DeepSeek/SiliconFlow 这类 Chat Completions API。
+    // 为什么这样：它们请求体类似 OpenAI Chat Completions，但不一定支持 Responses API。
     if (this.id === "deepseek") {
+      // 学习点：DeepSeek 在这里使用带工具调用循环的专用分支。
+      // 为什么这样：模型只返回 tool_calls，真正执行工具必须由服务端完成。
       return this.sendDeepSeekToolChat(
         modelId,
         message,
@@ -679,6 +698,8 @@ export class OpenAICompatibleProvider implements ChatProvider {
     onDelta: (chunk: string) => void,
     fewShotExamples: FewShotExample[]
   ): Promise<string> {
+    // 学习点：流式 compatible 分支需要一边解析 SSE，一边拼接完整回答。
+    // 为什么这样：前端要实时显示，后端也要保留完整文本写入历史。
     if (this.id === "deepseek") {
       return this.streamDeepSeekToolChat(
         modelId,
@@ -783,6 +804,8 @@ export class OpenAICompatibleProvider implements ChatProvider {
     fewShotExamples: FewShotExample[],
     reasoningEffort?: ReasoningEffort
   ): Promise<string> {
+    // 学习点：Responses API 的工具调用是“两段式”的。
+    // 为什么这样：第一次让模型提出工具调用，服务端执行工具后，再把 tool output 发回模型生成最终回答。
     const initialInput = this.buildResponsesInput(message, fewShotExamples);
     const initialResponse = await fetch(this.config.apiUrl, {
       method: "POST",
@@ -966,6 +989,8 @@ export class OpenAICompatibleProvider implements ChatProvider {
     fewShotExamples: FewShotExample[],
     reasoningEffort?: ReasoningEffort
   ): Promise<string> {
+    // 学习点：Responses API 流式版本也要处理工具调用。
+    // 为什么这样：如果第一段流里出现 tool call，必须暂停生成、执行工具，再继续第二段流。
     const initialInput = this.buildResponsesInput(message, fewShotExamples);
     const initialResult = await this.consumeResponsesStream(
       this.buildResponsesBody(
