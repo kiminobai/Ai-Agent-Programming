@@ -1,25 +1,33 @@
-import fs from "fs";
+﻿import fs from "fs";
 import path from "path";
 import Database from "better-sqlite3";
 import { SqliteSaver } from "@langchain/langgraph-checkpoint-sqlite";
+import { hashPassword } from "../auth";
 
 const dataDir = path.join(process.cwd(), "data");
 fs.mkdirSync(dataDir, { recursive: true });
 
 export const SQLITE_DB_PATH = path.join(dataDir, "chat-demo.sqlite");
 
-// 学习点：SQLite 是当前项目的“结构化数据中心”。
-// 原始文件本体放磁盘目录，数据库主要保存记录、索引、状态和记忆。
-// 当前项目共用一个 SQLite 文件：
-// 对话列表、上传文档元数据、RAG chunk、FTS5 关键词索引、长期记忆和 LangGraph 短期记忆都放这里。
+// SQLite 是当前项目的结构化数据中心：保存对话、文件元数据、RAG 索引、记忆和用户表。
 export const sqliteDb = new Database(SQLITE_DB_PATH);
-// 学习点：WAL 模式能减少读写互相阻塞，适合聊天项目这种边读历史边写消息的场景。
+// WAL 模式能减少读写互相阻塞，适合聊天项目这种边读历史边写消息的场景。
 sqliteDb.pragma("journal_mode = WAL");
-// 学习点：开启外键后，删除对话或文档时，关联 chunk 可以按规则一起清理。
+// 开启外键后，删除对话或文档时，关联 chunk 可以按规则一起清理。
 sqliteDb.pragma("foreign_keys = ON");
 
 sqliteDb.exec(`
-  -- 学习点：长期记忆表，保存跨 thread 的用户偏好，例如“喜欢深色主题”。
+  -- Auth users table. Passwords are stored as hashes, never plain text.
+  CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,
+    username TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  -- Long-term memory table: stores user preferences across threads.
   CREATE TABLE IF NOT EXISTS user_preferences (
     user_id TEXT NOT NULL,
     preference_type TEXT NOT NULL,
@@ -29,7 +37,7 @@ sqliteDb.exec(`
     PRIMARY KEY (user_id, preference_type)
   );
 
-  -- 学习点：对话列表表，左侧历史会从这里读取。
+  -- Chat thread list used by the left sidebar.
   CREATE TABLE IF NOT EXISTS chat_threads (
     thread_id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
@@ -46,8 +54,7 @@ sqliteDb.exec(`
   CREATE INDEX IF NOT EXISTS idx_chat_threads_user_updated
   ON chat_threads(user_id, updated_at DESC);
 
-  -- 学习点：上传文档元数据表，只保存文件路径、解析文本和索引状态。
-  -- 原始 PDF/PPT/图片文件不直接塞进数据库，而是放在 data/uploads。
+  -- Uploaded document metadata. Raw files live on disk; SQLite stores paths and parse/index status.
   CREATE TABLE IF NOT EXISTS uploaded_documents (
     thread_id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
@@ -67,8 +74,7 @@ sqliteDb.exec(`
   CREATE INDEX IF NOT EXISTS idx_uploaded_documents_user_thread
   ON uploaded_documents(user_id, thread_id);
 
-  -- 学习点：RAG chunk 表，保存切分后的文本片段和 embedding。
-  -- SQLite 向量模式会用这里恢复索引，Chroma 模式则主要由 Chroma 保存向量。
+  -- RAG chunks table. Stores split text, location metadata, and embedding fallback data.
   CREATE TABLE IF NOT EXISTS document_chunks (
     thread_id TEXT NOT NULL,
     chunk_index INTEGER NOT NULL,
@@ -91,8 +97,7 @@ sqliteDb.exec(`
   CREATE INDEX IF NOT EXISTS idx_document_chunks_thread
   ON document_chunks(thread_id, chunk_index);
 
-  -- 学习点：FTS5 是 SQLite 的全文检索能力。
-  -- Hybrid RAG 用它做 BM25/关键词检索，弥补纯向量检索对编号、术语、代码不敏感的问题。
+  -- FTS5 keyword index used by Hybrid RAG for BM25-style retrieval.
   CREATE VIRTUAL TABLE IF NOT EXISTS document_chunks_fts USING fts5(
     thread_id UNINDEXED,
     chunk_index UNINDEXED,
@@ -100,7 +105,7 @@ sqliteDb.exec(`
     tokenize = 'unicode61'
   );
 
-  -- 学习点：文档问答消息单独存一张表，便于刷新页面后恢复“带附件的问答记录”。
+  -- Document QA history, used to restore attachment conversations after refresh.
   CREATE TABLE IF NOT EXISTS document_qa_messages (
     message_id TEXT PRIMARY KEY,
     thread_id TEXT NOT NULL,
@@ -116,8 +121,7 @@ sqliteDb.exec(`
   CREATE INDEX IF NOT EXISTS idx_document_qa_messages_thread_created
   ON document_qa_messages(thread_id, created_at ASC);
 
-  -- 学习点：知识库文档表保存长期资料库的文档清单和索引状态。
-  -- 它记录“有哪些资料可检索”，实际 chunk 仍复用 RAG 索引表/向量库。
+  -- Knowledge base document list and indexing status.
   CREATE TABLE IF NOT EXISTS knowledge_base_documents (
     document_id TEXT PRIMARY KEY,
     knowledge_base_id TEXT NOT NULL,
@@ -142,7 +146,7 @@ function addColumnIfMissing(
   columnName: string,
   definition: string
 ): void {
-  // 轻量迁移：老数据库启动时自动补新列，避免学习项目每次改表都要手动删库。
+  // 轻量迁移：老数据库启动时自动补新列，避免每次改表都要手动删库。
   const rows = sqliteDb.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{
     name: string;
   }>;
@@ -172,9 +176,7 @@ for (const [columnName, definition] of [
   ["block_index", "INTEGER NOT NULL DEFAULT 0"],
   ["locator", "TEXT NOT NULL DEFAULT ''"]
 ] as const) {
-  // 学习点：这些是 chunk 的位置元数据。
-  // 为什么这样：后续 PDF 表格/图片、页码引用、段落定位都依赖这些字段。
-  addColumnIfMissing("document_chunks", columnName, definition);
+  // 瀛︿範鐐癸細杩欎簺鏄?chunk 鐨勪綅缃厓鏁版嵁銆?  // 涓轰粈涔堣繖鏍凤細鍚庣画 PDF 琛ㄦ牸/鍥剧墖銆侀〉鐮佸紩鐢ㄣ€佹钀藉畾浣嶉兘渚濊禆杩欎簺瀛楁銆?  addColumnIfMissing("document_chunks", columnName, definition);
 }
 
 sqliteDb.exec(`
@@ -185,3 +187,77 @@ sqliteDb.exec(`
 
 // LangGraph 短期记忆使用 SQLite Checkpointer，项目重启后仍可恢复 thread state。
 export const sqliteCheckpointer = SqliteSaver.fromConnString(SQLITE_DB_PATH);
+
+export type DbUser = {
+  id: string;
+  username: string;
+  passwordHash: string;
+  displayName: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type UserRow = {
+  id: string;
+  username: string;
+  password_hash: string;
+  display_name: string;
+  created_at: string;
+  updated_at: string;
+};
+
+function mapUserRow(row: UserRow | undefined): DbUser | undefined {
+  if (!row) {
+    return undefined;
+  }
+
+  return {
+    id: row.id,
+    username: row.username,
+    passwordHash: row.password_hash,
+    displayName: row.display_name,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function seedDefaultAdminUser(): void {
+  // 默认用户只在第一次启动时创建，避免后续修改密码或新增用户被覆盖。
+  const existing = sqliteDb
+    .prepare("SELECT id FROM users WHERE username = ?")
+    .get("admin") as { id: string } | undefined;
+
+  if (existing) {
+    return;
+  }
+
+  const now = new Date().toISOString();
+  sqliteDb
+    .prepare(
+      `INSERT INTO users (
+        id,
+        username,
+        password_hash,
+        display_name,
+        created_at,
+        updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?)`
+    )
+    .run("admin", "admin", hashPassword("admin123"), "Admin", now, now);
+}
+
+seedDefaultAdminUser();
+
+export function getUserByUsername(username: string): DbUser | undefined {
+  const row = sqliteDb
+    .prepare("SELECT * FROM users WHERE username = ?")
+    .get(username) as UserRow | undefined;
+  return mapUserRow(row);
+}
+
+export function getUserById(userId: string): DbUser | undefined {
+  const row = sqliteDb
+    .prepare("SELECT * FROM users WHERE id = ?")
+    .get(userId) as UserRow | undefined;
+  return mapUserRow(row);
+}

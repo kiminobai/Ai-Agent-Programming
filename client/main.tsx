@@ -27,6 +27,15 @@ type PromptRole = {
   summary: string;
 };
 
+type AuthSession = {
+  token: string;
+  user: {
+    id: string;
+    username: string;
+    displayName: string;
+  };
+};
+
 type ChatEntry = {
   id: string;
   role: "user" | "assistant";
@@ -131,14 +140,40 @@ function applyStreamEvent(rawEvent: string, onEvent: (event: StreamEvent) => voi
 }
 
 function getOrCreateStoredId(storageKey: string): string {
-  const existingValue = sessionStorage.getItem(storageKey);
+  const existingValue = localStorage.getItem(storageKey);
   if (existingValue) {
     return existingValue;
   }
 
   const nextValue = crypto.randomUUID();
-  sessionStorage.setItem(storageKey, nextValue);
+  localStorage.setItem(storageKey, nextValue);
   return nextValue;
+}
+
+const AUTH_SESSION_STORAGE_KEY = "chat-demo-auth-session";
+
+function getStoredAuthSession(): AuthSession | null {
+  const rawSession = localStorage.getItem(AUTH_SESSION_STORAGE_KEY);
+  if (!rawSession) {
+    return null;
+  }
+
+  try {
+    const session = JSON.parse(rawSession) as AuthSession;
+    if (!session.token || !session.user?.id) {
+      localStorage.removeItem(AUTH_SESSION_STORAGE_KEY);
+      return null;
+    }
+
+    return session;
+  } catch {
+    localStorage.removeItem(AUTH_SESSION_STORAGE_KEY);
+    return null;
+  }
+}
+
+function getInitialUserId(): string {
+  return getStoredAuthSession()?.user.id || getOrCreateStoredId("chat-demo-user-id");
 }
 
 const AUTO_SCROLL_THRESHOLD = 120;
@@ -382,7 +417,15 @@ function App() {
   const [renamingTitle, setRenamingTitle] = useState("");
   const [error, setError] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [userId] = useState(() => getOrCreateStoredId("chat-demo-user-id"));
+  const [authSession, setAuthSession] = useState<AuthSession | null>(() =>
+    getStoredAuthSession()
+  );
+  const [userId, setUserId] = useState(() => getInitialUserId());
+  const [isLoginOpen, setIsLoginOpen] = useState(false);
+  const [loginName, setLoginName] = useState("admin");
+  const [loginPassword, setLoginPassword] = useState("admin123");
+  const [loginError, setLoginError] = useState("");
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [attachment, setAttachment] = useState<File | null>(null);
   const [composerAttachmentPreviewUrl, setComposerAttachmentPreviewUrl] = useState("");
   const [activeDocumentName, setActiveDocumentName] = useState("");
@@ -437,6 +480,64 @@ function App() {
       roleId &&
       (message.trim() || attachment)
   );
+
+  useEffect(() => {
+    const session = getStoredAuthSession();
+    if (!session) {
+      return;
+    }
+
+    let isCancelled = false;
+
+    async function validateStoredSession() {
+      try {
+        const response = await fetch("/api/auth/me", {
+          headers: {
+            Authorization: `Bearer ${session.token}`
+          }
+        });
+
+        if (!response.ok) {
+          throw new Error("Session expired");
+        }
+
+        const data = (await response.json()) as { user: AuthSession["user"] };
+        if (isCancelled) {
+          return;
+        }
+
+        const nextSession: AuthSession = {
+          token: session.token,
+          user: data.user
+        };
+        localStorage.setItem(AUTH_SESSION_STORAGE_KEY, JSON.stringify(nextSession));
+        localStorage.setItem("chat-demo-user-id", data.user.id);
+        setAuthSession(nextSession);
+        setUserId(data.user.id);
+      } catch {
+        if (isCancelled) {
+          return;
+        }
+
+        const guestUserId = crypto.randomUUID();
+        localStorage.removeItem(AUTH_SESSION_STORAGE_KEY);
+        localStorage.setItem("chat-demo-user-id", guestUserId);
+        sessionStorage.removeItem("chat-demo-active-thread-id");
+        setAuthSession(null);
+        setUserId(guestUserId);
+        setEntries([]);
+        setActiveThreadId("");
+        setThreads([]);
+        setError("登录已失效，请重新登录。");
+      }
+    }
+
+    void validateStoredSession();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!attachment || !isImageFile(attachment.name)) {
@@ -794,6 +895,78 @@ function App() {
       );
     } finally {
       setIsThreadLoading(false);
+    }
+  }
+
+  async function handleLoginSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (isLoggingIn) {
+      return;
+    }
+
+    const normalizedName = loginName.trim();
+
+    if (!normalizedName || !loginPassword) {
+      setLoginError("请输入账号和密码。");
+      return;
+    }
+
+    try {
+      setLoginError("");
+      setIsLoggingIn(true);
+      const response = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          username: normalizedName,
+          password: loginPassword
+        })
+      });
+      const data = (await response.json()) as AuthSession & { error?: string };
+
+      if (!response.ok) {
+        setLoginError(data.error || "登录失败，请检查账号和密码。");
+        return;
+      }
+
+      localStorage.setItem(AUTH_SESSION_STORAGE_KEY, JSON.stringify(data));
+      localStorage.setItem("chat-demo-user-id", data.user.id);
+      sessionStorage.removeItem("chat-demo-active-thread-id");
+      setAuthSession(data);
+      setUserId(data.user.id);
+      setLoginName("");
+      setLoginPassword("");
+      setLoginError("");
+      setIsLoginOpen(false);
+      setEntries([]);
+      setActiveThreadId("");
+      setThreads([]);
+
+      if (modelId && roleId) {
+        await loadThreads(data.user.id, modelId, roleId, reasoningEffort);
+      }
+    } catch {
+      setLoginError("登录请求失败，请确认服务已重启。");
+    } finally {
+      setIsLoggingIn(false);
+    }
+  }
+
+  async function handleLogout() {
+    const guestUserId = crypto.randomUUID();
+    localStorage.removeItem(AUTH_SESSION_STORAGE_KEY);
+    localStorage.setItem("chat-demo-user-id", guestUserId);
+    sessionStorage.removeItem("chat-demo-active-thread-id");
+    setAuthSession(null);
+    setUserId(guestUserId);
+    setEntries([]);
+    setActiveThreadId("");
+    setThreads([]);
+
+    if (modelId && roleId) {
+      await loadThreads(guestUserId, modelId, roleId, reasoningEffort);
     }
   }
 
@@ -1185,7 +1358,7 @@ function App() {
       <aside className={`sidebar ${sidebarOpen ? "open" : ""}`}>
         <div className="sidebar-header">
           <div>
-            <h1>ChatGPT</h1>
+            <h1>KimiBai</h1>
           </div>
           <button
             type="button"
@@ -1269,7 +1442,79 @@ function App() {
             ))}
           </div>
         </section>
+        <section className="sidebar-account">
+          <button
+            type="button"
+            className="account-button"
+            onClick={() => {
+              setLoginName((currentName) => currentName || "admin");
+              setLoginPassword((currentPassword) => currentPassword || "admin123");
+              setLoginError("");
+              setIsLoginOpen(true);
+            }}
+          >
+            <span className="account-avatar">
+              {authSession ? authSession.user.displayName.slice(0, 1).toUpperCase() : "访"}
+            </span>
+            <span className="account-info">
+              <strong>{authSession ? authSession.user.username : "访客模式"}</strong>
+              <small>{authSession ? "记忆已持久化" : "点击登录保存记忆"}</small>
+            </span>
+          </button>
+          {authSession ? (
+            <button
+              type="button"
+              className="account-logout-button"
+              onClick={() => void handleLogout()}
+            >
+              退出
+            </button>
+          ) : null}
+        </section>
       </aside>
+
+      {isLoginOpen ? (
+        <div className="login-modal-backdrop" role="presentation">
+          <form className="login-modal" onSubmit={handleLoginSubmit}>
+            <div className="login-modal-header">
+              <div>
+                <h2>登录</h2>
+                <p>登录后使用固定用户记忆。</p>
+              </div>
+              <button
+                type="button"
+                className="login-modal-close"
+                onClick={() => setIsLoginOpen(false)}
+              >
+                ×
+              </button>
+            </div>
+            <label>
+              <span>账号</span>
+              <input
+                value={loginName}
+                onChange={(event) => setLoginName(event.target.value)}
+                placeholder="admin"
+                autoComplete="username"
+              />
+            </label>
+            <label>
+              <span>密码</span>
+              <input
+                value={loginPassword}
+                onChange={(event) => setLoginPassword(event.target.value)}
+                placeholder="admin123"
+                type="password"
+                autoComplete="current-password"
+              />
+            </label>
+            {loginError ? <div className="login-error">{loginError}</div> : null}
+            <button type="submit" className="login-submit-button" disabled={isLoggingIn}>
+              {isLoggingIn ? "登录中..." : "登录"}
+            </button>
+          </form>
+        </div>
+      ) : null}
 
       <main
         ref={chatLayoutRef}

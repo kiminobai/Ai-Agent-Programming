@@ -10,7 +10,9 @@
 import express, { Request, RequestHandler, Response } from "express";
 import multer from "multer";
 import path from "path";
+import { createAuthToken, verifyAuthToken, verifyPassword } from "./auth";
 import { appConfig, getProviderConfig } from "./config";
+import { getUserById, getUserByUsername } from "./db/sqlite";
 import { getModelById, getPublicModels } from "./modelRegistry";
 import { getPromptRoleById, promptRoles } from "./prompts";
 import { createProviderRegistry } from "./providerRegistry";
@@ -222,6 +224,70 @@ function extractJsonObject(value: string): string {
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "..", "public")));
+
+app.post("/api/auth/login", (req: Request, res: Response) => {
+  const username = String(req.body?.username || "").trim();
+  const password = String(req.body?.password || "");
+
+  if (!username || !password) {
+    res.status(400).json({ error: "请输入账号和密码。" });
+    return;
+  }
+
+  const user = getUserByUsername(username);
+  if (!user || !verifyPassword(password, user.passwordHash)) {
+    res.status(401).json({ error: "账号或密码错误。" });
+    return;
+  }
+
+  const publicUser = {
+    id: user.id,
+    username: user.username,
+    displayName: user.displayName
+  };
+  const token = createAuthToken(
+    publicUser,
+    appConfig.auth.tokenSecret,
+    appConfig.auth.tokenTtlSeconds
+  );
+
+  res.json({
+    token,
+    user: publicUser
+  });
+});
+
+app.get("/api/auth/me", (req: Request, res: Response) => {
+  const authorization = String(req.headers.authorization || "");
+  const token = authorization.startsWith("Bearer ")
+    ? authorization.slice("Bearer ".length).trim()
+    : "";
+
+  if (!token) {
+    res.status(401).json({ error: "请先登录。" });
+    return;
+  }
+
+  const payload = verifyAuthToken(token, appConfig.auth.tokenSecret);
+  if (!payload) {
+    res.status(401).json({ error: "登录已失效，请重新登录。" });
+    return;
+  }
+
+  const user = getUserById(payload.sub);
+  if (!user) {
+    res.status(401).json({ error: "用户不存在，请重新登录。" });
+    return;
+  }
+
+  res.json({
+    user: {
+      id: user.id,
+      username: user.username,
+      displayName: user.displayName
+    }
+  });
+});
 
 app.get("/api/models", (_req: Request, res: Response) => {
   res.json({

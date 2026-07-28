@@ -166,6 +166,78 @@ input {
   line-height: 1.4;
 }
 
+.sidebar-account {
+  margin-top: auto;
+  padding-top: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  display: grid;
+  gap: 8px;
+}
+
+.account-button {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  color: #f9fafb;
+  padding: 8px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.account-button:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.account-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--green);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.account-info {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.account-info strong,
+.account-info small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-info strong {
+  font-size: 13px;
+}
+
+.account-info small {
+  color: #a1a1aa;
+  font-size: 11px;
+}
+
+.account-logout-button {
+  justify-self: start;
+  border: 0;
+  background: transparent;
+  color: #fda4af;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 0 8px 4px;
+}
+
 .thread-rename-button {
   border: 0;
   background: transparent;
@@ -256,6 +328,96 @@ input {
   border-radius: 14px;
   background: var(--danger-bg);
   color: var(--danger-text);
+}
+
+.login-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(17, 24, 39, 0.34);
+  backdrop-filter: blur(8px);
+}
+
+.login-modal {
+  width: min(380px, 100%);
+  display: grid;
+  gap: 14px;
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  background: #fff;
+  box-shadow: 0 24px 80px rgba(15, 23, 42, 0.2);
+  padding: 20px;
+}
+
+.login-modal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.login-modal h2 {
+  margin: 0;
+  font-size: 22px;
+}
+
+.login-modal p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.login-modal-close {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 24px;
+  line-height: 1;
+}
+
+.login-modal label {
+  display: grid;
+  gap: 6px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.login-modal input {
+  min-height: 42px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  outline: none;
+  padding: 0 12px;
+}
+
+.login-modal input:focus {
+  border-color: var(--green);
+  box-shadow: 0 0 0 3px rgba(16, 163, 127, 0.12);
+}
+
+.login-error {
+  border: 1px solid var(--danger-line);
+  border-radius: 12px;
+  background: var(--danger-bg);
+  color: var(--danger-text);
+  padding: 10px 12px;
+  font-size: 13px;
+}
+
+.login-submit-button {
+  min-height: 44px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--green);
+  color: #fff;
+  cursor: pointer;
+  font-weight: 800;
 }
 
 .hidden-file-input {

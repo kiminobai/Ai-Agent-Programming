@@ -21474,13 +21474,34 @@
     }
   }
   function getOrCreateStoredId(storageKey) {
-    const existingValue = sessionStorage.getItem(storageKey);
+    const existingValue = localStorage.getItem(storageKey);
     if (existingValue) {
       return existingValue;
     }
     const nextValue = crypto.randomUUID();
-    sessionStorage.setItem(storageKey, nextValue);
+    localStorage.setItem(storageKey, nextValue);
     return nextValue;
+  }
+  var AUTH_SESSION_STORAGE_KEY = "chat-demo-auth-session";
+  function getStoredAuthSession() {
+    const rawSession = localStorage.getItem(AUTH_SESSION_STORAGE_KEY);
+    if (!rawSession) {
+      return null;
+    }
+    try {
+      const session = JSON.parse(rawSession);
+      if (!session.token || !session.user?.id) {
+        localStorage.removeItem(AUTH_SESSION_STORAGE_KEY);
+        return null;
+      }
+      return session;
+    } catch {
+      localStorage.removeItem(AUTH_SESSION_STORAGE_KEY);
+      return null;
+    }
+  }
+  function getInitialUserId() {
+    return getStoredAuthSession()?.user.id || getOrCreateStoredId("chat-demo-user-id");
   }
   var AUTO_SCROLL_THRESHOLD = 120;
   var THINKING_STATUS_TEXT = "\u6B63\u5728\u601D\u8003\u2026";
@@ -21643,7 +21664,15 @@
     const [renamingTitle, setRenamingTitle] = (0, import_react.useState)("");
     const [error, setError] = (0, import_react.useState)("");
     const [sidebarOpen, setSidebarOpen] = (0, import_react.useState)(false);
-    const [userId] = (0, import_react.useState)(() => getOrCreateStoredId("chat-demo-user-id"));
+    const [authSession, setAuthSession] = (0, import_react.useState)(
+      () => getStoredAuthSession()
+    );
+    const [userId, setUserId] = (0, import_react.useState)(() => getInitialUserId());
+    const [isLoginOpen, setIsLoginOpen] = (0, import_react.useState)(false);
+    const [loginName, setLoginName] = (0, import_react.useState)("admin");
+    const [loginPassword, setLoginPassword] = (0, import_react.useState)("admin123");
+    const [loginError, setLoginError] = (0, import_react.useState)("");
+    const [isLoggingIn, setIsLoggingIn] = (0, import_react.useState)(false);
     const [attachment, setAttachment] = (0, import_react.useState)(null);
     const [composerAttachmentPreviewUrl, setComposerAttachmentPreviewUrl] = (0, import_react.useState)("");
     const [activeDocumentName, setActiveDocumentName] = (0, import_react.useState)("");
@@ -21686,6 +21715,55 @@
     const canSubmit = Boolean(
       !isSubmitting && !isLoading && !isThreadLoading && activeThreadId && modelId && roleId && (message.trim() || attachment)
     );
+    (0, import_react.useEffect)(() => {
+      const session = getStoredAuthSession();
+      if (!session) {
+        return;
+      }
+      let isCancelled = false;
+      async function validateStoredSession() {
+        try {
+          const response = await fetch("/api/auth/me", {
+            headers: {
+              Authorization: `Bearer ${session.token}`
+            }
+          });
+          if (!response.ok) {
+            throw new Error("Session expired");
+          }
+          const data = await response.json();
+          if (isCancelled) {
+            return;
+          }
+          const nextSession = {
+            token: session.token,
+            user: data.user
+          };
+          localStorage.setItem(AUTH_SESSION_STORAGE_KEY, JSON.stringify(nextSession));
+          localStorage.setItem("chat-demo-user-id", data.user.id);
+          setAuthSession(nextSession);
+          setUserId(data.user.id);
+        } catch {
+          if (isCancelled) {
+            return;
+          }
+          const guestUserId = crypto.randomUUID();
+          localStorage.removeItem(AUTH_SESSION_STORAGE_KEY);
+          localStorage.setItem("chat-demo-user-id", guestUserId);
+          sessionStorage.removeItem("chat-demo-active-thread-id");
+          setAuthSession(null);
+          setUserId(guestUserId);
+          setEntries([]);
+          setActiveThreadId("");
+          setThreads([]);
+          setError("\u767B\u5F55\u5DF2\u5931\u6548\uFF0C\u8BF7\u91CD\u65B0\u767B\u5F55\u3002");
+        }
+      }
+      void validateStoredSession();
+      return () => {
+        isCancelled = true;
+      };
+    }, []);
     (0, import_react.useEffect)(() => {
       if (!attachment || !isImageFile(attachment.name)) {
         setComposerAttachmentPreviewUrl("");
@@ -21969,6 +22047,69 @@
         );
       } finally {
         setIsThreadLoading(false);
+      }
+    }
+    async function handleLoginSubmit(event) {
+      event.preventDefault();
+      if (isLoggingIn) {
+        return;
+      }
+      const normalizedName = loginName.trim();
+      if (!normalizedName || !loginPassword) {
+        setLoginError("\u8BF7\u8F93\u5165\u8D26\u53F7\u548C\u5BC6\u7801\u3002");
+        return;
+      }
+      try {
+        setLoginError("");
+        setIsLoggingIn(true);
+        const response = await fetch("/api/auth/login", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            username: normalizedName,
+            password: loginPassword
+          })
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          setLoginError(data.error || "\u767B\u5F55\u5931\u8D25\uFF0C\u8BF7\u68C0\u67E5\u8D26\u53F7\u548C\u5BC6\u7801\u3002");
+          return;
+        }
+        localStorage.setItem(AUTH_SESSION_STORAGE_KEY, JSON.stringify(data));
+        localStorage.setItem("chat-demo-user-id", data.user.id);
+        sessionStorage.removeItem("chat-demo-active-thread-id");
+        setAuthSession(data);
+        setUserId(data.user.id);
+        setLoginName("");
+        setLoginPassword("");
+        setLoginError("");
+        setIsLoginOpen(false);
+        setEntries([]);
+        setActiveThreadId("");
+        setThreads([]);
+        if (modelId && roleId) {
+          await loadThreads(data.user.id, modelId, roleId, reasoningEffort);
+        }
+      } catch {
+        setLoginError("\u767B\u5F55\u8BF7\u6C42\u5931\u8D25\uFF0C\u8BF7\u786E\u8BA4\u670D\u52A1\u5DF2\u91CD\u542F\u3002");
+      } finally {
+        setIsLoggingIn(false);
+      }
+    }
+    async function handleLogout() {
+      const guestUserId = crypto.randomUUID();
+      localStorage.removeItem(AUTH_SESSION_STORAGE_KEY);
+      localStorage.setItem("chat-demo-user-id", guestUserId);
+      sessionStorage.removeItem("chat-demo-active-thread-id");
+      setAuthSession(null);
+      setUserId(guestUserId);
+      setEntries([]);
+      setActiveThreadId("");
+      setThreads([]);
+      if (modelId && roleId) {
+        await loadThreads(guestUserId, modelId, roleId, reasoningEffort);
       }
     }
     async function uploadDocumentForThread(file) {
@@ -22280,7 +22421,7 @@
         shouldAutoScrollRef.current = false;
       }
     }
-    return /* @__PURE__ */ import_react.default.createElement("div", { className: "chatgpt-shell" }, /* @__PURE__ */ import_react.default.createElement("aside", { className: `sidebar ${sidebarOpen ? "open" : ""}` }, /* @__PURE__ */ import_react.default.createElement("div", { className: "sidebar-header" }, /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("h1", null, "ChatGPT")), /* @__PURE__ */ import_react.default.createElement(
+    return /* @__PURE__ */ import_react.default.createElement("div", { className: "chatgpt-shell" }, /* @__PURE__ */ import_react.default.createElement("aside", { className: `sidebar ${sidebarOpen ? "open" : ""}` }, /* @__PURE__ */ import_react.default.createElement("div", { className: "sidebar-header" }, /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("h1", null, "KimiBai")), /* @__PURE__ */ import_react.default.createElement(
       "button",
       {
         type: "button",
@@ -22351,7 +22492,54 @@
         },
         "\u5220\u9664"
       ))
-    ))))), /* @__PURE__ */ import_react.default.createElement(
+    )))), /* @__PURE__ */ import_react.default.createElement("section", { className: "sidebar-account" }, /* @__PURE__ */ import_react.default.createElement(
+      "button",
+      {
+        type: "button",
+        className: "account-button",
+        onClick: () => {
+          setLoginName((currentName) => currentName || "admin");
+          setLoginPassword((currentPassword) => currentPassword || "admin123");
+          setLoginError("");
+          setIsLoginOpen(true);
+        }
+      },
+      /* @__PURE__ */ import_react.default.createElement("span", { className: "account-avatar" }, authSession ? authSession.user.displayName.slice(0, 1).toUpperCase() : "\u8BBF"),
+      /* @__PURE__ */ import_react.default.createElement("span", { className: "account-info" }, /* @__PURE__ */ import_react.default.createElement("strong", null, authSession ? authSession.user.username : "\u8BBF\u5BA2\u6A21\u5F0F"), /* @__PURE__ */ import_react.default.createElement("small", null, authSession ? "\u8BB0\u5FC6\u5DF2\u6301\u4E45\u5316" : "\u70B9\u51FB\u767B\u5F55\u4FDD\u5B58\u8BB0\u5FC6"))
+    ), authSession ? /* @__PURE__ */ import_react.default.createElement(
+      "button",
+      {
+        type: "button",
+        className: "account-logout-button",
+        onClick: () => void handleLogout()
+      },
+      "\u9000\u51FA"
+    ) : null)), isLoginOpen ? /* @__PURE__ */ import_react.default.createElement("div", { className: "login-modal-backdrop", role: "presentation" }, /* @__PURE__ */ import_react.default.createElement("form", { className: "login-modal", onSubmit: handleLoginSubmit }, /* @__PURE__ */ import_react.default.createElement("div", { className: "login-modal-header" }, /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("h2", null, "\u767B\u5F55"), /* @__PURE__ */ import_react.default.createElement("p", null, "\u767B\u5F55\u540E\u4F7F\u7528\u56FA\u5B9A\u7528\u6237\u8BB0\u5FC6\u3002")), /* @__PURE__ */ import_react.default.createElement(
+      "button",
+      {
+        type: "button",
+        className: "login-modal-close",
+        onClick: () => setIsLoginOpen(false)
+      },
+      "\xD7"
+    )), /* @__PURE__ */ import_react.default.createElement("label", null, /* @__PURE__ */ import_react.default.createElement("span", null, "\u8D26\u53F7"), /* @__PURE__ */ import_react.default.createElement(
+      "input",
+      {
+        value: loginName,
+        onChange: (event) => setLoginName(event.target.value),
+        placeholder: "admin",
+        autoComplete: "username"
+      }
+    )), /* @__PURE__ */ import_react.default.createElement("label", null, /* @__PURE__ */ import_react.default.createElement("span", null, "\u5BC6\u7801"), /* @__PURE__ */ import_react.default.createElement(
+      "input",
+      {
+        value: loginPassword,
+        onChange: (event) => setLoginPassword(event.target.value),
+        placeholder: "admin123",
+        type: "password",
+        autoComplete: "current-password"
+      }
+    )), loginError ? /* @__PURE__ */ import_react.default.createElement("div", { className: "login-error" }, loginError) : null, /* @__PURE__ */ import_react.default.createElement("button", { type: "submit", className: "login-submit-button", disabled: isLoggingIn }, isLoggingIn ? "\u767B\u5F55\u4E2D..." : "\u767B\u5F55"))) : null, /* @__PURE__ */ import_react.default.createElement(
       "main",
       {
         ref: chatLayoutRef,

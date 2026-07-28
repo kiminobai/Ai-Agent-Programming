@@ -13,6 +13,12 @@ export const appConfig = {
   // 学习点：服务监听地址和端口只影响本地 Web 服务，不影响模型 API 地址。
   host: process.env.HOST || "127.0.0.1",
   port: Number(process.env.PORT || 3000),
+  auth: {
+    // AUTH_TOKEN_SECRET 用来签名登录 token；生产环境一定要换成更长的随机字符串。
+    tokenSecret:
+      process.env.AUTH_TOKEN_SECRET || "dev-change-me-chat-demo-token-secret",
+    tokenTtlSeconds: Number(process.env.AUTH_TOKEN_TTL_SECONDS || 7 * 24 * 60 * 60)
+  },
   // 学习点：默认角色用于新对话初始化；前端仍然可以让用户手动切换角色。
   defaultRoleId: process.env.DEFAULT_ROLE_ID || "python-engineer",
   // 学习点：vectorStoreProvider 决定 RAG 向量索引写到哪里。
