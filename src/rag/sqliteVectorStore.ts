@@ -12,6 +12,10 @@ type DocumentChunkRow = {
   char_count: number;
   start_char: number;
   end_char: number;
+  source_type: "text" | "table" | "image_ocr" | "image_summary";
+  page_number: number | null;
+  block_index: number;
+  locator: string;
   embedding_json: string;
   dimensions: number;
   built_at: string;
@@ -36,15 +40,23 @@ export class SQLiteVectorStore implements VectorStore {
           char_count,
           start_char,
           end_char,
+          source_type,
+          page_number,
+          block_index,
+          locator,
           embedding_json,
           dimensions,
           built_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(thread_id, chunk_index) DO UPDATE SET
           content = excluded.content,
           char_count = excluded.char_count,
           start_char = excluded.start_char,
           end_char = excluded.end_char,
+          source_type = excluded.source_type,
+          page_number = excluded.page_number,
+          block_index = excluded.block_index,
+          locator = excluded.locator,
           embedding_json = excluded.embedding_json,
           dimensions = excluded.dimensions,
           built_at = excluded.built_at
@@ -72,6 +84,10 @@ export class SQLiteVectorStore implements VectorStore {
           chunk.charCount,
           chunk.startChar,
           chunk.endChar,
+          chunk.sourceType,
+          chunk.pageNumber,
+          chunk.blockIndex,
+          chunk.locator,
           JSON.stringify(chunk.embedding),
           index.dimensions,
           index.builtAt
@@ -95,6 +111,10 @@ export class SQLiteVectorStore implements VectorStore {
             char_count,
             start_char,
             end_char,
+            source_type,
+            page_number,
+            block_index,
+            locator,
             embedding_json,
             dimensions,
             built_at
@@ -123,6 +143,14 @@ export class SQLiteVectorStore implements VectorStore {
         charCount: row.char_count,
         startChar: row.start_char,
         endChar: row.end_char,
+        sourceType: row.source_type || "text",
+        pageNumber: row.page_number,
+        blockIndex: row.block_index ?? row.chunk_index,
+        locator:
+          row.locator ||
+          `type=${row.source_type || "text"}; page=unknown; block=${
+            row.block_index ?? row.chunk_index
+          }; chars=${row.start_char}-${row.end_char}`,
         embedding: JSON.parse(row.embedding_json) as number[]
       }))
     };

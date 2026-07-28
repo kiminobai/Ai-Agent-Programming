@@ -18,9 +18,13 @@ import { LangChainProvider } from "./providers/langChainProvider";
 import { answerQuestionWithImage } from "./providers/visionQaProvider";
 import { createUploadedDocumentRecord } from "./rag/documentChunkLab";
 import {
+  cleanupStalePendingUploads,
+  commitPendingUploadFile,
+  deletePendingUploadFile,
   deleteUploadThreadDirectory,
+  deleteStoredUploadFile,
   resolveUploadStorageKey,
-  saveUploadFile
+  savePendingUploadFile
 } from "./rag/uploadFileStorage";
 import {
   getUploadedDocument,
@@ -51,6 +55,11 @@ import {
   PromptRole,
   ReasoningEffort
 } from "./types";
+import type {
+  PendingUploadFile,
+  StoredUploadFile
+} from "./rag/uploadFileStorage";
+import type { UploadedDocumentRecord } from "./rag/uploadedDocumentStore";
 
 type MulterRequest = Request & {
   file?: Express.Multer.File;
@@ -93,6 +102,56 @@ const maybeChatUpload: RequestHandler = (req, res, next) => {
 
   next();
 };
+
+async function cleanupRejectedPendingUpload(
+  pendingUpload: PendingUploadFile | undefined
+): Promise<void> {
+  // 学习点：pending 清理专门处理“还没有绑定到 thread 的临时文件”。
+  // 为什么这样：pending 文件不在 SQLite 里，失败时必须靠文件系统清理。
+  await deletePendingUploadFile(pendingUpload);
+}
+
+async function cleanupRejectedCommittedUpload(
+  storedUpload: StoredUploadFile | undefined
+): Promise<void> {
+  if (!storedUpload?.storageKey) {
+    return;
+  }
+
+  // 学习点：commit 成功但写 SQLite 失败时，要删除正式文件。
+  // 为什么这样：正式目录里的文件应该都能被数据库记录引用，否则就是孤儿文件。
+  await deleteStoredUploadFile(storedUpload.storageKey);
+}
+
+function assertUploadCanBindToThread(
+  document: UploadedDocumentRecord
+): void {
+  // 学习点：只有“可用文件”才能绑定到当前 thread。
+  // 为什么这样：saveUploadedDocument 会按 thread_id 覆盖旧文档；错误文件如果写进去，会污染后续 RAG 上下文。
+  if (document.fileType === "image") {
+    return;
+  }
+
+  if (document.parseStatus === "parsed" && document.text.trim()) {
+    return;
+  }
+
+  if (document.parseStatus === "empty") {
+    throw new Error(
+      "文件已收到，但没有解析出可用于问答的文本内容，所以不会绑定到当前对话。"
+    );
+  }
+
+  throw new Error(
+    "当前文件类型暂不支持解析，所以不会绑定到当前对话。请上传 PDF、Markdown、TXT、Word、Excel、PPTX、HTML 或图片文件。"
+  );
+}
+
+function getUploadFailureStatus(message: string): 400 | 500 {
+  // 学习点：文件本身不合格是 400，服务端解析崩溃才是 500。
+  // 为什么这样：前端可以根据状态码区分“请换文件”和“服务端出错”。
+  return message.includes("不会绑定到当前对话") ? 400 : 500;
+}
 
 async function validateDocumentAnswer(input: {
   provider: ChatProvider;
@@ -421,11 +480,14 @@ app.post(
       return;
     }
 
+    let pendingUpload: PendingUploadFile | undefined;
+    let committedUpload: StoredUploadFile | undefined;
+
     try {
       const originalName = decodeUploadedFileName(attachment.originalname);
-      // 步骤 1：原始文件保存到 data/uploads，数据库只保存相对 storageKey。
-      // 这样部署时不会把文件路径和本机盘符写死。
-      const storedUpload = await saveUploadFile({
+      // 步骤 1：先把原始文件保存到 pending 临时区，不直接进入正式上下文。
+      // 这样用户中断、解析失败时，不会污染当前 thread 的文档记录。
+      pendingUpload = await savePendingUploadFile({
         userId,
         threadId,
         originalName,
@@ -436,17 +498,26 @@ app.post(
       const uploadedDocument = await createUploadedDocumentRecord({
         threadId,
         userId,
-        fileId: storedUpload.fileId,
+        fileId: pendingUpload.fileId,
         fileName: originalName,
-        storageKey: storedUpload.storageKey,
+        storageKey: pendingUpload.storageKey,
         mimeType: attachment.mimetype,
         fileSize: attachment.size,
         fileBuffer: attachment.buffer
       });
 
-      // 步骤 3：把文档元数据写入 SQLite。
+      // 步骤 3：先确认文件可用，再绑定到当前 thread。
+      // 为什么这样：错误文件不能覆盖旧文档，否则后续 RAG 会拿到错误上下文。
+      assertUploadCanBindToThread(uploadedDocument);
+
+      // 步骤 4：文件可用后再从 pending 移动到正式目录。
+      committedUpload = await commitPendingUploadFile(pendingUpload);
+      pendingUpload = undefined;
+
+      // 步骤 5：把文档元数据写入 SQLite。
       // 后续刷新页面、继续对话、删除对话时都依赖这条记录。
       saveUploadedDocument(uploadedDocument);
+      committedUpload = undefined;
 
       res.json({
         document: {
@@ -460,9 +531,11 @@ app.post(
         }
       });
     } catch (error) {
+      await cleanupRejectedPendingUpload(pendingUpload);
+      await cleanupRejectedCommittedUpload(committedUpload);
       const message =
         error instanceof Error ? error.message : "Failed to upload document.";
-      res.status(500).json({ error: message });
+      res.status(getUploadFailureStatus(message)).json({ error: message });
     }
   }
 );
@@ -536,12 +609,12 @@ app.post(
 
     if (document.fileType === "image") {
       // 学习点：图片不是普通文本 RAG。
-      // 为什么这样：DeepSeek 当前配置不能直接看图，只有支持视觉的模型才适合进入图片理解流程。
+      // 为什么这样：只有模型配置了 supportsVision，才会进入图片理解；DeepSeek 这类不支持的模型保持提示用户切换。
       const sources = [
         {
           sourceId: "image-0",
           chunkIndex: 0,
-          similarity: model.supportsVision && model.provider === "openai" ? 1 : 0,
+          similarity: model.supportsVision ? 1 : 0,
           startChar: 0,
           endChar: 0,
           matchedTerms: [],
@@ -551,8 +624,9 @@ app.post(
 
       try {
         const answer =
-          model.supportsVision && model.provider === "openai"
+          model.supportsVision
             ? await answerQuestionWithImage({
+                providerId: model.provider,
                 config: getProviderConfig(model.provider),
                 modelId: model.id,
                 imagePath: resolveUploadStorageKey(document.storageKey),
@@ -593,7 +667,7 @@ app.post(
           },
           retrieval: {
             strategy:
-              model.supportsVision && model.provider === "openai"
+              model.supportsVision
                 ? "image-understanding-model"
                 : "unsupported-image-model",
             topK: 0,
@@ -606,135 +680,6 @@ app.post(
           error instanceof Error
             ? error.message
             : "\u56fe\u7247\u5206\u6790\u8bf7\u6c42\u5931\u8d25\u3002";
-        res.status(500).json({ error: message });
-      }
-
-      return;
-    }
-
-    if (false as boolean) {
-      const sources = [
-        {
-          sourceId: "image-0",
-          chunkIndex: 0,
-          similarity: model.supportsVision && model.provider === "openai" ? 1 : 0,
-          startChar: 0,
-          endChar: 0,
-          matchedTerms: [],
-          contentPreview: `图片文件：${document.fileName}`
-        }
-      ];
-
-      try {
-        const answer =
-          model.supportsVision && model.provider === "openai"
-            ? await answerQuestionWithImage({
-                config: getProviderConfig(model.provider),
-                modelId: model.id,
-                imagePath: resolveUploadStorageKey(document.storageKey),
-                mimeType: document.mimeType,
-                question,
-                systemPrompt: role.systemPrompt
-              })
-            : "当前选择的模型不能直接理解图片内容，所以无法可靠分析这张图片。你可以切换到支持图片理解的模型，例如 OpenAI GPT-4o Mini；或者上传包含文字内容的 PDF、Word、Excel、PPTX 等文件。";
-
-        saveDocumentQaExchange({
-          threadId,
-          userId,
-          question,
-          answer,
-          attachmentName: document.fileName,
-          attachmentFileId: document.fileId,
-          sources
-        });
-        updateThreadAfterMessage({
-          threadId,
-          userId,
-          providerId: model.provider,
-          modelId: model.id,
-          roleId: role.id,
-          reasoningEffort: model.provider === "openai" ? reasoningEffort : undefined,
-          userMessage: question
-        });
-
-        res.json({
-          answer,
-          document: {
-            fileId: document.fileId,
-            fileName: document.fileName,
-            fileType: document.fileType,
-            storageKey: document.storageKey,
-            parseStatus: document.parseStatus,
-            indexStatus: document.indexStatus
-          },
-          retrieval: {
-            strategy:
-              model.supportsVision && model.provider === "openai"
-                ? "image-understanding-model"
-                : "unsupported-image-model",
-            topK: 0,
-            totalChunks: 0,
-            sources
-          }
-        });
-      } catch (error) {
-        const message =
-          error instanceof Error ? error.message : "图片分析请求失败。";
-        res.status(500).json({ error: message });
-      }
-
-      return;
-    }
-
-    if (false as boolean && (document as { fileType: string }).fileType === "image") {
-      if (!model.supportsVision || model.provider !== "openai") {
-        res.status(400).json({
-          error:
-            "当前选择的模型不能直接理解图片内容，所以无法可靠分析这张图片。你可以切换到支持图片理解的模型，例如 OpenAI GPT-4o Mini；或者上传包含文字内容的 PDF、Word、Excel、PPTX 等文件。"
-        });
-        return;
-      }
-
-      try {
-        const answer = await answerQuestionWithImage({
-          config: getProviderConfig(model.provider),
-          modelId: model.id,
-          imagePath: resolveUploadStorageKey(document.storageKey),
-          mimeType: document.mimeType,
-          question,
-          systemPrompt: role.systemPrompt
-        });
-
-        res.json({
-          answer,
-          document: {
-            fileId: document.fileId,
-            fileName: document.fileName,
-            fileType: document.fileType,
-            storageKey: document.storageKey,
-            parseStatus: document.parseStatus,
-            indexStatus: document.indexStatus
-          },
-          retrieval: {
-            strategy: "vision-model",
-            topK: 0,
-            totalChunks: 0,
-            sources: [
-              {
-                sourceId: "image-0",
-                chunkIndex: 0,
-                similarity: 1,
-                startChar: 0,
-                endChar: 0,
-                matchedTerms: [],
-                contentPreview: `图片来源：${document.fileName}`
-              }
-            ]
-          }
-        });
-      } catch (error) {
-        const message =
-          error instanceof Error ? error.message : "图片分析请求失败。";
         res.status(500).json({ error: message });
       }
 
@@ -836,6 +781,10 @@ app.post(
         similarity: hybridRetrieval ? chunk.hybridScore : chunk.similarity,
         startChar: chunk.startChar,
         endChar: chunk.endChar,
+        sourceType: chunk.sourceType,
+        pageNumber: chunk.pageNumber,
+        blockIndex: chunk.blockIndex,
+        locator: chunk.locator,
         matchedTerms: chunk.matchedTerms,
         contentPreview: chunk.content
       }));
@@ -853,6 +802,7 @@ app.post(
             `BM25 score: ${chunk.bm25Score}`,
             `Rerank score: ${chunk.rerankScore}`,
             `Character range: ${chunk.startChar}-${chunk.endChar}`,
+            `Locator: ${chunk.locator}`,
             hybridRetrieval?.validation.isWholeDocumentRequest
               ? chunk.content.slice(0, 520)
               : chunk.content
@@ -1158,6 +1108,9 @@ const chatHandler: RequestHandler = async (
     return;
   }
 
+  let pendingUpload: PendingUploadFile | undefined;
+  let committedUpload: StoredUploadFile | undefined;
+
   try {
     /**
      * If the user attached a document to this message, we parse it once here and
@@ -1166,7 +1119,7 @@ const chatHandler: RequestHandler = async (
      */
     if (attachment) {
       const originalName = decodeUploadedFileName(attachment.originalname);
-      const storedUpload = await saveUploadFile({
+      pendingUpload = await savePendingUploadFile({
         userId,
         threadId,
         originalName,
@@ -1175,14 +1128,20 @@ const chatHandler: RequestHandler = async (
       const uploadedDocument = await createUploadedDocumentRecord({
         threadId,
         userId,
-        fileId: storedUpload.fileId,
+        fileId: pendingUpload.fileId,
         fileName: originalName,
-        storageKey: storedUpload.storageKey,
+        storageKey: pendingUpload.storageKey,
         mimeType: attachment.mimetype,
         fileSize: attachment.size,
         fileBuffer: attachment.buffer
       });
+      // 学习点：聊天入口也要先确认附件可用，再写入当前对话文档记录。
+      // 为什么这样：如果错误附件写入 thread，Agent 后续会以为当前上下文就是这个坏文件。
+      assertUploadCanBindToThread(uploadedDocument);
+      committedUpload = await commitPendingUploadFile(pendingUpload);
+      pendingUpload = undefined;
       saveUploadedDocument(uploadedDocument);
+      committedUpload = undefined;
     }
 
     res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
@@ -1240,11 +1199,13 @@ const chatHandler: RequestHandler = async (
     res.write(`data: ${JSON.stringify({ type: "done", reply, meta })}\n\n`);
     res.end();
   } catch (error) {
+    await cleanupRejectedPendingUpload(pendingUpload);
+    await cleanupRejectedCommittedUpload(committedUpload);
     const message =
       error instanceof Error ? error.message : "Unknown error while requesting the model.";
 
     if (!res.headersSent) {
-      res.status(500).json({ error: message });
+      res.status(getUploadFailureStatus(message)).json({ error: message });
       return;
     }
 
@@ -1257,4 +1218,13 @@ app.post("/api/chat", maybeChatUpload, chatHandler);
 
 app.listen(appConfig.port, appConfig.host, () => {
   console.log(`Chat Demo is running at http://${appConfig.host}:${appConfig.port}`);
+  void cleanupStalePendingUploads()
+    .then((deletedCount) => {
+      if (deletedCount > 0) {
+        console.log(`Cleaned ${deletedCount} stale pending upload file(s).`);
+      }
+    })
+    .catch((error) => {
+      console.warn("Failed to clean stale pending upload files:", error);
+    });
 });

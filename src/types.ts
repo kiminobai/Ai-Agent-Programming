@@ -2,7 +2,7 @@
  * 学习点：这里放服务端、Provider 和 React 前端都会用到的共享类型。
  * 这些类型相当于项目内部的“数据契约”。
  */
-export type ProviderId = "deepseek" | "openai" | "siliconflow";
+export type ProviderId = "deepseek" | "openai" | "siliconflow" | "moonshot";
 
 // 学习点：reasoningEffort 主要给支持推理强度的模型使用。
 export type ReasoningEffort = "minimal" | "low" | "medium" | "high";

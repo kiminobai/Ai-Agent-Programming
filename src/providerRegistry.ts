@@ -19,6 +19,10 @@ export function createProviderRegistry(): Map<ProviderId, ChatProvider> {
     [
       "siliconflow",
       new LangChainProvider("siliconflow", getProviderConfig("siliconflow"))
+    ],
+    [
+      "moonshot",
+      new LangChainProvider("moonshot", getProviderConfig("moonshot"))
     ]
   ]);
 }

@@ -15,6 +15,10 @@ type ChunkMetadata = {
   charCount: number;
   startChar: number;
   endChar: number;
+  sourceType: string;
+  pageNumber: number | null;
+  blockIndex: number;
+  locator: string;
   builtAt: string;
   dimensions: number;
 };
@@ -123,6 +127,10 @@ export class ChromaVectorStore implements VectorStore {
           charCount: chunk.charCount,
           startChar: chunk.startChar,
           endChar: chunk.endChar,
+          sourceType: chunk.sourceType,
+          pageNumber: chunk.pageNumber,
+          blockIndex: chunk.blockIndex,
+          locator: chunk.locator,
           builtAt: index.builtAt,
           dimensions: index.dimensions
         }))

@@ -72,6 +72,12 @@ const providerConfigs: Record<ProviderId, ProviderConfig> = {
     apiUrl:
       process.env.SILICONFLOW_API_URL ||
       "https://api.siliconflow.cn/v1/chat/completions"
+  },
+  moonshot: {
+    apiKey: process.env.MOONSHOT_API_KEY || "",
+    apiUrl:
+      process.env.MOONSHOT_API_URL ||
+      "https://api.moonshot.ai/v1/chat/completions"
   }
 };
 
@@ -101,6 +107,14 @@ export const modelCatalog: ModelOption[] = [
     label: "OpenAI GPT-4o Mini",
     provider: "openai",
     description: "OpenAI 轻量通用模型",
+    supportsVision: true,
+    enabled: true
+  },
+  {
+    id: "kimi-k2.6",
+    label: "Kimi K2.6",
+    provider: "moonshot",
+    description: "Kimi 多模态模型，支持文本、图片理解和 Agent 任务",
     supportsVision: true,
     enabled: true
   },

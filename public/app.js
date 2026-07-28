@@ -21487,7 +21487,7 @@
       {
         id: "welcome",
         role: "assistant",
-        content: "Welcome. Start a new chat or open an existing thread. Long-term memory is isolated by userId, while each thread keeps its own short-term context."
+        content: "\u6B22\u8FCE\u4F7F\u7528\u3002\u4F60\u53EF\u4EE5\u65B0\u5EFA\u5BF9\u8BDD\uFF0C\u6216\u4ECE\u5DE6\u4FA7\u6253\u5F00\u5DF2\u6709\u5BF9\u8BDD\u3002\u957F\u671F\u8BB0\u5FC6\u4F1A\u6309\u7528\u6237\u9694\u79BB\uFF0C\u6BCF\u4E2A\u5BF9\u8BDD\u4E5F\u4F1A\u4FDD\u7559\u81EA\u5DF1\u7684\u77ED\u671F\u4E0A\u4E0B\u6587\u3002"
       }
     ];
   }
@@ -21697,10 +21697,10 @@
           const modelsData = await readJsonResponse(modelsResponse, "/api/models");
           const rolesData = await readJsonResponse(rolesResponse, "/api/roles");
           if (!modelsResponse.ok) {
-            throw new Error(modelsData.error || "Failed to load models.");
+            throw new Error(modelsData.error || "\u52A0\u8F7D\u6A21\u578B\u5931\u8D25\u3002");
           }
           if (!rolesResponse.ok) {
-            throw new Error(rolesData.error || "Failed to load roles.");
+            throw new Error(rolesData.error || "\u52A0\u8F7D\u89D2\u8272\u5931\u8D25\u3002");
           }
           const enabledModels = (modelsData.models || []).filter(
             (item) => item.enabled
@@ -21719,7 +21719,7 @@
           }
         } catch (loadError) {
           setError(
-            loadError instanceof Error ? loadError.message : "Failed to initialize."
+            loadError instanceof Error ? loadError.message : "\u521D\u59CB\u5316\u5931\u8D25\u3002"
           );
         } finally {
           setIsLoading(false);
@@ -21733,7 +21733,7 @@
       );
       const data = await readJsonResponse(response, "/api/threads");
       if (!response.ok) {
-        throw new Error(data.error || "Failed to load threads.");
+        throw new Error(data.error || "\u52A0\u8F7D\u5BF9\u8BDD\u5217\u8868\u5931\u8D25\u3002");
       }
       const nextThreads = data.threads || [];
       setThreads(nextThreads);
@@ -21773,7 +21773,7 @@
         });
         const data = await readJsonResponse(response, "/api/threads");
         if (!response.ok) {
-          throw new Error(data.error || "Failed to create thread.");
+          throw new Error(data.error || "\u521B\u5EFA\u65B0\u5BF9\u8BDD\u5931\u8D25\u3002");
         }
         const thread = data.thread;
         const nextThreads = [thread, ...threads.filter((item) => item.threadId !== thread.threadId)];
@@ -21789,7 +21789,7 @@
         sessionStorage.setItem("chat-demo-active-thread-id", thread.threadId);
       } catch (threadError) {
         setError(
-          threadError instanceof Error ? threadError.message : "Failed to create thread."
+          threadError instanceof Error ? threadError.message : "\u521B\u5EFA\u65B0\u5BF9\u8BDD\u5931\u8D25\u3002"
         );
       } finally {
         setIsThreadLoading(false);
@@ -21807,7 +21807,7 @@
         );
         const data = await readJsonResponse(response, "/api/threads/:threadId/messages");
         if (!response.ok) {
-          throw new Error(data.error || "Failed to load thread.");
+          throw new Error(data.error || "\u52A0\u8F7D\u5BF9\u8BDD\u5931\u8D25\u3002");
         }
         const thread = data.thread;
         const nextEntries = (data.messages || []).map((entry, index) => {
@@ -21843,7 +21843,7 @@
         setSidebarOpen(false);
       } catch (threadError) {
         setError(
-          threadError instanceof Error ? threadError.message : "Failed to load thread."
+          threadError instanceof Error ? threadError.message : "\u52A0\u8F7D\u5BF9\u8BDD\u5931\u8D25\u3002"
         );
       } finally {
         setIsThreadLoading(false);
@@ -21859,7 +21859,7 @@
       );
       const data = await readJsonResponse(response, "/api/threads");
       if (!response.ok) {
-        throw new Error(data.error || "Failed to refresh threads.");
+        throw new Error(data.error || "\u5237\u65B0\u5BF9\u8BDD\u5217\u8868\u5931\u8D25\u3002");
       }
       const nextThreads = data.threads || [];
       setThreads(nextThreads);
@@ -21895,7 +21895,7 @@
         });
         const data = await readJsonResponse(response, "/api/threads/:threadId");
         if (!response.ok) {
-          throw new Error(data.error || "Failed to rename thread.");
+          throw new Error(data.error || "\u91CD\u547D\u540D\u5BF9\u8BDD\u5931\u8D25\u3002");
         }
         const renamedThread = data.thread;
         setThreads(
@@ -21905,7 +21905,7 @@
         );
       } catch (renameError) {
         setError(
-          renameError instanceof Error ? renameError.message : "Failed to rename thread."
+          renameError instanceof Error ? renameError.message : "\u91CD\u547D\u540D\u5BF9\u8BDD\u5931\u8D25\u3002"
         );
       } finally {
         setRenamingThreadId("");
@@ -21918,7 +21918,7 @@
       }
       const thread = threads.find((item) => item.threadId === threadId);
       const confirmed = window.confirm(
-        `Delete "${thread?.title || "this chat"}"? This will remove its messages, short-term memory, uploaded files, and RAG index.`
+        `\u786E\u5B9A\u5220\u9664\u300C${thread?.title || "\u8FD9\u4E2A\u5BF9\u8BDD"}\u300D\u5417\uFF1F\u8FD9\u4F1A\u5220\u9664\u6D88\u606F\u3001\u77ED\u671F\u8BB0\u5FC6\u3001\u4E0A\u4F20\u6587\u4EF6\u548C RAG \u7D22\u5F15\u3002`
       );
       if (!confirmed) {
         return;
@@ -21934,7 +21934,7 @@
         );
         const data = await readJsonResponse(response, "/api/threads/:threadId");
         if (!response.ok) {
-          throw new Error(data.error || "Failed to delete thread.");
+          throw new Error(data.error || "\u5220\u9664\u5BF9\u8BDD\u5931\u8D25\u3002");
         }
         const remainingThreads = threads.filter((item) => item.threadId !== threadId);
         setThreads(remainingThreads);
@@ -21955,7 +21955,7 @@
         });
       } catch (deleteError) {
         setError(
-          deleteError instanceof Error ? deleteError.message : "Failed to delete thread."
+          deleteError instanceof Error ? deleteError.message : "\u5220\u9664\u5BF9\u8BDD\u5931\u8D25\u3002"
         );
       } finally {
         setIsThreadLoading(false);
@@ -21975,7 +21975,7 @@
       });
       const data = await readJsonResponse(response, "/api/documents/upload");
       if (!response.ok) {
-        throw new Error(data.error || "Failed to upload document.");
+        throw new Error(data.error || "\u4E0A\u4F20\u6587\u4EF6\u5931\u8D25\u3002");
       }
       return data;
     }
@@ -21997,7 +21997,7 @@
       const data = await readJsonResponse(response, "/api/documents/qa");
       if (!response.ok) {
         return {
-          answer: data.error || "Document QA request failed.",
+          answer: data.error || "\u6587\u6863\u95EE\u7B54\u8BF7\u6C42\u5931\u8D25\u3002",
           document: {
             fileId: "",
             fileName: activeDocumentName,
@@ -22069,7 +22069,7 @@
             (prev) => prev.map(
               (entry) => entry.id === assistantEntryId ? {
                 ...entry,
-                content: qaResult.answer || "Document QA returned no content.",
+                content: qaResult.answer || "\u6587\u6863\u95EE\u7B54\u6CA1\u6709\u8FD4\u56DE\u5185\u5BB9\u3002",
                 meta: `${currentRole?.label || roleId} | ${currentModel?.label || modelId} | ${userId}`,
                 sources: qaResult.retrieval.sources
               } : entry
@@ -22099,10 +22099,10 @@
         });
         if (!response.ok) {
           const data = await readJsonResponse(response, "/api/chat");
-          throw new Error(data.error || "Request failed. Please try again.");
+          throw new Error(data.error || "\u8BF7\u6C42\u5931\u8D25\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5\u3002");
         }
         if (!response.body) {
-          throw new Error("Streaming response is unavailable.");
+          throw new Error("\u5F53\u524D\u65E0\u6CD5\u83B7\u53D6\u6D41\u5F0F\u54CD\u5E94\u3002");
         }
         const updateAssistantEntry = (updater) => {
           setEntries(
@@ -22133,12 +22133,12 @@
             finalReply = streamEvent.reply || finalReply;
             updateAssistantEntry((entry) => ({
               ...entry,
-              content: finalReply || "Model returned no content.",
+              content: finalReply || "\u6A21\u578B\u6CA1\u6709\u8FD4\u56DE\u5185\u5BB9\u3002",
               meta: `${currentRole?.label || streamEvent.meta.roleId} | ${streamEvent.meta.modelId} | ${streamEvent.meta.userId}`
             }));
             return;
           }
-          throw new Error(streamEvent.error || "Streaming request failed.");
+          throw new Error(streamEvent.error || "\u6D41\u5F0F\u8BF7\u6C42\u5931\u8D25\u3002");
         };
         while (true) {
           const { done, value } = await reader.read();
@@ -22165,13 +22165,13 @@
         }
         await refreshThreads(activeThreadId);
       } catch (submitError) {
-        const messageText = submitError instanceof Error ? submitError.message : "An error occurred while sending the message.";
+        const messageText = submitError instanceof Error ? submitError.message : "\u53D1\u9001\u6D88\u606F\u65F6\u53D1\u751F\u9519\u8BEF\u3002";
         setError(messageText);
         setEntries(
           (prev) => prev.map(
             (entry) => entry.id === assistantEntryId ? {
               ...entry,
-              content: entry.content || `Request failed: ${messageText}`
+              content: entry.content || `\u8BF7\u6C42\u5931\u8D25\uFF1A${messageText}`
             } : entry
           )
         );
@@ -22209,7 +22209,7 @@
         className: "sidebar-close",
         onClick: () => setSidebarOpen(false)
       },
-      "\u8133"
+      "\xD7"
     )), /* @__PURE__ */ import_react.default.createElement("section", { className: "sidebar-panel sidebar-thread-panel" }, /* @__PURE__ */ import_react.default.createElement(
       "button",
       {
@@ -22218,7 +22218,7 @@
         onClick: () => void handleCreateThread(),
         disabled: !userId.trim() || !modelId || !roleId || isThreadLoading
       },
-      "+ New chat"
+      "+ \u65B0\u5BF9\u8BDD"
     ), /* @__PURE__ */ import_react.default.createElement("div", { className: "thread-list" }, threads.map((thread) => /* @__PURE__ */ import_react.default.createElement(
       "div",
       {
@@ -22251,7 +22251,7 @@
             },
             autoFocus: true
           }
-        ) : /* @__PURE__ */ import_react.default.createElement(import_react.default.Fragment, null, /* @__PURE__ */ import_react.default.createElement("span", { className: "thread-item-title" }, thread.title), /* @__PURE__ */ import_react.default.createElement("span", { className: "thread-item-preview" }, thread.lastMessagePreview || "No messages yet"))
+        ) : /* @__PURE__ */ import_react.default.createElement(import_react.default.Fragment, null, /* @__PURE__ */ import_react.default.createElement("span", { className: "thread-item-title" }, thread.title), /* @__PURE__ */ import_react.default.createElement("span", { className: "thread-item-preview" }, thread.lastMessagePreview || "\u6682\u65E0\u6D88\u606F"))
       ),
       renamingThreadId === thread.threadId ? null : /* @__PURE__ */ import_react.default.createElement("div", { className: "thread-actions" }, /* @__PURE__ */ import_react.default.createElement(
         "button",
@@ -22263,7 +22263,7 @@
             setRenamingTitle(thread.title);
           }
         },
-        "Rename"
+        "\u91CD\u547D\u540D"
       ), /* @__PURE__ */ import_react.default.createElement(
         "button",
         {
@@ -22271,7 +22271,7 @@
           className: "thread-delete-button",
           onClick: () => void deleteChatThread(thread.threadId)
         },
-        "Delete"
+        "\u5220\u9664"
       ))
     ))))), /* @__PURE__ */ import_react.default.createElement(
       "main",
@@ -22288,10 +22288,10 @@
           className: "menu-button",
           onClick: () => setSidebarOpen((value) => !value)
         },
-        "\u923D?            "
-      ), /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-header-title" }, "Role ChatGPT UI")))),
+        "\u2630"
+      ), /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-header-title" }, "\u89D2\u8272\u5BF9\u8BDD\u52A9\u624B")))),
       error ? /* @__PURE__ */ import_react.default.createElement("div", { className: "top-error" }, error) : null,
-      /* @__PURE__ */ import_react.default.createElement("section", { className: "conversation" }, isLoading || isThreadLoading ? /* @__PURE__ */ import_react.default.createElement("div", { className: "empty-state" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "empty-state-title" }, isLoading ? "Loading configuration" : "Loading thread"), /* @__PURE__ */ import_react.default.createElement("div", { className: "empty-state-copy" }, isLoading ? "Fetching models and roles." : "Restoring messages from SQLite checkpoints.")) : null, !isLoading && !isThreadLoading && entries.map((entry) => /* @__PURE__ */ import_react.default.createElement("div", { key: entry.id, className: `chat-row ${entry.role}` }, /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-avatar" }, entry.role === "user" ? "You" : "AI"), /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-bubble-wrap" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-bubble-header" }, /* @__PURE__ */ import_react.default.createElement("span", null, entry.role === "user" ? "You" : currentRole?.label || "Assistant"), entry.meta ? /* @__PURE__ */ import_react.default.createElement("span", { className: "chat-meta" }, entry.meta) : null), /* @__PURE__ */ import_react.default.createElement("div", { className: `chat-bubble ${entry.role}` }, entry.attachmentName ? /* @__PURE__ */ import_react.default.createElement(
+      /* @__PURE__ */ import_react.default.createElement("section", { className: "conversation" }, isLoading || isThreadLoading ? /* @__PURE__ */ import_react.default.createElement("div", { className: "empty-state" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "empty-state-title" }, isLoading ? "\u6B63\u5728\u52A0\u8F7D\u914D\u7F6E" : "\u6B63\u5728\u52A0\u8F7D\u5BF9\u8BDD"), /* @__PURE__ */ import_react.default.createElement("div", { className: "empty-state-copy" }, isLoading ? "\u6B63\u5728\u83B7\u53D6\u6A21\u578B\u548C\u89D2\u8272\u3002" : "\u6B63\u5728\u4ECE SQLite \u6062\u590D\u5BF9\u8BDD\u6D88\u606F\u3002")) : null, !isLoading && !isThreadLoading && entries.map((entry) => /* @__PURE__ */ import_react.default.createElement("div", { key: entry.id, className: `chat-row ${entry.role}` }, /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-avatar" }, entry.role === "user" ? "\u4F60" : "AI"), /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-bubble-wrap" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-bubble-header" }, /* @__PURE__ */ import_react.default.createElement("span", null, entry.role === "user" ? "\u4F60" : currentRole?.label || "\u52A9\u624B"), entry.meta ? /* @__PURE__ */ import_react.default.createElement("span", { className: "chat-meta" }, entry.meta) : null), /* @__PURE__ */ import_react.default.createElement("div", { className: `chat-bubble ${entry.role}` }, entry.attachmentName ? /* @__PURE__ */ import_react.default.createElement(
         "button",
         {
           type: "button",
@@ -22306,7 +22306,7 @@
             }
           },
           disabled: !entry.attachmentFileId,
-          title: entry.attachmentFileId ? "Open uploaded file" : "File preview will be available after upload"
+          title: entry.attachmentFileId ? "\u6253\u5F00\u4E0A\u4F20\u6587\u4EF6" : "\u6587\u4EF6\u4E0A\u4F20\u5B8C\u6210\u540E\u53EF\u4EE5\u9884\u89C8"
         },
         entry.attachmentPreviewUrl ? /* @__PURE__ */ import_react.default.createElement(
           "img",
@@ -22315,7 +22315,7 @@
             src: entry.attachmentPreviewUrl,
             alt: entry.attachmentName
           }
-        ) : /* @__PURE__ */ import_react.default.createElement("div", { className: "message-attachment-icon" }, "FILE"),
+        ) : /* @__PURE__ */ import_react.default.createElement("div", { className: "message-attachment-icon" }, "\u6587\u4EF6"),
         /* @__PURE__ */ import_react.default.createElement("div", { className: "message-attachment-info" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "message-attachment-name" }, entry.attachmentName), /* @__PURE__ */ import_react.default.createElement("div", { className: "message-attachment-copy" }, getAttachmentKind(entry.attachmentName)))
       ) : null, entry.role === "assistant" ? /* @__PURE__ */ import_react.default.createElement("div", { className: "markdown-body" }, renderMarkdown(entry.content)) : /* @__PURE__ */ import_react.default.createElement("div", { className: "message-text" }, entry.content)))))),
       /* @__PURE__ */ import_react.default.createElement("footer", { ref: composerShellRef, className: "composer-shell" }, /* @__PURE__ */ import_react.default.createElement("form", { className: "composer-card", onSubmit: handleSubmit }, activeDocumentName ? /* @__PURE__ */ import_react.default.createElement("div", { className: "knowledge-chip" }, /* @__PURE__ */ import_react.default.createElement("span", null, "\u77E5\u8BC6\u5E93\u6587\u4EF6"), /* @__PURE__ */ import_react.default.createElement("strong", null, normalizeFileName(activeDocumentName))) : null, attachment ? /* @__PURE__ */ import_react.default.createElement("div", { className: "composer-attachment-chip" }, /* @__PURE__ */ import_react.default.createElement("span", null, attachment.name), /* @__PURE__ */ import_react.default.createElement(
@@ -22329,14 +22329,14 @@
             }
           }
         },
-        "Remove"
+        "\u79FB\u9664"
       )) : null, /* @__PURE__ */ import_react.default.createElement(
         "textarea",
         {
           value: message,
           onChange: (event) => setMessage(event.target.value),
           onKeyDown: handleTextareaKeyDown,
-          placeholder: "Send a message. Enter to send, Shift+Enter for a new line.",
+          placeholder: "\u8F93\u5165\u6D88\u606F\u3002\u6309 Enter \u53D1\u9001\uFF0CShift + Enter \u6362\u884C\u3002",
           rows: 1,
           required: true
         }
@@ -22358,8 +22358,8 @@
           onClick: () => fileInputRef.current?.click(),
           disabled: isSubmitting || isThreadLoading
         },
-        "Attach"
-      ), /* @__PURE__ */ import_react.default.createElement("label", { className: "composer-role-picker", htmlFor: "composer-model-select" }, /* @__PURE__ */ import_react.default.createElement("span", null, "Model"), /* @__PURE__ */ import_react.default.createElement(
+        "\u4E0A\u4F20"
+      ), /* @__PURE__ */ import_react.default.createElement("label", { className: "composer-role-picker", htmlFor: "composer-model-select" }, /* @__PURE__ */ import_react.default.createElement("span", null, "\u6A21\u578B"), /* @__PURE__ */ import_react.default.createElement(
         "select",
         {
           id: "composer-model-select",
@@ -22368,7 +22368,7 @@
           disabled: !models.length || isSubmitting || isThreadLoading
         },
         models.map((model) => /* @__PURE__ */ import_react.default.createElement("option", { key: model.id, value: model.id }, model.label))
-      )), /* @__PURE__ */ import_react.default.createElement("label", { className: "composer-role-picker", htmlFor: "composer-role-select" }, /* @__PURE__ */ import_react.default.createElement("span", null, "Role"), /* @__PURE__ */ import_react.default.createElement(
+      )), /* @__PURE__ */ import_react.default.createElement("label", { className: "composer-role-picker", htmlFor: "composer-role-select" }, /* @__PURE__ */ import_react.default.createElement("span", null, "\u89D2\u8272"), /* @__PURE__ */ import_react.default.createElement(
         "select",
         {
           id: "composer-role-select",
@@ -22383,7 +22383,7 @@
           className: "composer-role-picker",
           htmlFor: "composer-reasoning-effort"
         },
-        /* @__PURE__ */ import_react.default.createElement("span", null, "Reasoning"),
+        /* @__PURE__ */ import_react.default.createElement("span", null, "\u63A8\u7406"),
         /* @__PURE__ */ import_react.default.createElement(
           "select",
           {
@@ -22397,7 +22397,7 @@
           /* @__PURE__ */ import_react.default.createElement("option", { value: "medium" }, "medium"),
           /* @__PURE__ */ import_react.default.createElement("option", { value: "high" }, "high")
         )
-      ) : null, /* @__PURE__ */ import_react.default.createElement("button", { className: "send-button", type: "submit", disabled: !canSubmit }, isSubmitting ? "Streaming..." : "Send")))))
+      ) : null, /* @__PURE__ */ import_react.default.createElement("button", { className: "send-button", type: "submit", disabled: !canSubmit }, isSubmitting ? "\u751F\u6210\u4E2D..." : "\u53D1\u9001")))))
     ));
   }
   (0, import_client.createRoot)(document.getElementById("root")).render(/* @__PURE__ */ import_react.default.createElement(App, null));

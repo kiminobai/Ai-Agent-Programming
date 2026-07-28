@@ -76,6 +76,10 @@ sqliteDb.exec(`
     char_count INTEGER NOT NULL,
     start_char INTEGER NOT NULL,
     end_char INTEGER NOT NULL,
+    source_type TEXT NOT NULL DEFAULT 'text',
+    page_number INTEGER,
+    block_index INTEGER NOT NULL DEFAULT 0,
+    locator TEXT NOT NULL DEFAULT '',
     embedding_json TEXT NOT NULL,
     dimensions INTEGER NOT NULL,
     built_at TEXT NOT NULL,
@@ -160,6 +164,17 @@ for (const [columnName, definition] of [
   ["index_status", "TEXT"]
 ] as const) {
   addColumnIfMissing("uploaded_documents", columnName, definition);
+}
+
+for (const [columnName, definition] of [
+  ["source_type", "TEXT NOT NULL DEFAULT 'text'"],
+  ["page_number", "INTEGER"],
+  ["block_index", "INTEGER NOT NULL DEFAULT 0"],
+  ["locator", "TEXT NOT NULL DEFAULT ''"]
+] as const) {
+  // 学习点：这些是 chunk 的位置元数据。
+  // 为什么这样：后续 PDF 表格/图片、页码引用、段落定位都依赖这些字段。
+  addColumnIfMissing("document_chunks", columnName, definition);
 }
 
 sqliteDb.exec(`

@@ -1,7 +1,8 @@
 import fs from "fs";
-import { ProviderConfig } from "../types";
+import { ProviderConfig, ProviderId } from "../types";
 
 export async function answerQuestionWithImage(input: {
+  providerId: ProviderId;
   config: ProviderConfig;
   modelId: string;
   imagePath: string;
@@ -15,6 +16,26 @@ export async function answerQuestionWithImage(input: {
   const imageUrl = `data:${input.mimeType};base64,${imageBase64}`;
   // 学习点：这条链路不同于 OCR。
   // OCR 是只提取图片文字；视觉模型是直接分析图片画面。
+  if (input.providerId === "moonshot") {
+    return answerWithOpenAICompatibleVision({
+      ...input,
+      imageUrl
+    });
+  }
+
+  return answerWithOpenAIResponsesVision({
+    ...input,
+    imageUrl
+  });
+}
+
+async function answerWithOpenAIResponsesVision(input: {
+  config: ProviderConfig;
+  modelId: string;
+  imageUrl: string;
+  question: string;
+  systemPrompt: string;
+}): Promise<string> {
   const response = await fetch(input.config.apiUrl, {
     method: "POST",
     headers: {
@@ -38,7 +59,7 @@ export async function answerQuestionWithImage(input: {
             },
             {
               type: "input_image",
-              image_url: imageUrl
+              image_url: input.imageUrl
             }
           ]
         }
@@ -55,4 +76,64 @@ export async function answerQuestionWithImage(input: {
   }
 
   return data.output_text?.trim() || "Image analysis returned no content.";
+}
+
+async function answerWithOpenAICompatibleVision(input: {
+  config: ProviderConfig;
+  modelId: string;
+  imageUrl: string;
+  question: string;
+  systemPrompt: string;
+}): Promise<string> {
+  // 学习点：Kimi/Moonshot 是 OpenAI-compatible Chat Completions。
+  // 为什么这样：它的图片输入放在 messages[].content 里，而不是 OpenAI Responses 的 input 数组。
+  const response = await fetch(input.config.apiUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${input.config.apiKey}`
+    },
+    body: JSON.stringify({
+      model: input.modelId,
+      messages: [
+        {
+          role: "system",
+          content: [
+            input.systemPrompt,
+            "你正在回答用户关于上传图片的问题。",
+            "请直接分析图片内容；如果图片里有文字，也要结合文字一起回答。"
+          ].join("\n\n")
+        },
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: input.question
+            },
+            {
+              type: "image_url",
+              image_url: {
+                url: input.imageUrl
+              }
+            }
+          ]
+        }
+      ]
+    })
+  });
+  const data = (await response.json()) as {
+    choices?: Array<{
+      message?: {
+        content?: string | null;
+      };
+    }>;
+    error?: { message?: string };
+  };
+
+  if (!response.ok) {
+    throw new Error(data.error?.message || "图片分析请求失败。");
+  }
+
+  return data.choices?.[0]?.message?.content?.trim() || "图片分析没有返回内容。";
 }

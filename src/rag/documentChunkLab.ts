@@ -39,6 +39,10 @@ export interface DocumentChunk {
   charCount: number;
   startChar: number;
   endChar: number;
+  sourceType: "text" | "table" | "image_ocr" | "image_summary";
+  pageNumber: number | null;
+  blockIndex: number;
+  locator: string;
 }
 
 export type UploadedFileType =
@@ -113,31 +117,77 @@ export async function splitUploadedDocument(
       content,
       charCount: content.length,
       startChar: 0,
-      endChar: 0
+      endChar: 0,
+      sourceType: getDefaultChunkSourceType(document.fileType),
+      pageNumber: null,
+      blockIndex: index,
+      locator: ""
     })),
-    document.text
+    document.text,
+    document.fileType
   );
 }
 
 function annotateChunkOffsets(
   chunks: DocumentChunk[],
-  sourceText: string
+  sourceText: string,
+  fileType: UploadedFileType
 ): DocumentChunk[] {
   let searchFrom = 0;
+  const pageRanges = buildPageRanges(sourceText);
 
   // 学习点：记录 chunk 在原文里的位置，后续可以做来源定位和文件预览。
   return chunks.map((chunk) => {
     const exactStart = sourceText.indexOf(chunk.content, searchFrom);
     const startChar = exactStart >= 0 ? exactStart : searchFrom;
     const endChar = startChar + chunk.content.length;
+    const pageNumber = chunk.pageNumber ?? findPageNumber(pageRanges, startChar);
     searchFrom = Math.max(startChar + 1, endChar - 1);
 
     return {
       ...chunk,
       startChar,
-      endChar
+      endChar,
+      pageNumber,
+      locator: buildChunkLocator({
+        fileType,
+        sourceType: chunk.sourceType,
+        pageNumber,
+        blockIndex: chunk.blockIndex,
+        startChar,
+        endChar
+      })
     };
   });
+}
+
+function getDefaultChunkSourceType(
+  fileType: UploadedFileType
+): DocumentChunk["sourceType"] {
+  // 学习点：当前默认解析出来的都是文本块。
+  // 为什么这样：PDF 表格/图片后续会单独拆成 table/image_* chunk，现在先把类型字段预留好。
+  return fileType === "image" ? "image_ocr" : "text";
+}
+
+function buildChunkLocator(input: {
+  fileType: UploadedFileType;
+  sourceType: DocumentChunk["sourceType"];
+  pageNumber: number | null;
+  blockIndex: number;
+  startChar: number;
+  endChar: number;
+}): string {
+  // 学习点：locator 是给“定位/预览/后续修改”用的稳定描述。
+  // 为什么这样：只靠 chunk 文本很容易在文档更新后找错段落，至少要保存页码/块序号/字符范围。
+  const parts = [
+    `type=${input.sourceType}`,
+    input.pageNumber ? `page=${input.pageNumber}` : `page=unknown`,
+    `block=${input.blockIndex}`,
+    `chars=${input.startChar}-${input.endChar}`,
+    `fileType=${input.fileType}`
+  ];
+
+  return parts.join("; ");
 }
 
 function getExtension(fileName: string): string {
@@ -189,14 +239,7 @@ async function extractTextFromUpload(
   // 学习点：不同文件格式最后都会转成纯文本。
   // 这样 PDF、Word、PPT、Excel 后面都能走同一套 chunk / embedding 流程。
   if (fileType === "pdf") {
-    const parser = new PDFParse({ data: new Uint8Array(fileBuffer) });
-
-    try {
-      const parsed = await parser.getText();
-      return parsed.text || "";
-    } finally {
-      await parser.destroy();
-    }
+    return extractPdfTextWithPageMarkers(fileBuffer);
   }
 
   if (fileType === "presentation" && extension === ".pptx") {
@@ -220,6 +263,65 @@ async function extractTextFromUpload(
   }
 
   return fileBuffer.toString("utf8");
+}
+
+async function extractPdfTextWithPageMarkers(fileBuffer: Buffer): Promise<string> {
+  const parser = new PDFParse({ data: new Uint8Array(fileBuffer) });
+
+  try {
+    const info = await parser.getInfo().catch(() => undefined);
+    const totalPages = Number(info?.total || 0);
+
+    if (!totalPages) {
+      const parsed = await parser.getText();
+      return parsed.text || "";
+    }
+
+    const pageTexts: string[] = [];
+    for (let pageNumber = 1; pageNumber <= totalPages; pageNumber += 1) {
+      const parsed = await parser.getText({ partial: [pageNumber] });
+      const text = normalizeText(parsed.text || "");
+
+      if (!text) {
+        continue;
+      }
+
+      // 学习点：给 PDF 文本插入页标记，后续 chunk 可以反推出页码。
+      // 为什么这样：修改/引用 PDF 内容时，仅靠字符范围不够，页码能降低定位错误。
+      pageTexts.push(`[PDF_PAGE:${pageNumber}]\n${text}`);
+    }
+
+    return pageTexts.join("\n\n");
+  } finally {
+    await parser.destroy();
+  }
+}
+
+function buildPageRanges(
+  sourceText: string
+): Array<{ pageNumber: number; startChar: number; endChar: number }> {
+  const markerPattern = /\[PDF_PAGE:(\d+)\]/g;
+  const markers = [...sourceText.matchAll(markerPattern)].map((match) => ({
+    pageNumber: Number(match[1]),
+    startChar: match.index ?? 0
+  }));
+
+  return markers.map((marker, index) => ({
+    pageNumber: marker.pageNumber,
+    startChar: marker.startChar,
+    endChar: markers[index + 1]?.startChar ?? sourceText.length
+  }));
+}
+
+function findPageNumber(
+  pageRanges: Array<{ pageNumber: number; startChar: number; endChar: number }>,
+  startChar: number
+): number | null {
+  const range = pageRanges.find(
+    (candidate) => startChar >= candidate.startChar && startChar < candidate.endChar
+  );
+
+  return range?.pageNumber ?? null;
 }
 
 function isTextExtractable(fileType: UploadedFileType, extension: string): boolean {

@@ -43,6 +43,7 @@ export class LangChainToolAgent {
       apiKey: options.apiKey,
       model: options.modelId,
       temperature: 0,
+      streaming: true,
       streamUsage: false,
       reasoning:
         options.providerId === "openai"
@@ -104,10 +105,10 @@ export class LangChainToolAgent {
   ): Promise<string> {
     // 学习点：streamMode=messages 会持续返回模型 token。
     // 工具节点输出会被过滤，避免把内部过程展示给用户。
-    const stream = await this.agent.stream(
+    const stream = this.agent.streamEvents(
       { messages: this.toLangChainMessages(messages) },
       {
-        streamMode: "messages",
+        version: "v2",
         configurable: { thread_id: threadId },
         context: this.createContext(userId, threadId)
       }
@@ -115,15 +116,8 @@ export class LangChainToolAgent {
 
     let fullText = "";
 
-    for await (const [token, metadata] of stream) {
-      if (
-        metadata.langgraph_node &&
-        metadata.langgraph_node !== "model"
-      ) {
-        continue;
-      }
-
-      const delta = this.extractStreamTokenText(token);
+    for await (const event of stream) {
+      const delta = this.extractStreamEventText(event, fullText);
       if (!delta) {
         continue;
       }
@@ -302,6 +296,79 @@ export class LangChainToolAgent {
       this.extractMessageText(candidate.contentBlocks) ||
       (typeof candidate.text === "string" ? candidate.text : "")
     );
+  }
+
+  private extractStreamChunkText(streamChunk: unknown, currentText: string): string {
+    // 学习点：LangChain 不同版本/不同 streamMode 返回结构可能不同。
+    // 为什么这样：统一兼容 [message, metadata]、{ messages }、{ content } 等形态，避免流式输出退化成结束后一次性显示。
+    if (Array.isArray(streamChunk)) {
+      const [token, metadata] = streamChunk as [unknown, { langgraph_node?: string }?];
+      if (metadata?.langgraph_node && metadata.langgraph_node !== "model") {
+        return "";
+      }
+
+      return this.extractNewTextDelta(this.extractStreamTokenText(token), currentText);
+    }
+
+    if (!streamChunk || typeof streamChunk !== "object") {
+      return "";
+    }
+
+    const candidate = streamChunk as {
+      messages?: unknown;
+      content?: unknown;
+      contentBlocks?: unknown;
+      text?: unknown;
+    };
+
+    if (Array.isArray(candidate.messages)) {
+      const latestMessage = candidate.messages[candidate.messages.length - 1];
+      const text = this.extractMessageText((latestMessage as { content?: unknown })?.content);
+      return this.extractNewTextDelta(text, currentText);
+    }
+
+    return this.extractNewTextDelta(this.extractStreamTokenText(candidate), currentText);
+  }
+
+  private extractStreamEventText(event: unknown, currentText: string): string {
+    // 学习点：streamEvents 才是 LangChain/LangGraph 的 token 级事件流。
+    // 为什么这样：agent.stream 更像“状态更新流”，可能等节点结束才返回；streamEvents 可以拿到 on_chat_model_stream。
+    if (!event || typeof event !== "object") {
+      return "";
+    }
+
+    const candidate = event as {
+      event?: string;
+      data?: {
+        chunk?: unknown;
+        output?: unknown;
+      };
+    };
+
+    if (candidate.event !== "on_chat_model_stream") {
+      return "";
+    }
+
+    const text =
+      this.extractStreamTokenText(candidate.data?.chunk) ||
+      this.extractMessageText((candidate.data?.chunk as { content?: unknown } | undefined)?.content) ||
+      this.extractMessageText(candidate.data?.output);
+
+    return this.extractNewTextDelta(text, currentText);
+  }
+
+  private extractNewTextDelta(text: string, currentText: string): string {
+    // 学习点：有些流返回“完整累计文本”，有些返回“本次新增 token”。
+    // 为什么这样：如果是累计文本，只追加新增部分，避免前端出现重复回答。
+    if (!text) {
+      return "";
+    }
+
+    if (currentText && text.startsWith(currentText)) {
+      return text.slice(currentText.length);
+    }
+
+    return text;
   }
 
   private getBaseUrl(apiUrl: string): string {

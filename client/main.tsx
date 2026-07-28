@@ -9,7 +9,7 @@
 } from "react";
 import { createRoot } from "react-dom/client";
 
-type ProviderId = "deepseek" | "openai" | "siliconflow";
+type ProviderId = "deepseek" | "openai" | "siliconflow" | "moonshot";
 type ReasoningEffort = "minimal" | "low" | "medium" | "high";
 
 type ModelOption = {
@@ -147,7 +147,7 @@ function createWelcomeEntries(): ChatEntry[] {
       id: "welcome",
       role: "assistant",
       content:
-        "Welcome. Start a new chat or open an existing thread. Long-term memory is isolated by userId, while each thread keeps its own short-term context."
+        "欢迎使用。你可以新建对话，或从左侧打开已有对话。长期记忆会按用户隔离，每个对话也会保留自己的短期上下文。"
     }
   ];
 }
@@ -454,11 +454,11 @@ function App() {
         const rolesData = await readJsonResponse(rolesResponse, "/api/roles");
 
         if (!modelsResponse.ok) {
-          throw new Error(modelsData.error || "Failed to load models.");
+          throw new Error(modelsData.error || "加载模型失败。");
         }
 
         if (!rolesResponse.ok) {
-          throw new Error(rolesData.error || "Failed to load roles.");
+          throw new Error(rolesData.error || "加载角色失败。");
         }
 
         const enabledModels = (modelsData.models || []).filter(
@@ -482,7 +482,7 @@ function App() {
         }
       } catch (loadError) {
         setError(
-          loadError instanceof Error ? loadError.message : "Failed to initialize."
+          loadError instanceof Error ? loadError.message : "初始化失败。"
         );
       } finally {
         setIsLoading(false);
@@ -504,7 +504,7 @@ function App() {
     const data = await readJsonResponse(response, "/api/threads");
 
     if (!response.ok) {
-      throw new Error(data.error || "Failed to load threads.");
+      throw new Error(data.error || "加载对话列表失败。");
     }
 
     const nextThreads = (data.threads || []) as ChatThread[];
@@ -557,7 +557,7 @@ function App() {
 
       const data = await readJsonResponse(response, "/api/threads");
       if (!response.ok) {
-        throw new Error(data.error || "Failed to create thread.");
+        throw new Error(data.error || "创建新对话失败。");
       }
 
       const thread = data.thread as ChatThread;
@@ -574,7 +574,7 @@ function App() {
       sessionStorage.setItem("chat-demo-active-thread-id", thread.threadId);
     } catch (threadError) {
       setError(
-        threadError instanceof Error ? threadError.message : "Failed to create thread."
+        threadError instanceof Error ? threadError.message : "创建新对话失败。"
       );
     } finally {
       setIsThreadLoading(false);
@@ -600,7 +600,7 @@ function App() {
       const data = await readJsonResponse(response, "/api/threads/:threadId/messages");
 
       if (!response.ok) {
-        throw new Error(data.error || "Failed to load thread.");
+        throw new Error(data.error || "加载对话失败。");
       }
 
       const thread = data.thread as ChatThread;
@@ -648,7 +648,7 @@ function App() {
       setSidebarOpen(false);
     } catch (threadError) {
       setError(
-        threadError instanceof Error ? threadError.message : "Failed to load thread."
+        threadError instanceof Error ? threadError.message : "加载对话失败。"
       );
     } finally {
       setIsThreadLoading(false);
@@ -666,7 +666,7 @@ function App() {
     );
     const data = await readJsonResponse(response, "/api/threads");
     if (!response.ok) {
-      throw new Error(data.error || "Failed to refresh threads.");
+      throw new Error(data.error || "刷新对话列表失败。");
     }
 
     const nextThreads = (data.threads || []) as ChatThread[];
@@ -708,7 +708,7 @@ function App() {
 
       const data = await readJsonResponse(response, "/api/threads/:threadId");
       if (!response.ok) {
-        throw new Error(data.error || "Failed to rename thread.");
+        throw new Error(data.error || "重命名对话失败。");
       }
 
       const renamedThread = data.thread as ChatThread;
@@ -719,7 +719,7 @@ function App() {
       );
     } catch (renameError) {
       setError(
-        renameError instanceof Error ? renameError.message : "Failed to rename thread."
+        renameError instanceof Error ? renameError.message : "重命名对话失败。"
       );
     } finally {
       setRenamingThreadId("");
@@ -734,7 +734,7 @@ function App() {
 
     const thread = threads.find((item) => item.threadId === threadId);
     const confirmed = window.confirm(
-      `Delete "${thread?.title || "this chat"}"? This will remove its messages, short-term memory, uploaded files, and RAG index.`
+      `确定删除「${thread?.title || "这个对话"}」吗？这会删除消息、短期记忆、上传文件和 RAG 索引。`
     );
 
     if (!confirmed) {
@@ -754,7 +754,7 @@ function App() {
       const data = await readJsonResponse(response, "/api/threads/:threadId");
 
       if (!response.ok) {
-        throw new Error(data.error || "Failed to delete thread.");
+        throw new Error(data.error || "删除对话失败。");
       }
 
       const remainingThreads = threads.filter((item) => item.threadId !== threadId);
@@ -779,7 +779,7 @@ function App() {
       });
     } catch (deleteError) {
       setError(
-        deleteError instanceof Error ? deleteError.message : "Failed to delete thread."
+        deleteError instanceof Error ? deleteError.message : "删除对话失败。"
       );
     } finally {
       setIsThreadLoading(false);
@@ -805,7 +805,7 @@ function App() {
     const data = await readJsonResponse(response, "/api/documents/upload");
 
     if (!response.ok) {
-      throw new Error(data.error || "Failed to upload document.");
+      throw new Error(data.error || "上传文件失败。");
     }
 
     return data as DocumentUploadResult;
@@ -832,7 +832,7 @@ function App() {
 
     if (!response.ok) {
       return {
-        answer: data.error || "Document QA request failed.",
+        answer: data.error || "文档问答请求失败。",
         document: {
           fileId: "",
           fileName: activeDocumentName,
@@ -920,7 +920,7 @@ function App() {
             entry.id === assistantEntryId
               ? {
                   ...entry,
-                  content: qaResult.answer || "Document QA returned no content.",
+                  content: qaResult.answer || "文档问答没有返回内容。",
                   meta: `${currentRole?.label || roleId} | ${currentModel?.label || modelId} | ${userId}`,
                   sources: qaResult.retrieval.sources
                 }
@@ -956,11 +956,11 @@ function App() {
 
       if (!response.ok) {
         const data = await readJsonResponse(response, "/api/chat");
-        throw new Error(data.error || "Request failed. Please try again.");
+        throw new Error(data.error || "请求失败，请稍后重试。");
       }
 
       if (!response.body) {
-        throw new Error("Streaming response is unavailable.");
+        throw new Error("当前无法获取流式响应。");
       }
 
       const updateAssistantEntry = (updater: (entry: ChatEntry) => ChatEntry) => {
@@ -996,13 +996,13 @@ function App() {
           finalReply = streamEvent.reply || finalReply;
           updateAssistantEntry((entry) => ({
             ...entry,
-            content: finalReply || "Model returned no content.",
+            content: finalReply || "模型没有返回内容。",
             meta: `${currentRole?.label || streamEvent.meta.roleId} | ${streamEvent.meta.modelId} | ${streamEvent.meta.userId}`
           }));
           return;
         }
 
-        throw new Error(streamEvent.error || "Streaming request failed.");
+        throw new Error(streamEvent.error || "流式请求失败。");
       };
 
       while (true) {
@@ -1038,7 +1038,7 @@ function App() {
       const messageText =
         submitError instanceof Error
           ? submitError.message
-          : "An error occurred while sending the message.";
+          : "发送消息时发生错误。";
 
       setError(messageText);
       setEntries((prev) =>
@@ -1046,7 +1046,7 @@ function App() {
           entry.id === assistantEntryId
             ? {
                 ...entry,
-                content: entry.content || `Request failed: ${messageText}`
+                content: entry.content || `请求失败：${messageText}`
               }
             : entry
         )
@@ -1098,7 +1098,7 @@ function App() {
             className="sidebar-close"
             onClick={() => setSidebarOpen(false)}
           >
-            脳
+            ×
           </button>
         </div>
 
@@ -1109,7 +1109,7 @@ function App() {
             onClick={() => void handleCreateThread()}
             disabled={!userId.trim() || !modelId || !roleId || isThreadLoading}
           >
-            + New chat
+            + 新对话
           </button>
           <div className="thread-list">
             {threads.map((thread) => (
@@ -1145,7 +1145,7 @@ function App() {
                     <>
                       <span className="thread-item-title">{thread.title}</span>
                       <span className="thread-item-preview">
-                        {thread.lastMessagePreview || "No messages yet"}
+                        {thread.lastMessagePreview || "暂无消息"}
                       </span>
                     </>
                   )}
@@ -1160,14 +1160,14 @@ function App() {
                         setRenamingTitle(thread.title);
                       }}
                     >
-                      Rename
+                      重命名
                     </button>
                     <button
                       type="button"
                       className="thread-delete-button"
                       onClick={() => void deleteChatThread(thread.threadId)}
                     >
-                      Delete
+                      删除
                     </button>
                   </div>
                 )}
@@ -1190,9 +1190,10 @@ function App() {
               className="menu-button"
               onClick={() => setSidebarOpen((value) => !value)}
             >
-              鈽?            </button>
+              ☰
+            </button>
             <div>
-              <div className="chat-header-title">Role ChatGPT UI</div>
+              <div className="chat-header-title">角色对话助手</div>
             </div>
           </div>
         </header>
@@ -1203,12 +1204,12 @@ function App() {
           {isLoading || isThreadLoading ? (
             <div className="empty-state">
               <div className="empty-state-title">
-                {isLoading ? "Loading configuration" : "Loading thread"}
+                {isLoading ? "正在加载配置" : "正在加载对话"}
               </div>
               <div className="empty-state-copy">
                 {isLoading
-                  ? "Fetching models and roles."
-                  : "Restoring messages from SQLite checkpoints."}
+                  ? "正在获取模型和角色。"
+                  : "正在从 SQLite 恢复对话消息。"}
               </div>
             </div>
           ) : null}
@@ -1217,10 +1218,10 @@ function App() {
             !isThreadLoading &&
             entries.map((entry) => (
               <div key={entry.id} className={`chat-row ${entry.role}`}>
-                <div className="chat-avatar">{entry.role === "user" ? "You" : "AI"}</div>
+                <div className="chat-avatar">{entry.role === "user" ? "你" : "AI"}</div>
                 <div className="chat-bubble-wrap">
                   <div className="chat-bubble-header">
-                    <span>{entry.role === "user" ? "You" : currentRole?.label || "Assistant"}</span>
+                    <span>{entry.role === "user" ? "你" : currentRole?.label || "助手"}</span>
                     {entry.meta ? <span className="chat-meta">{entry.meta}</span> : null}
                   </div>
                   <div className={`chat-bubble ${entry.role}`}>
@@ -1240,8 +1241,8 @@ function App() {
                         disabled={!entry.attachmentFileId}
                         title={
                           entry.attachmentFileId
-                            ? "Open uploaded file"
-                            : "File preview will be available after upload"
+                            ? "打开上传文件"
+                            : "文件上传完成后可以预览"
                         }
                       >
                         {entry.attachmentPreviewUrl ? (
@@ -1251,7 +1252,7 @@ function App() {
                             alt={entry.attachmentName}
                           />
                         ) : (
-                          <div className="message-attachment-icon">FILE</div>
+                          <div className="message-attachment-icon">文件</div>
                         )}
                         <div className="message-attachment-info">
                           <div className="message-attachment-name">
@@ -1294,7 +1295,7 @@ function App() {
                     }
                   }}
                 >
-                  Remove
+                  移除
                 </button>
               </div>
             ) : null}
@@ -1303,7 +1304,7 @@ function App() {
               value={message}
               onChange={(event) => setMessage(event.target.value)}
               onKeyDown={handleTextareaKeyDown}
-              placeholder="Send a message. Enter to send, Shift+Enter for a new line."
+              placeholder="输入消息。按 Enter 发送，Shift + Enter 换行。"
               rows={1}
               required
             />
@@ -1325,10 +1326,10 @@ function App() {
                   onClick={() => fileInputRef.current?.click()}
                   disabled={isSubmitting || isThreadLoading}
                 >
-                  Attach
+                  上传
                 </button>
                 <label className="composer-role-picker" htmlFor="composer-model-select">
-                  <span>Model</span>
+                  <span>模型</span>
                   <select
                     id="composer-model-select"
                     value={modelId}
@@ -1343,7 +1344,7 @@ function App() {
                   </select>
                 </label>
                 <label className="composer-role-picker" htmlFor="composer-role-select">
-                  <span>Role</span>
+                  <span>角色</span>
                   <select
                     id="composer-role-select"
                     value={roleId}
@@ -1362,7 +1363,7 @@ function App() {
                     className="composer-role-picker"
                     htmlFor="composer-reasoning-effort"
                   >
-                    <span>Reasoning</span>
+                    <span>推理</span>
                     <select
                       id="composer-reasoning-effort"
                       value={reasoningEffort}
@@ -1379,7 +1380,7 @@ function App() {
                   </label>
                 ) : null}
                 <button className="send-button" type="submit" disabled={!canSubmit}>
-                  {isSubmitting ? "Streaming..." : "Send"}
+                  {isSubmitting ? "生成中..." : "发送"}
                 </button>
               </div>
             </div>
