@@ -105,10 +105,10 @@ export class LangChainToolAgent {
   ): Promise<string> {
     // 学习点：streamMode=messages 会持续返回模型 token。
     // 工具节点输出会被过滤，避免把内部过程展示给用户。
-    const stream = this.agent.streamEvents(
+    const run = await this.agent.streamEvents(
       { messages: this.toLangChainMessages(messages) },
       {
-        version: "v2",
+        version: "v3",
         configurable: { thread_id: threadId },
         context: this.createContext(userId, threadId)
       }
@@ -116,14 +116,16 @@ export class LangChainToolAgent {
 
     let fullText = "";
 
-    for await (const event of stream) {
-      const delta = this.extractStreamEventText(event, fullText);
-      if (!delta) {
-        continue;
-      }
+    for await (const messageStream of run.messages) {
+      for await (const token of messageStream.text) {
+        const delta = this.extractNewTextDelta(String(token || ""), fullText);
+        if (!delta) {
+          continue;
+        }
 
-      fullText += delta;
-      onDelta(delta);
+        fullText += delta;
+        onDelta(delta);
+      }
     }
 
     if (!fullText) {

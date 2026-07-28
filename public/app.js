@@ -21482,16 +21482,13 @@
     sessionStorage.setItem(storageKey, nextValue);
     return nextValue;
   }
-  function createWelcomeEntries() {
-    return [
-      {
-        id: "welcome",
-        role: "assistant",
-        content: "\u6B22\u8FCE\u4F7F\u7528\u3002\u4F60\u53EF\u4EE5\u65B0\u5EFA\u5BF9\u8BDD\uFF0C\u6216\u4ECE\u5DE6\u4FA7\u6253\u5F00\u5DF2\u6709\u5BF9\u8BDD\u3002\u957F\u671F\u8BB0\u5FC6\u4F1A\u6309\u7528\u6237\u9694\u79BB\uFF0C\u6BCF\u4E2A\u5BF9\u8BDD\u4E5F\u4F1A\u4FDD\u7559\u81EA\u5DF1\u7684\u77ED\u671F\u4E0A\u4E0B\u6587\u3002"
-      }
-    ];
-  }
   var AUTO_SCROLL_THRESHOLD = 120;
+  var THINKING_STATUS_TEXT = "\u6B63\u5728\u601D\u8003\u2026";
+  var DOCUMENT_QA_STATUS_TEXT = "\u6B63\u5728\u68C0\u7D22\u6587\u6863\u2026";
+  var PENDING_STATUS_TEXTS = /* @__PURE__ */ new Set([
+    THINKING_STATUS_TEXT,
+    DOCUMENT_QA_STATUS_TEXT
+  ]);
   var ATTACHMENT_MARKER_PATTERN = /\n*\[Attachment available in current thread: ([^\]]+)\]\n(?:If the user wants analysis, extraction, chunking, summarization, or document QA, call inspect_uploaded_document\.|If the user asks to use the file content, call chunk_uploaded_document to split it into bounded chunks before answering\.|If the user asks to use the file content, call retrieve_uploaded_document_chunks to retrieve only relevant chunks before answering\.)/;
   function extractAttachmentFromContent(content) {
     const match = content.match(ATTACHMENT_MARKER_PATTERN);
@@ -21527,24 +21524,24 @@
   function getAttachmentKind(fileName) {
     const extension = fileName.split(".").pop()?.toLowerCase() || "";
     if (isImageFile(fileName)) {
-      return "\u56FE\u7247\u6587\u4EF6";
+      return "\u56FE\u7247";
     }
     if (extension === "pptx") {
-      return "\u6F14\u793A\u6587\u7A3F";
+      return "PPT";
     }
     if (extension === "docx") {
-      return "Word \u6587\u6863";
+      return "Word";
     }
     if (["xlsx", "xls", "csv"].includes(extension)) {
-      return "\u8868\u683C\u6587\u4EF6";
+      return "\u8868\u683C";
     }
     if (["html", "htm"].includes(extension)) {
-      return "\u7F51\u9875\u6587\u4EF6";
+      return "\u7F51\u9875";
     }
     if (extension === "pdf") {
-      return "PDF \u6587\u6863";
+      return "PDF";
     }
-    return "\u77E5\u8BC6\u5E93\u6587\u4EF6";
+    return extension ? extension.toUpperCase() : "\u6587\u4EF6";
   }
   function renderInlineMarkdown(text) {
     const parts = text.split(/(`[^`]+`|\*\*[^*]+\*\*)/g);
@@ -21638,7 +21635,7 @@
     const [roleId, setRoleId] = (0, import_react.useState)("");
     const [reasoningEffort, setReasoningEffort] = (0, import_react.useState)("low");
     const [message, setMessage] = (0, import_react.useState)("");
-    const [entries, setEntries] = (0, import_react.useState)(createWelcomeEntries());
+    const [entries, setEntries] = (0, import_react.useState)([]);
     const [isLoading, setIsLoading] = (0, import_react.useState)(true);
     const [isSubmitting, setIsSubmitting] = (0, import_react.useState)(false);
     const [isThreadLoading, setIsThreadLoading] = (0, import_react.useState)(false);
@@ -21648,6 +21645,7 @@
     const [sidebarOpen, setSidebarOpen] = (0, import_react.useState)(false);
     const [userId] = (0, import_react.useState)(() => getOrCreateStoredId("chat-demo-user-id"));
     const [attachment, setAttachment] = (0, import_react.useState)(null);
+    const [composerAttachmentPreviewUrl, setComposerAttachmentPreviewUrl] = (0, import_react.useState)("");
     const [activeDocumentName, setActiveDocumentName] = (0, import_react.useState)("");
     const chatLayoutRef = (0, import_react.useRef)(null);
     const composerShellRef = (0, import_react.useRef)(null);
@@ -21684,9 +21682,21 @@
       () => roles.find((item) => item.id === roleId),
       [roles, roleId]
     );
+    const isEmptyThread = !isLoading && !isThreadLoading && entries.length === 0;
     const canSubmit = Boolean(
       !isSubmitting && !isLoading && !isThreadLoading && activeThreadId && modelId && roleId && (message.trim() || attachment)
     );
+    (0, import_react.useEffect)(() => {
+      if (!attachment || !isImageFile(attachment.name)) {
+        setComposerAttachmentPreviewUrl("");
+        return;
+      }
+      const previewUrl = URL.createObjectURL(attachment);
+      setComposerAttachmentPreviewUrl(previewUrl);
+      return () => {
+        URL.revokeObjectURL(previewUrl);
+      };
+    }, [attachment]);
     (0, import_react.useEffect)(() => {
       async function bootstrap() {
         try {
@@ -21781,7 +21791,7 @@
         pendingInitialScrollRef.current = true;
         setThreads(nextThreads);
         setActiveThreadId(thread.threadId);
-        setEntries(createWelcomeEntries());
+        setEntries([]);
         setActiveDocumentName("");
         setModelId(thread.modelId);
         setRoleId(thread.roleId);
@@ -21829,7 +21839,7 @@
         shouldAutoScrollRef.current = true;
         pendingInitialScrollRef.current = true;
         setActiveThreadId(thread.threadId);
-        setEntries(nextEntries.length ? nextEntries : createWelcomeEntries());
+        setEntries(nextEntries);
         setActiveDocumentName(
           nextEntries.find((entry) => entry.attachmentName)?.attachmentName || ""
         );
@@ -22016,6 +22026,52 @@
       }
       return data;
     }
+    async function streamUploadedDocumentAnswer(question, onEvent) {
+      const response = await fetch("/api/documents/qa", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "text/event-stream"
+        },
+        body: JSON.stringify({
+          userId: userId.trim(),
+          threadId: activeThreadId,
+          modelId,
+          roleId,
+          reasoningEffort,
+          question
+        })
+      });
+      if (!response.ok) {
+        const data = await readJsonResponse(response, "/api/documents/qa");
+        throw new Error(data.error || "\u6587\u6863\u95EE\u7B54\u8BF7\u6C42\u5931\u8D25\u3002");
+      }
+      if (!response.body) {
+        throw new Error("\u5F53\u524D\u65E0\u6CD5\u83B7\u53D6\u6587\u6863\u6D41\u5F0F\u54CD\u5E94\u3002");
+      }
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+        let eventEnd = buffer.indexOf("\n\n");
+        while (eventEnd !== -1) {
+          const rawEvent = buffer.slice(0, eventEnd);
+          buffer = buffer.slice(eventEnd + 2);
+          if (rawEvent.trim()) {
+            applyStreamEvent(rawEvent, onEvent);
+          }
+          eventEnd = buffer.indexOf("\n\n");
+        }
+        if (done) {
+          break;
+        }
+      }
+      if (buffer.trim()) {
+        applyStreamEvent(buffer, onEvent);
+      }
+    }
     async function handleSubmit(event) {
       event?.preventDefault();
       const trimmedMessage = message.trim();
@@ -22027,6 +22083,7 @@
       setIsSubmitting(true);
       shouldAutoScrollRef.current = true;
       const assistantEntryId = `assistant-${Date.now()}`;
+      const shouldUseDocumentQa = Boolean(attachment || activeDocumentName);
       const attachmentPreviewUrl = attachment && isImageFile(attachment.name) ? URL.createObjectURL(attachment) : void 0;
       const userEntry = {
         id: `user-${Date.now()}`,
@@ -22042,13 +22099,12 @@
         {
           id: assistantEntryId,
           role: "assistant",
-          content: "",
+          content: shouldUseDocumentQa ? DOCUMENT_QA_STATUS_TEXT : THINKING_STATUS_TEXT,
           meta: `${currentRole?.label || roleId} | ${currentModel?.label || modelId} | ${userId}`
         }
       ]);
       setMessage("");
       try {
-        const shouldUseDocumentQa = Boolean(attachment || activeDocumentName);
         if (shouldUseDocumentQa) {
           let nextDocumentName = activeDocumentName;
           if (attachment) {
@@ -22064,17 +22120,39 @@
               )
             );
           }
-          const qaResult = await askUploadedDocument(outgoingMessage);
-          setEntries(
-            (prev) => prev.map(
-              (entry) => entry.id === assistantEntryId ? {
+          let finalDocumentReply = "";
+          const updateDocumentAssistantEntry = (updater) => {
+            setEntries(
+              (prev) => prev.map((entry) => entry.id === assistantEntryId ? updater(entry) : entry)
+            );
+          };
+          await streamUploadedDocumentAnswer(outgoingMessage, (streamEvent) => {
+            if (streamEvent.type === "meta") {
+              updateDocumentAssistantEntry((entry) => ({
                 ...entry,
-                content: qaResult.answer || "\u6587\u6863\u95EE\u7B54\u6CA1\u6709\u8FD4\u56DE\u5185\u5BB9\u3002",
-                meta: `${currentRole?.label || roleId} | ${currentModel?.label || modelId} | ${userId}`,
-                sources: qaResult.retrieval.sources
-              } : entry
-            )
-          );
+                meta: `${currentRole?.label || streamEvent.meta.roleId} | ${streamEvent.meta.modelId} | ${streamEvent.meta.userId}`
+              }));
+              return;
+            }
+            if (streamEvent.type === "delta") {
+              finalDocumentReply += streamEvent.chunk;
+              updateDocumentAssistantEntry((entry) => ({
+                ...entry,
+                content: PENDING_STATUS_TEXTS.has(entry.content) ? streamEvent.chunk : entry.content + streamEvent.chunk
+              }));
+              return;
+            }
+            if (streamEvent.type === "done") {
+              finalDocumentReply = streamEvent.reply || finalDocumentReply;
+              updateDocumentAssistantEntry((entry) => ({
+                ...entry,
+                content: finalDocumentReply || "\u6587\u6863\u95EE\u7B54\u6CA1\u6709\u8FD4\u56DE\u5185\u5BB9\u3002",
+                meta: `${currentRole?.label || streamEvent.meta.roleId} | ${streamEvent.meta.modelId} | ${streamEvent.meta.userId}`
+              }));
+              return;
+            }
+            throw new Error(streamEvent.error || "\u6587\u6863\u6D41\u5F0F\u8BF7\u6C42\u5931\u8D25\u3002");
+          });
           setAttachment(null);
           if (fileInputRef.current) {
             fileInputRef.current.value = "";
@@ -22125,7 +22203,7 @@
             finalReply += streamEvent.chunk;
             updateAssistantEntry((entry) => ({
               ...entry,
-              content: entry.content + streamEvent.chunk
+              content: PENDING_STATUS_TEXTS.has(entry.content) ? streamEvent.chunk : entry.content + streamEvent.chunk
             }));
             return;
           }
@@ -22277,7 +22355,7 @@
       "main",
       {
         ref: chatLayoutRef,
-        className: "chat-layout",
+        className: `chat-layout ${isEmptyThread ? "empty-thread" : ""}`,
         onScroll: handleChatLayoutScroll,
         onWheel: handleChatLayoutWheel
       },
@@ -22291,113 +22369,149 @@
         "\u2630"
       ), /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-header-title" }, "\u89D2\u8272\u5BF9\u8BDD\u52A9\u624B")))),
       error ? /* @__PURE__ */ import_react.default.createElement("div", { className: "top-error" }, error) : null,
-      /* @__PURE__ */ import_react.default.createElement("section", { className: "conversation" }, isLoading || isThreadLoading ? /* @__PURE__ */ import_react.default.createElement("div", { className: "empty-state" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "empty-state-title" }, isLoading ? "\u6B63\u5728\u52A0\u8F7D\u914D\u7F6E" : "\u6B63\u5728\u52A0\u8F7D\u5BF9\u8BDD"), /* @__PURE__ */ import_react.default.createElement("div", { className: "empty-state-copy" }, isLoading ? "\u6B63\u5728\u83B7\u53D6\u6A21\u578B\u548C\u89D2\u8272\u3002" : "\u6B63\u5728\u4ECE SQLite \u6062\u590D\u5BF9\u8BDD\u6D88\u606F\u3002")) : null, !isLoading && !isThreadLoading && entries.map((entry) => /* @__PURE__ */ import_react.default.createElement("div", { key: entry.id, className: `chat-row ${entry.role}` }, /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-avatar" }, entry.role === "user" ? "\u4F60" : "AI"), /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-bubble-wrap" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-bubble-header" }, /* @__PURE__ */ import_react.default.createElement("span", null, entry.role === "user" ? "\u4F60" : currentRole?.label || "\u52A9\u624B"), entry.meta ? /* @__PURE__ */ import_react.default.createElement("span", { className: "chat-meta" }, entry.meta) : null), /* @__PURE__ */ import_react.default.createElement("div", { className: `chat-bubble ${entry.role}` }, entry.attachmentName ? /* @__PURE__ */ import_react.default.createElement(
-        "button",
+      /* @__PURE__ */ import_react.default.createElement("section", { className: "conversation" }, isLoading || isThreadLoading ? /* @__PURE__ */ import_react.default.createElement("div", { className: "empty-state" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "empty-state-title" }, isLoading ? "\u6B63\u5728\u52A0\u8F7D\u914D\u7F6E" : "\u6B63\u5728\u52A0\u8F7D\u5BF9\u8BDD"), /* @__PURE__ */ import_react.default.createElement("div", { className: "empty-state-copy" }, isLoading ? "\u6B63\u5728\u83B7\u53D6\u6A21\u578B\u548C\u89D2\u8272\u3002" : "\u6B63\u5728\u4ECE SQLite \u6062\u590D\u5BF9\u8BDD\u6D88\u606F\u3002")) : null, isEmptyThread ? /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-empty-home" }, /* @__PURE__ */ import_react.default.createElement("h2", null, "\u4ECA\u5929\u60F3\u804A\u4EC0\u4E48\uFF1F"), /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-empty-actions" }, /* @__PURE__ */ import_react.default.createElement("button", { type: "button", onClick: () => setMessage("\u5E2E\u6211\u5206\u6790\u8FD9\u4E2A\u6587\u4EF6") }, "\u5206\u6790\u6587\u4EF6"), /* @__PURE__ */ import_react.default.createElement("button", { type: "button", onClick: () => setMessage("\u5E2E\u6211\u5199\u4E00\u6BB5\u4EE3\u7801") }, "\u5199\u4EE3\u7801"), /* @__PURE__ */ import_react.default.createElement("button", { type: "button", onClick: () => setMessage("\u5E2E\u6211\u68B3\u7406\u4E00\u4E2A\u5B66\u4E60\u8BA1\u5212") }, "\u5236\u5B9A\u8BA1\u5212"))) : null, !isLoading && !isThreadLoading && entries.map((entry) => /* @__PURE__ */ import_react.default.createElement(
+        "div",
         {
-          type: "button",
-          className: "message-attachment-card",
-          onClick: () => {
-            if (entry.attachmentFileId) {
-              window.open(
-                `/api/files/${encodeURIComponent(entry.attachmentFileId)}?userId=${encodeURIComponent(userId.trim())}`,
-                "_blank",
-                "noopener,noreferrer"
-              );
-            }
-          },
-          disabled: !entry.attachmentFileId,
-          title: entry.attachmentFileId ? "\u6253\u5F00\u4E0A\u4F20\u6587\u4EF6" : "\u6587\u4EF6\u4E0A\u4F20\u5B8C\u6210\u540E\u53EF\u4EE5\u9884\u89C8"
+          key: entry.id,
+          className: `mx-auto grid w-[min(860px,calc(100%_-_32px))] gap-3 px-0 py-5 ${entry.role === "user" ? "justify-items-end" : "justify-items-start"}`
         },
-        entry.attachmentPreviewUrl ? /* @__PURE__ */ import_react.default.createElement(
-          "img",
-          {
-            className: "message-attachment-preview",
-            src: entry.attachmentPreviewUrl,
-            alt: entry.attachmentName
-          }
-        ) : /* @__PURE__ */ import_react.default.createElement("div", { className: "message-attachment-icon" }, "\u6587\u4EF6"),
-        /* @__PURE__ */ import_react.default.createElement("div", { className: "message-attachment-info" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "message-attachment-name" }, entry.attachmentName), /* @__PURE__ */ import_react.default.createElement("div", { className: "message-attachment-copy" }, getAttachmentKind(entry.attachmentName)))
-      ) : null, entry.role === "assistant" ? /* @__PURE__ */ import_react.default.createElement("div", { className: "markdown-body" }, renderMarkdown(entry.content)) : /* @__PURE__ */ import_react.default.createElement("div", { className: "message-text" }, entry.content)))))),
-      /* @__PURE__ */ import_react.default.createElement("footer", { ref: composerShellRef, className: "composer-shell" }, /* @__PURE__ */ import_react.default.createElement("form", { className: "composer-card", onSubmit: handleSubmit }, activeDocumentName ? /* @__PURE__ */ import_react.default.createElement("div", { className: "knowledge-chip" }, /* @__PURE__ */ import_react.default.createElement("span", null, "\u77E5\u8BC6\u5E93\u6587\u4EF6"), /* @__PURE__ */ import_react.default.createElement("strong", null, normalizeFileName(activeDocumentName))) : null, attachment ? /* @__PURE__ */ import_react.default.createElement("div", { className: "composer-attachment-chip" }, /* @__PURE__ */ import_react.default.createElement("span", null, attachment.name), /* @__PURE__ */ import_react.default.createElement(
-        "button",
-        {
-          type: "button",
-          onClick: () => {
-            setAttachment(null);
-            if (fileInputRef.current) {
-              fileInputRef.current.value = "";
-            }
-          }
-        },
-        "\u79FB\u9664"
-      )) : null, /* @__PURE__ */ import_react.default.createElement(
-        "textarea",
-        {
-          value: message,
-          onChange: (event) => setMessage(event.target.value),
-          onKeyDown: handleTextareaKeyDown,
-          placeholder: "\u8F93\u5165\u6D88\u606F\u3002\u6309 Enter \u53D1\u9001\uFF0CShift + Enter \u6362\u884C\u3002",
-          rows: 1,
-          required: true
-        }
-      ), /* @__PURE__ */ import_react.default.createElement(
-        "input",
-        {
-          ref: fileInputRef,
-          className: "hidden-file-input",
-          type: "file",
-          onChange: (event) => {
-            setAttachment(event.target.files?.[0] || null);
-          }
-        }
-      ), /* @__PURE__ */ import_react.default.createElement("div", { className: "composer-actions" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "composer-controls" }, /* @__PURE__ */ import_react.default.createElement(
-        "button",
-        {
-          type: "button",
-          className: "attach-button",
-          onClick: () => fileInputRef.current?.click(),
-          disabled: isSubmitting || isThreadLoading
-        },
-        "\u4E0A\u4F20"
-      ), /* @__PURE__ */ import_react.default.createElement("label", { className: "composer-role-picker", htmlFor: "composer-model-select" }, /* @__PURE__ */ import_react.default.createElement("span", null, "\u6A21\u578B"), /* @__PURE__ */ import_react.default.createElement(
-        "select",
-        {
-          id: "composer-model-select",
-          value: modelId,
-          onChange: (event) => setModelId(event.target.value),
-          disabled: !models.length || isSubmitting || isThreadLoading
-        },
-        models.map((model) => /* @__PURE__ */ import_react.default.createElement("option", { key: model.id, value: model.id }, model.label))
-      )), /* @__PURE__ */ import_react.default.createElement("label", { className: "composer-role-picker", htmlFor: "composer-role-select" }, /* @__PURE__ */ import_react.default.createElement("span", null, "\u89D2\u8272"), /* @__PURE__ */ import_react.default.createElement(
-        "select",
-        {
-          id: "composer-role-select",
-          value: roleId,
-          onChange: (event) => setRoleId(event.target.value),
-          disabled: !roles.length || isSubmitting || isThreadLoading
-        },
-        roles.map((role) => /* @__PURE__ */ import_react.default.createElement("option", { key: role.id, value: role.id }, role.label))
-      )), currentModel?.provider === "openai" ? /* @__PURE__ */ import_react.default.createElement(
-        "label",
-        {
-          className: "composer-role-picker",
-          htmlFor: "composer-reasoning-effort"
-        },
-        /* @__PURE__ */ import_react.default.createElement("span", null, "\u63A8\u7406"),
         /* @__PURE__ */ import_react.default.createElement(
-          "select",
+          "div",
           {
-            id: "composer-reasoning-effort",
-            value: reasoningEffort,
-            onChange: (event) => setReasoningEffort(event.target.value),
+            className: `flex w-full items-center gap-2 text-[13px] ${entry.role === "user" ? "justify-end" : "justify-start"}`
+          },
+          /* @__PURE__ */ import_react.default.createElement("span", { className: "font-semibold text-zinc-950" }, entry.role === "user" ? "\u4F60" : currentRole?.label || "\u52A9\u624B"),
+          entry.meta ? /* @__PURE__ */ import_react.default.createElement("span", { className: "max-w-[68vw] truncate text-xs font-normal text-zinc-500" }, entry.meta) : null
+        ),
+        /* @__PURE__ */ import_react.default.createElement(
+          "div",
+          {
+            className: `max-w-full ${entry.role === "user" ? "rounded-3xl bg-zinc-100 px-5 py-3 text-[15px] leading-8 text-zinc-950" : "w-full text-[15px] leading-8 text-zinc-950"}`
+          },
+          entry.attachmentName ? /* @__PURE__ */ import_react.default.createElement(
+            "button",
+            {
+              type: "button",
+              className: `message-attachment-card ${entry.attachmentPreviewUrl ? "image-only" : "file-card"}`,
+              onClick: () => {
+                if (entry.attachmentFileId) {
+                  window.open(
+                    `/api/files/${encodeURIComponent(entry.attachmentFileId)}?userId=${encodeURIComponent(userId.trim())}`,
+                    "_blank",
+                    "noopener,noreferrer"
+                  );
+                }
+              },
+              disabled: !entry.attachmentFileId,
+              title: entry.attachmentFileId ? "\u6253\u5F00\u4E0A\u4F20\u6587\u4EF6" : "\u6587\u4EF6\u4E0A\u4F20\u5B8C\u6210\u540E\u53EF\u4EE5\u9884\u89C8"
+            },
+            entry.attachmentPreviewUrl ? /* @__PURE__ */ import_react.default.createElement(
+              "img",
+              {
+                className: "message-attachment-preview",
+                src: entry.attachmentPreviewUrl,
+                alt: "\u4E0A\u4F20\u7684\u56FE\u7247"
+              }
+            ) : /* @__PURE__ */ import_react.default.createElement(import_react.default.Fragment, null, /* @__PURE__ */ import_react.default.createElement("div", { className: "message-attachment-icon" }, getAttachmentKind(entry.attachmentName)), /* @__PURE__ */ import_react.default.createElement("div", { className: "message-attachment-info" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "message-attachment-name" }, entry.attachmentName), /* @__PURE__ */ import_react.default.createElement("div", { className: "message-attachment-copy" }, getAttachmentKind(entry.attachmentName))))
+          ) : null,
+          entry.role === "assistant" ? /* @__PURE__ */ import_react.default.createElement("div", { className: "markdown-body" }, renderMarkdown(entry.content)) : /* @__PURE__ */ import_react.default.createElement("div", { className: "message-text" }, entry.content)
+        )
+      ))),
+      /* @__PURE__ */ import_react.default.createElement(
+        "footer",
+        {
+          ref: composerShellRef,
+          className: `composer-shell ${isEmptyThread ? "home-composer" : ""}`
+        },
+        /* @__PURE__ */ import_react.default.createElement("form", { className: "composer-card", onSubmit: handleSubmit }, attachment ? /* @__PURE__ */ import_react.default.createElement(
+          "div",
+          {
+            className: `composer-attachment-preview ${composerAttachmentPreviewUrl ? "image-only" : "file-card"}`
+          },
+          composerAttachmentPreviewUrl ? /* @__PURE__ */ import_react.default.createElement("img", { src: composerAttachmentPreviewUrl, alt: "\u5F85\u4E0A\u4F20\u56FE\u7247" }) : /* @__PURE__ */ import_react.default.createElement(import_react.default.Fragment, null, /* @__PURE__ */ import_react.default.createElement("div", { className: "composer-file-icon" }, getAttachmentKind(attachment.name)), /* @__PURE__ */ import_react.default.createElement("div", { className: "composer-file-info" }, /* @__PURE__ */ import_react.default.createElement("strong", null, normalizeFileName(attachment.name)), /* @__PURE__ */ import_react.default.createElement("span", null, getAttachmentKind(attachment.name)))),
+          /* @__PURE__ */ import_react.default.createElement(
+            "button",
+            {
+              type: "button",
+              "aria-label": "\u79FB\u9664\u9644\u4EF6",
+              onClick: () => {
+                setAttachment(null);
+                if (fileInputRef.current) {
+                  fileInputRef.current.value = "";
+                }
+              }
+            },
+            "\xD7"
+          )
+        ) : null, /* @__PURE__ */ import_react.default.createElement(
+          "textarea",
+          {
+            value: message,
+            onChange: (event) => setMessage(event.target.value),
+            onKeyDown: handleTextareaKeyDown,
+            placeholder: "\u8F93\u5165\u6D88\u606F\u3002\u6309 Enter \u53D1\u9001\uFF0CShift + Enter \u6362\u884C\u3002",
+            rows: 1,
+            required: true
+          }
+        ), /* @__PURE__ */ import_react.default.createElement(
+          "input",
+          {
+            ref: fileInputRef,
+            className: "hidden-file-input",
+            type: "file",
+            onChange: (event) => {
+              setAttachment(event.target.files?.[0] || null);
+            }
+          }
+        ), /* @__PURE__ */ import_react.default.createElement("div", { className: "composer-actions" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "composer-controls" }, /* @__PURE__ */ import_react.default.createElement(
+          "button",
+          {
+            type: "button",
+            className: "attach-button",
+            onClick: () => fileInputRef.current?.click(),
             disabled: isSubmitting || isThreadLoading
           },
-          /* @__PURE__ */ import_react.default.createElement("option", { value: "minimal" }, "minimal"),
-          /* @__PURE__ */ import_react.default.createElement("option", { value: "low" }, "low"),
-          /* @__PURE__ */ import_react.default.createElement("option", { value: "medium" }, "medium"),
-          /* @__PURE__ */ import_react.default.createElement("option", { value: "high" }, "high")
-        )
-      ) : null, /* @__PURE__ */ import_react.default.createElement("button", { className: "send-button", type: "submit", disabled: !canSubmit }, isSubmitting ? "\u751F\u6210\u4E2D..." : "\u53D1\u9001")))))
+          "\u4E0A\u4F20"
+        ), /* @__PURE__ */ import_react.default.createElement("label", { className: "composer-role-picker", htmlFor: "composer-model-select" }, /* @__PURE__ */ import_react.default.createElement("span", null, "\u6A21\u578B"), /* @__PURE__ */ import_react.default.createElement(
+          "select",
+          {
+            id: "composer-model-select",
+            value: modelId,
+            onChange: (event) => setModelId(event.target.value),
+            disabled: !models.length || isSubmitting || isThreadLoading
+          },
+          models.map((model) => /* @__PURE__ */ import_react.default.createElement("option", { key: model.id, value: model.id }, model.label))
+        )), /* @__PURE__ */ import_react.default.createElement("label", { className: "composer-role-picker", htmlFor: "composer-role-select" }, /* @__PURE__ */ import_react.default.createElement("span", null, "\u89D2\u8272"), /* @__PURE__ */ import_react.default.createElement(
+          "select",
+          {
+            id: "composer-role-select",
+            value: roleId,
+            onChange: (event) => setRoleId(event.target.value),
+            disabled: !roles.length || isSubmitting || isThreadLoading
+          },
+          roles.map((role) => /* @__PURE__ */ import_react.default.createElement("option", { key: role.id, value: role.id }, role.label))
+        )), currentModel?.provider === "openai" ? /* @__PURE__ */ import_react.default.createElement(
+          "label",
+          {
+            className: "composer-role-picker",
+            htmlFor: "composer-reasoning-effort"
+          },
+          /* @__PURE__ */ import_react.default.createElement("span", null, "\u63A8\u7406"),
+          /* @__PURE__ */ import_react.default.createElement(
+            "select",
+            {
+              id: "composer-reasoning-effort",
+              value: reasoningEffort,
+              onChange: (event) => setReasoningEffort(event.target.value),
+              disabled: isSubmitting || isThreadLoading
+            },
+            /* @__PURE__ */ import_react.default.createElement("option", { value: "minimal" }, "minimal"),
+            /* @__PURE__ */ import_react.default.createElement("option", { value: "low" }, "low"),
+            /* @__PURE__ */ import_react.default.createElement("option", { value: "medium" }, "medium"),
+            /* @__PURE__ */ import_react.default.createElement("option", { value: "high" }, "high")
+          )
+        ) : null, /* @__PURE__ */ import_react.default.createElement("button", { className: "send-button", type: "submit", disabled: !canSubmit }, isSubmitting ? "\u751F\u6210\u4E2D..." : "\u53D1\u9001"))))
+      )
     ));
   }
   (0, import_client.createRoot)(document.getElementById("root")).render(/* @__PURE__ */ import_react.default.createElement(App, null));

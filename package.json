@@ -6,7 +6,8 @@
   "scripts": {
     "build": "npm run build:server && npm run build:client",
     "build:server": "tsc",
-    "build:client": "esbuild client/main.tsx --bundle --outfile=public/app.js --format=iife --platform=browser --target=es2020",
+    "build:client": "npm run build:tailwind && esbuild client/main.tsx --bundle --outfile=public/app.js --format=iife --platform=browser --target=es2020",
+    "build:tailwind": "tailwindcss -i client/tailwind.css -o public/tailwind.css --minify",
     "chroma": ".venv\\Scripts\\chroma.exe run --path ./data/chroma --host 127.0.0.1 --port 8000",
     "chroma:venv": "python -m venv .venv",
     "chroma:install": ".venv\\Scripts\\python.exe -m pip install chromadb",
@@ -48,10 +49,12 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@tailwindcss/cli": "^4.3.3",
     "@types/better-sqlite3": "^7.6.13",
     "@types/express": "^5.0.3",
     "@types/multer": "^2.2.0",
     "@types/node": "^24.0.15",
+    "tailwindcss": "^4.3.3",
     "tsx": "^4.23.1",
     "typescript": "^5.9.2"
   }

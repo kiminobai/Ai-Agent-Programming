@@ -141,18 +141,13 @@ function getOrCreateStoredId(storageKey: string): string {
   return nextValue;
 }
 
-function createWelcomeEntries(): ChatEntry[] {
-  return [
-    {
-      id: "welcome",
-      role: "assistant",
-      content:
-        "欢迎使用。你可以新建对话，或从左侧打开已有对话。长期记忆会按用户隔离，每个对话也会保留自己的短期上下文。"
-    }
-  ];
-}
-
 const AUTO_SCROLL_THRESHOLD = 120;
+const THINKING_STATUS_TEXT = "正在思考…";
+const DOCUMENT_QA_STATUS_TEXT = "正在检索文档…";
+const PENDING_STATUS_TEXTS = new Set([
+  THINKING_STATUS_TEXT,
+  DOCUMENT_QA_STATUS_TEXT
+]);
 const ATTACHMENT_MARKER_PATTERN =
   /\n*\[Attachment available in current thread: ([^\]]+)\]\n(?:If the user wants analysis, extraction, chunking, summarization, or document QA, call inspect_uploaded_document\.|If the user asks to use the file content, call chunk_uploaded_document to split it into bounded chunks before answering\.|If the user asks to use the file content, call retrieve_uploaded_document_chunks to retrieve only relevant chunks before answering\.)/;
 
@@ -201,30 +196,30 @@ function getAttachmentKind(fileName: string): string {
   const extension = fileName.split(".").pop()?.toLowerCase() || "";
 
   if (isImageFile(fileName)) {
-    return "\u56fe\u7247\u6587\u4ef6";
+    return "图片";
   }
 
   if (extension === "pptx") {
-    return "\u6f14\u793a\u6587\u7a3f";
+    return "PPT";
   }
 
   if (extension === "docx") {
-    return "Word \u6587\u6863";
+    return "Word";
   }
 
   if (["xlsx", "xls", "csv"].includes(extension)) {
-    return "\u8868\u683c\u6587\u4ef6";
+    return "表格";
   }
 
   if (["html", "htm"].includes(extension)) {
-    return "\u7f51\u9875\u6587\u4ef6";
+    return "网页";
   }
 
   if (extension === "pdf") {
-    return "PDF \u6587\u6863";
+    return "PDF";
   }
 
-  return "\u77e5\u8bc6\u5e93\u6587\u4ef6";
+  return extension ? extension.toUpperCase() : "文件";
 }
 
 function renderInlineMarkdown(text: string): React.ReactNode[] {
@@ -379,7 +374,7 @@ function App() {
   const [roleId, setRoleId] = useState("");
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("low");
   const [message, setMessage] = useState("");
-  const [entries, setEntries] = useState<ChatEntry[]>(createWelcomeEntries());
+  const [entries, setEntries] = useState<ChatEntry[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isThreadLoading, setIsThreadLoading] = useState(false);
@@ -389,6 +384,7 @@ function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [userId] = useState(() => getOrCreateStoredId("chat-demo-user-id"));
   const [attachment, setAttachment] = useState<File | null>(null);
+  const [composerAttachmentPreviewUrl, setComposerAttachmentPreviewUrl] = useState("");
   const [activeDocumentName, setActiveDocumentName] = useState("");
   const chatLayoutRef = useRef<HTMLElement | null>(null);
   const composerShellRef = useRef<HTMLElement | null>(null);
@@ -431,6 +427,7 @@ function App() {
     () => roles.find((item) => item.id === roleId),
     [roles, roleId]
   );
+  const isEmptyThread = !isLoading && !isThreadLoading && entries.length === 0;
   const canSubmit = Boolean(
     !isSubmitting &&
       !isLoading &&
@@ -440,6 +437,20 @@ function App() {
       roleId &&
       (message.trim() || attachment)
   );
+
+  useEffect(() => {
+    if (!attachment || !isImageFile(attachment.name)) {
+      setComposerAttachmentPreviewUrl("");
+      return;
+    }
+
+    const previewUrl = URL.createObjectURL(attachment);
+    setComposerAttachmentPreviewUrl(previewUrl);
+
+    return () => {
+      URL.revokeObjectURL(previewUrl);
+    };
+  }, [attachment]);
 
   useEffect(() => {
     async function bootstrap() {
@@ -566,7 +577,7 @@ function App() {
       pendingInitialScrollRef.current = true;
       setThreads(nextThreads);
       setActiveThreadId(thread.threadId);
-      setEntries(createWelcomeEntries());
+      setEntries([]);
       setActiveDocumentName("");
       setModelId(thread.modelId);
       setRoleId(thread.roleId);
@@ -634,7 +645,7 @@ function App() {
       shouldAutoScrollRef.current = true;
       pendingInitialScrollRef.current = true;
       setActiveThreadId(thread.threadId);
-      setEntries(nextEntries.length ? nextEntries : createWelcomeEntries());
+      setEntries(nextEntries);
       setActiveDocumentName(
         nextEntries.find((entry) => entry.attachmentName)?.attachmentName || ""
       );
@@ -853,6 +864,63 @@ function App() {
     return data as DocumentQaResult;
   }
 
+  async function streamUploadedDocumentAnswer(
+    question: string,
+    onEvent: (event: StreamEvent) => void
+  ) {
+    const response = await fetch("/api/documents/qa", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "text/event-stream"
+      },
+      body: JSON.stringify({
+        userId: userId.trim(),
+        threadId: activeThreadId,
+        modelId,
+        roleId,
+        reasoningEffort,
+        question
+      })
+    });
+
+    if (!response.ok) {
+      const data = await readJsonResponse(response, "/api/documents/qa");
+      throw new Error(data.error || "文档问答请求失败。");
+    }
+
+    if (!response.body) {
+      throw new Error("当前无法获取文档流式响应。");
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+
+      let eventEnd = buffer.indexOf("\n\n");
+      while (eventEnd !== -1) {
+        const rawEvent = buffer.slice(0, eventEnd);
+        buffer = buffer.slice(eventEnd + 2);
+        if (rawEvent.trim()) {
+          applyStreamEvent(rawEvent, onEvent);
+        }
+        eventEnd = buffer.indexOf("\n\n");
+      }
+
+      if (done) {
+        break;
+      }
+    }
+
+    if (buffer.trim()) {
+      applyStreamEvent(buffer, onEvent);
+    }
+  }
+
   async function handleSubmit(event?: FormEvent<HTMLFormElement>) {
     event?.preventDefault();
 
@@ -869,6 +937,7 @@ function App() {
     shouldAutoScrollRef.current = true;
 
     const assistantEntryId = `assistant-${Date.now()}`;
+    const shouldUseDocumentQa = Boolean(attachment || activeDocumentName);
     const attachmentPreviewUrl =
       attachment && isImageFile(attachment.name) ? URL.createObjectURL(attachment) : undefined;
     const userEntry: ChatEntry = {
@@ -886,15 +955,13 @@ function App() {
       {
         id: assistantEntryId,
         role: "assistant",
-        content: "",
+        content: shouldUseDocumentQa ? DOCUMENT_QA_STATUS_TEXT : THINKING_STATUS_TEXT,
         meta: `${currentRole?.label || roleId} | ${currentModel?.label || modelId} | ${userId}`
       }
     ]);
     setMessage("");
 
     try {
-      const shouldUseDocumentQa = Boolean(attachment || activeDocumentName);
-
       if (shouldUseDocumentQa) {
         let nextDocumentName = activeDocumentName;
 
@@ -914,19 +981,44 @@ function App() {
           );
         }
 
-        const qaResult = await askUploadedDocument(outgoingMessage);
-        setEntries((prev) =>
-          prev.map((entry) =>
-            entry.id === assistantEntryId
-              ? {
-                  ...entry,
-                  content: qaResult.answer || "文档问答没有返回内容。",
-                  meta: `${currentRole?.label || roleId} | ${currentModel?.label || modelId} | ${userId}`,
-                  sources: qaResult.retrieval.sources
-                }
-              : entry
-          )
-        );
+        let finalDocumentReply = "";
+        const updateDocumentAssistantEntry = (updater: (entry: ChatEntry) => ChatEntry) => {
+          setEntries((prev) =>
+            prev.map((entry) => (entry.id === assistantEntryId ? updater(entry) : entry))
+          );
+        };
+        await streamUploadedDocumentAnswer(outgoingMessage, (streamEvent) => {
+          if (streamEvent.type === "meta") {
+            updateDocumentAssistantEntry((entry) => ({
+              ...entry,
+              meta: `${currentRole?.label || streamEvent.meta.roleId} | ${streamEvent.meta.modelId} | ${streamEvent.meta.userId}`
+            }));
+            return;
+          }
+
+          if (streamEvent.type === "delta") {
+            finalDocumentReply += streamEvent.chunk;
+            updateDocumentAssistantEntry((entry) => ({
+              ...entry,
+              content: PENDING_STATUS_TEXTS.has(entry.content)
+                ? streamEvent.chunk
+                : entry.content + streamEvent.chunk
+            }));
+            return;
+          }
+
+          if (streamEvent.type === "done") {
+            finalDocumentReply = streamEvent.reply || finalDocumentReply;
+            updateDocumentAssistantEntry((entry) => ({
+              ...entry,
+              content: finalDocumentReply || "文档问答没有返回内容。",
+              meta: `${currentRole?.label || streamEvent.meta.roleId} | ${streamEvent.meta.modelId} | ${streamEvent.meta.userId}`
+            }));
+            return;
+          }
+
+          throw new Error(streamEvent.error || "文档流式请求失败。");
+        });
         setAttachment(null);
         if (fileInputRef.current) {
           fileInputRef.current.value = "";
@@ -987,7 +1079,9 @@ function App() {
           finalReply += streamEvent.chunk;
           updateAssistantEntry((entry) => ({
             ...entry,
-            content: entry.content + streamEvent.chunk
+            content: PENDING_STATUS_TEXTS.has(entry.content)
+              ? streamEvent.chunk
+              : entry.content + streamEvent.chunk
           }));
           return;
         }
@@ -1179,7 +1273,7 @@ function App() {
 
       <main
         ref={chatLayoutRef}
-        className="chat-layout"
+        className={`chat-layout ${isEmptyThread ? "empty-thread" : ""}`}
         onScroll={handleChatLayoutScroll}
         onWheel={handleChatLayoutWheel}
       >
@@ -1214,21 +1308,59 @@ function App() {
             </div>
           ) : null}
 
+          {isEmptyThread ? (
+            <div className="chat-empty-home">
+              <h2>今天想聊什么？</h2>
+              <div className="chat-empty-actions">
+                <button type="button" onClick={() => setMessage("帮我分析这个文件")}>
+                  分析文件
+                </button>
+                <button type="button" onClick={() => setMessage("帮我写一段代码")}>
+                  写代码
+                </button>
+                <button type="button" onClick={() => setMessage("帮我梳理一个学习计划")}>
+                  制定计划
+                </button>
+              </div>
+            </div>
+          ) : null}
+
           {!isLoading &&
             !isThreadLoading &&
             entries.map((entry) => (
-              <div key={entry.id} className={`chat-row ${entry.role}`}>
-                <div className="chat-avatar">{entry.role === "user" ? "你" : "AI"}</div>
-                <div className="chat-bubble-wrap">
-                  <div className="chat-bubble-header">
-                    <span>{entry.role === "user" ? "你" : currentRole?.label || "助手"}</span>
-                    {entry.meta ? <span className="chat-meta">{entry.meta}</span> : null}
-                  </div>
-                  <div className={`chat-bubble ${entry.role}`}>
+              <div
+                key={entry.id}
+                className={`mx-auto grid w-[min(860px,calc(100%_-_32px))] gap-3 px-0 py-5 ${
+                  entry.role === "user" ? "justify-items-end" : "justify-items-start"
+                }`}
+              >
+                <div
+                  className={`flex w-full items-center gap-2 text-[13px] ${
+                    entry.role === "user" ? "justify-end" : "justify-start"
+                  }`}
+                >
+                  <span className="font-semibold text-zinc-950">
+                    {entry.role === "user" ? "你" : currentRole?.label || "助手"}
+                  </span>
+                  {entry.meta ? (
+                    <span className="max-w-[68vw] truncate text-xs font-normal text-zinc-500">
+                      {entry.meta}
+                    </span>
+                  ) : null}
+                </div>
+                <div
+                  className={`max-w-full ${
+                    entry.role === "user"
+                      ? "rounded-3xl bg-zinc-100 px-5 py-3 text-[15px] leading-8 text-zinc-950"
+                      : "w-full text-[15px] leading-8 text-zinc-950"
+                  }`}
+                >
                     {entry.attachmentName ? (
                       <button
                         type="button"
-                        className="message-attachment-card"
+                        className={`message-attachment-card ${
+                          entry.attachmentPreviewUrl ? "image-only" : "file-card"
+                        }`}
                         onClick={() => {
                           if (entry.attachmentFileId) {
                             window.open(
@@ -1249,19 +1381,23 @@ function App() {
                           <img
                             className="message-attachment-preview"
                             src={entry.attachmentPreviewUrl}
-                            alt={entry.attachmentName}
+                            alt="上传的图片"
                           />
                         ) : (
-                          <div className="message-attachment-icon">文件</div>
+                          <>
+                            <div className="message-attachment-icon">
+                              {getAttachmentKind(entry.attachmentName)}
+                            </div>
+                            <div className="message-attachment-info">
+                              <div className="message-attachment-name">
+                                {entry.attachmentName}
+                              </div>
+                              <div className="message-attachment-copy">
+                                {getAttachmentKind(entry.attachmentName)}
+                              </div>
+                            </div>
+                          </>
                         )}
-                        <div className="message-attachment-info">
-                          <div className="message-attachment-name">
-                            {entry.attachmentName}
-                          </div>
-                          <div className="message-attachment-copy">
-                            {getAttachmentKind(entry.attachmentName)}
-                          </div>
-                        </div>
                       </button>
                     ) : null}
                     {entry.role === "assistant" ? (
@@ -1269,25 +1405,38 @@ function App() {
                     ) : (
                       <div className="message-text">{entry.content}</div>
                     )}
-                  </div>
                 </div>
               </div>
             ))}
         </section>
 
-        <footer ref={composerShellRef} className="composer-shell">
+        <footer
+          ref={composerShellRef}
+          className={`composer-shell ${isEmptyThread ? "home-composer" : ""}`}
+        >
           <form className="composer-card" onSubmit={handleSubmit}>
-            {activeDocumentName ? (
-              <div className="knowledge-chip">
-                <span>{"\u77e5\u8bc6\u5e93\u6587\u4ef6"}</span>
-                <strong>{normalizeFileName(activeDocumentName)}</strong>
-              </div>
-            ) : null}
             {attachment ? (
-              <div className="composer-attachment-chip">
-                <span>{attachment.name}</span>
+              <div
+                className={`composer-attachment-preview ${
+                  composerAttachmentPreviewUrl ? "image-only" : "file-card"
+                }`}
+              >
+                {composerAttachmentPreviewUrl ? (
+                  <img src={composerAttachmentPreviewUrl} alt="待上传图片" />
+                ) : (
+                  <>
+                    <div className="composer-file-icon">
+                      {getAttachmentKind(attachment.name)}
+                    </div>
+                    <div className="composer-file-info">
+                      <strong>{normalizeFileName(attachment.name)}</strong>
+                      <span>{getAttachmentKind(attachment.name)}</span>
+                    </div>
+                  </>
+                )}
                 <button
                   type="button"
+                  aria-label="移除附件"
                   onClick={() => {
                     setAttachment(null);
                     if (fileInputRef.current) {
@@ -1295,7 +1444,7 @@ function App() {
                     }
                   }}
                 >
-                  移除
+                  ×
                 </button>
               </div>
             ) : null}

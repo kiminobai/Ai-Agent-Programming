@@ -565,6 +565,7 @@ app.post(
     const roleId = req.body?.roleId?.trim() || appConfig.defaultRoleId;
     const question = req.body?.question?.trim();
     const reasoningEffort = req.body?.reasoningEffort;
+    const wantsStream = req.headers.accept?.includes("text/event-stream") ?? false;
 
     if (!userId || !threadId || !modelId || !question) {
       res.status(400).json({
@@ -635,6 +636,14 @@ app.post(
                 systemPrompt: role.systemPrompt
               })
             : "\u5f53\u524d\u6a21\u5f0f\u4e0d\u652f\u6301\u76f4\u63a5\u7406\u89e3\u56fe\u7247\u5185\u5bb9\uff0c\u6240\u4ee5\u65e0\u6cd5\u53ef\u9760\u5206\u6790\u8fd9\u5f20\u56fe\u7247\u3002\u8bf7\u5207\u6362\u5230\u652f\u6301\u56fe\u7247\u6216\u591a\u6a21\u6001\u7406\u89e3\u7684\u6a21\u5f0f\u540e\u518d\u4f7f\u7528\uff1b\u5982\u679c\u53ea\u9700\u8981\u6587\u7ae0\u4fee\u6539\u3001\u77e5\u8bc6\u95ee\u7b54\u6216\u666e\u901a\u6587\u672c\u5206\u6790\uff0c\u53ef\u4ee5\u7ee7\u7eed\u4f7f\u7528\u5f53\u524d\u6a21\u5f0f\u3002";
+        const meta = {
+          provider: model.provider,
+          modelId: model.id,
+          modelLabel: model.label,
+          roleId: role.id,
+          userId,
+          threadId
+        };
 
         saveDocumentQaExchange({
           threadId,
@@ -654,6 +663,18 @@ app.post(
           reasoningEffort: model.provider === "openai" ? reasoningEffort : undefined,
           userMessage: question
         });
+
+        if (wantsStream) {
+          res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+          res.setHeader("Cache-Control", "no-cache, no-transform");
+          res.setHeader("Connection", "keep-alive");
+          res.flushHeaders();
+          res.write(`data: ${JSON.stringify({ type: "meta", meta })}\n\n`);
+          res.write(`data: ${JSON.stringify({ type: "delta", chunk: answer })}\n\n`);
+          res.write(`data: ${JSON.stringify({ type: "done", reply: answer, meta })}\n\n`);
+          res.end();
+          return;
+        }
 
         res.json({
           answer,
@@ -709,15 +730,44 @@ app.post(
           `[Attachment available in current thread: ${document.fileName}]`,
           "Use the uploaded document tool when file content is needed. Do not expose raw chunk ids, scores, or internal retrieval metadata to the user."
         ].join("\n");
-        const answer = await agentProvider.sendChat(
-          model.id,
-          agentPrompt,
-          role.systemPrompt,
-          role.fewShotExamples,
-          model.provider === "openai" ? reasoningEffort : undefined,
-          threadId,
-          userId
-        );
+        const meta = {
+          provider: model.provider,
+          modelId: model.id,
+          modelLabel: model.label,
+          roleId: role.id,
+          userId,
+          threadId
+        };
+        let answer = "";
+        if (wantsStream) {
+          res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+          res.setHeader("Cache-Control", "no-cache, no-transform");
+          res.setHeader("Connection", "keep-alive");
+          res.flushHeaders();
+          res.write(`data: ${JSON.stringify({ type: "meta", meta })}\n\n`);
+          answer = await agentProvider.streamChat(
+            model.id,
+            agentPrompt,
+            role.systemPrompt,
+            (chunk) => {
+              res.write(`data: ${JSON.stringify({ type: "delta", chunk })}\n\n`);
+            },
+            role.fewShotExamples,
+            model.provider === "openai" ? reasoningEffort : undefined,
+            threadId,
+            userId
+          );
+        } else {
+          answer = await agentProvider.sendChat(
+            model.id,
+            agentPrompt,
+            role.systemPrompt,
+            role.fewShotExamples,
+            model.provider === "openai" ? reasoningEffort : undefined,
+            threadId,
+            userId
+          );
+        }
 
         saveDocumentQaExchange({
           threadId,
@@ -737,6 +787,12 @@ app.post(
           reasoningEffort: model.provider === "openai" ? reasoningEffort : undefined,
           userMessage: question
         });
+
+        if (wantsStream) {
+          res.write(`data: ${JSON.stringify({ type: "done", reply: answer, meta })}\n\n`);
+          res.end();
+          return;
+        }
 
         res.json({
           answer,
@@ -840,15 +896,44 @@ app.post(
         "[Question]",
         question
       ].join("\n");
-      const answer = await provider.sendChat(
-        model.id,
-        qaPrompt,
-        role.systemPrompt,
-        role.fewShotExamples,
-        model.provider === "openai" ? reasoningEffort : undefined,
-        `${threadId}:document-qa`,
-        userId
-      );
+      const meta = {
+        provider: model.provider,
+        modelId: model.id,
+        modelLabel: model.label,
+        roleId: role.id,
+        userId,
+        threadId
+      };
+      let answer = "";
+      if (wantsStream) {
+        res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+        res.setHeader("Cache-Control", "no-cache, no-transform");
+        res.setHeader("Connection", "keep-alive");
+        res.flushHeaders();
+        res.write(`data: ${JSON.stringify({ type: "meta", meta })}\n\n`);
+        answer = await provider.streamChat(
+          model.id,
+          qaPrompt,
+          role.systemPrompt,
+          (chunk) => {
+            res.write(`data: ${JSON.stringify({ type: "delta", chunk })}\n\n`);
+          },
+          role.fewShotExamples,
+          model.provider === "openai" ? reasoningEffort : undefined,
+          `${threadId}:document-qa`,
+          userId
+        );
+      } else {
+        answer = await provider.sendChat(
+          model.id,
+          qaPrompt,
+          role.systemPrompt,
+          role.fewShotExamples,
+          model.provider === "openai" ? reasoningEffort : undefined,
+          `${threadId}:document-qa`,
+          userId
+        );
+      }
       // 2-step RAG 到这里就结束：一次检索 + 一次生成。
       // Answer Validation 属于当前项目的 Hybrid 质量控制步骤，只在 Hybrid 分支执行。
       const finalAnswer = hybridRetrieval
@@ -884,6 +969,12 @@ app.post(
         userMessage: question
       });
 
+      if (wantsStream) {
+        res.write(`data: ${JSON.stringify({ type: "done", reply: finalAnswer, meta })}\n\n`);
+        res.end();
+        return;
+      }
+
       res.json({
         answer: finalAnswer,
         document: {
@@ -905,6 +996,11 @@ app.post(
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Document QA request failed.";
+      if (wantsStream && res.headersSent) {
+        res.write(`data: ${JSON.stringify({ type: "error", error: message })}\n\n`);
+        res.end();
+        return;
+      }
       res.status(500).json({ error: message });
     }
   }
