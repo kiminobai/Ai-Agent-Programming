@@ -42,7 +42,7 @@ export class LangChainToolAgent {
     const model = new ChatOpenAI({
       apiKey: options.apiKey,
       model: options.modelId,
-      temperature: 0,
+      temperature: options.providerId === "moonshot" ? 1 : 0,
       streaming: true,
       streamUsage: false,
       reasoning:

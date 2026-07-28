@@ -77,7 +77,7 @@ const providerConfigs: Record<ProviderId, ProviderConfig> = {
     apiKey: process.env.MOONSHOT_API_KEY || "",
     apiUrl:
       process.env.MOONSHOT_API_URL ||
-      "https://api.moonshot.ai/v1/chat/completions"
+      "https://api.moonshot.cn/v1/chat/completions"
   }
 };
 
