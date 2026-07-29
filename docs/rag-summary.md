@@ -1,40 +1,60 @@
 # RAG 知识点汇总
 
-![当前项目 RAG 流程图](./rag-flow.png)
+![当前项目 RAG 自动路由流程图](./rag-flow.png)
 
-这份文档按 LangChain 官方 RAG architectures 的顺序整理，避免把不同层级的概念混在一起。
+这份笔记是当前项目唯一的 RAG 学习文档。原来的 `rag-architecture-notes.md` 已合并到这里，避免同一套概念分散在多个文件里。
 
-## 1. 官方三种 RAG Architecture
+## 1. 先分清两个层级
 
-LangChain 官方把 RAG architectures 分成三类，并且这三类是同一个层级：
+RAG 系统里最容易混的是“怎么检索”和“从哪里检索”。
 
 ```text
-1. 2-step RAG
-2. Agentic RAG
-3. Hybrid RAG
+architecture：这次 RAG 怎么执行
+sourceScope：资料从哪里来
 ```
 
-不要把 `knowledge-base`、`multi-document`、`uploaded-document` 当成和它们同层级的架构。
+当前项目里的 architecture：
+
+```text
+2-step RAG
+Agentic RAG
+Hybrid RAG
+GraphRAG
+```
+
+当前项目里的 sourceScope：
+
+```text
+uploaded-document：当前对话上传的文件
+knowledge-base：长期知识库
+multi-document：多文档 / 多版本资料
+```
+
+正确理解是：
+
+```text
+同一个知识库问题，可以走 Hybrid RAG，也可以走 GraphRAG。
+同一个上传文件问题，可以走 2-step RAG，也可以走 Agentic RAG。
+```
 
 ## 2. 2-step RAG
 
-2-step RAG 是固定流程：
+2-step RAG 是最简单、最低成本的固定流程：
 
 ```text
 用户问题
-  -> 后端先检索相关文档片段
-  -> 把片段放进 Prompt
-  -> LLM 基于片段生成回答
+  -> 检索一次相关文档片段
+  -> 把片段放入 Prompt
+  -> LLM 基于片段回答
 ```
 
-特点：
+适合：
 
 ```text
-快
-简单
-可控
-延迟稳定
-适合明确问答
+简单事实问答
+解释某个概念
+查找某个信息
+用户没有要求全文分析或多步骤处理
 ```
 
 当前项目对应：
@@ -44,34 +64,39 @@ src/rag/vectorDocumentIndex.ts
 searchVectorDocumentIndex()
 ```
 
+默认策略：能用 2-step RAG 解决的问题，就不升级到更复杂、更耗 token 的链路。
+
 ## 3. Agentic RAG
 
-Agentic RAG 的关键是：
+Agentic RAG 的核心不是“检索更复杂”，而是：
 
 ```text
-由 LLM Agent 决定什么时候检索、怎么检索、是否继续调用工具。
+由 LLM Agent 决定是否调用检索工具、何时调用、调用几次。
 ```
 
-它不是固定先检索，而是：
+流程：
 
 ```text
 用户问题
   -> 进入 Agent
-  -> Agent 判断是否需要外部资料
-  -> Agent 选择并调用检索工具
+  -> Agent 判断是否需要工具
+  -> Agent 调用文档检索工具或其他工具
   -> 工具返回资料
   -> Agent 继续推理
-  -> Agent 输出最终回答
+  -> 输出最终回答
 ```
 
-特点：
+适合：
 
 ```text
-灵活
-适合多步骤任务
-可以组合多个工具
-延迟不固定
-控制性低于 2-step
+生成
+改写
+对比
+继续处理
+整理成表格
+制定计划
+多步骤任务
+图片能力判断
 ```
 
 当前项目对应：
@@ -81,26 +106,9 @@ src/agents/langChainToolAgent.ts
 src/tools/langchain/uploadedDocumentTool.ts
 ```
 
-注意：
-
-```text
-Agentic RAG 看的是“谁决定调用工具”。
-如果是 Agent 自己决定是否调用检索工具，就是 Agentic RAG。
-```
-
 ## 4. Hybrid RAG
 
-Hybrid RAG 是更强的检索链路，通常包含：
-
-```text
-Query Enhancement
-Vector Search
-Keyword Search / BM25
-Score Fusion
-Rerank
-Retrieval Validation
-Answer Validation
-```
+Hybrid RAG 是增强版检索链路，重点是提高召回质量和答案可靠性。
 
 当前项目里的 Hybrid RAG：
 
@@ -110,19 +118,22 @@ Answer Validation
   -> 生成 query embedding
   -> Chroma 向量检索
   -> SQLite FTS5 / BM25 关键词检索
-  -> 融合排序
+  -> 分数融合
   -> Rerank 重排
-  -> 检索质量验证
+  -> Retrieval Validation 检索质量验证
   -> LLM 生成回答
-  -> 答案验证
+  -> Answer Validation 答案验证
 ```
 
-特点：
+适合：
 
 ```text
-比 2-step 更稳
-比 Agentic 更可控
-适合宽泛问题、全文分析、质量校验场景
+总结全文
+分析整份资料
+提取目录大纲
+知识库问答
+多文档 / 多版本资料检索
+需要更稳召回的宽泛问题
 ```
 
 当前项目对应：
@@ -132,78 +143,91 @@ src/rag/vectorDocumentIndex.ts
 searchHybridDocumentIndex()
 ```
 
-## 5. 资料来源不是 Architecture
+## 5. GraphRAG
 
-下面这些只是资料范围，也就是 `sourceScope`：
+GraphRAG 是在文本片段检索之外，再加一层“实体关系图谱扩展”。
 
-```text
-uploaded-document：当前对话上传的文件
-knowledge-base：长期知识库
-multi-document：多文档 / 多版本资料
-```
-
-它们不是 RAG architecture。
-
-正确写法：
-
-```ts
-architecture: "2-step-rag" | "agentic-rag" | "hybrid-rag";
-sourceScope: "uploaded-document" | "knowledge-base" | "multi-document";
-```
-
-示例：
+它关注的不是“哪个 chunk 最像用户问题”，而是：
 
 ```text
-当前上传文件 + 默认问答
-architecture = 2-step-rag
-sourceScope = uploaded-document
-
-当前上传文件 + 多步骤任务
-architecture = agentic-rag
-sourceScope = uploaded-document
-
-当前上传文件 + 总结整份文档
-architecture = hybrid-rag
-sourceScope = uploaded-document
-
-知识库问答
-architecture = hybrid-rag
-sourceScope = knowledge-base
-
-多版本资料对比
-architecture = hybrid-rag
-sourceScope = multi-document
+文档里有哪些关键概念？
+这些概念出现在哪些 chunk？
+哪些概念经常一起出现？
+用户问某个概念时，是否应该带出相邻概念和相关 chunk？
 ```
 
-当前项目的默认策略：
+当前项目里的 GraphRAG 是轻量学习版：
 
 ```text
-普通文件问答默认走 2-step-rag。
-只有明确要求总结全文、分析整份、目录大纲时，才走 hybrid-rag。
-只有明确要求生成、对比、改写、继续、多步骤处理时，才走 agentic-rag。
+1. 文档正常切 chunk
+2. chunk 正常做 embedding / Chroma / SQLite FTS5
+3. 从 chunk 文本里抽取实体词
+4. 同一 chunk 中共同出现的实体形成关系边
+5. 实体节点和关系边写入 SQLite
+6. 用户问关系、依赖、影响、链路、因果时路由到 GraphRAG
+7. GraphRAG 先复用 Hybrid RAG，再用图谱扩展相关 chunk
+8. 最后仍由 LLM 基于检索上下文回答
 ```
 
-自动判断不是只靠关键词。
-
-当前项目路由顺序是：
+当前支持的 GraphRAG Search Mode：
 
 ```text
-1. 先用明确关键词判断
-2. 关键词没命中时，用 embedding 做语义相似度兜底
-3. 如果语义也不够明确，默认回到 2-step-rag
+Basic Search：保留 Hybrid RAG 基础结果
+Local Search：围绕命中的实体做局部关系扩展
+Global Search：从高频实体和文档不同位置看整体结构
+DRIFT Search：先全局定位，再局部深入
+Question Generation：根据实体关系生成可继续追问的问题
 ```
 
-这里的 embedding 不是“给 AI 看”，而是把用户问题变成计算机可以比较的数字向量：
+当前项目对应：
 
 ```text
-用户问题 -> embedding 向量 -> 和 Agentic/Hybrid 意图样例向量比较相似度
+src/rag/graphRag.ts
+src/rag/ragArchitectureRouter.ts
+src/rag/knowledgeBaseRetriever.ts
+src/db/sqlite.ts
 ```
 
-如果用户没写“总结”这个关键词，但语义很像“概括整份文档”，就可以自动升级到 `hybrid-rag`。
+## 6. 自动选择规则
 
-如果用户没写“生成”这个关键词，但语义很像“根据文档产出计划/表格/步骤”，就可以自动升级到 `agentic-rag`。
+当前项目不是固定使用某一种 RAG，而是根据用户当前对话自动选择最合适的路径。
 
-## 6. Embedding
+路由顺序：
+
+```text
+1. 如果是图片：走 Agentic，让模型能力判断是否支持视觉理解
+2. 如果关键词明确：直接判断，不额外做 embedding 意图判断
+3. 如果关键词不明确：用 embedding 做语义相似度兜底
+4. 如果仍不明确：默认回到最低成本的 2-step RAG
+```
+
+自动选择表：
+
+```text
+简单问答 -> 2-step RAG
+全文总结 / 整体分析 -> Hybrid RAG
+关系 / 依赖 / 因果 / 链路 -> GraphRAG
+生成 / 改写 / 对比 / 多步骤任务 -> Agentic RAG
+知识库 / 多文档 -> 先确定 sourceScope，再按同一套规则选 architecture
+```
+
+这样做的目标：
+
+```text
+能用低成本路径解决的问题，不升级到高成本路径。
+需要更强检索能力的问题，才使用 Hybrid 或 GraphRAG。
+需要模型自己调工具的问题，才使用 Agentic。
+```
+
+当前项目对应：
+
+```text
+src/rag/ragArchitectureRouter.ts
+selectDocumentRagArchitecture()
+selectKnowledgeBaseRagArchitecture()
+```
+
+## 7. Embedding
 
 Embedding 是把文本变成数字向量：
 
@@ -211,7 +235,7 @@ Embedding 是把文本变成数字向量：
 文本 -> number[]
 ```
 
-作用是让系统可以计算“语义相似度”。
+它不是“给 AI 看”，而是让计算机可以比较语义相似度。
 
 例子：
 
@@ -222,20 +246,63 @@ Embedding 是把文本变成数字向量：
 
 这两句话字面不同，但语义接近。Embedding 会让它们在向量空间里距离更近。
 
-当前项目：
+当前项目里 Embedding 用在两个地方：
+
+```text
+1. 文档检索：比较用户问题和文档 chunk 是否相似
+2. 路由兜底：关键词不明确时，判断问题更像哪种 RAG 意图
+```
+
+当前项目对应：
 
 ```text
 src/rag/embeddingProvider.ts
 ```
 
-当前配置：
+配置示例：
 
 ```env
 EMBEDDING_PROVIDER=siliconflow
 EMBEDDING_MODEL=BAAI/bge-m3
 ```
 
-## 7. Chroma
+## 8. GraphRAG 实体抽取
+
+GraphRAG 需要先知道文档里的“实体 / 概念”是什么。
+
+当前项目默认：
+
+```env
+GRAPH_RAG_ENTITY_EXTRACTOR=hybrid
+```
+
+含义：
+
+```text
+先使用本地规则抽取实体
+如果规则结果已经足够，就不调用模型
+如果规则结果太少或质量不足，再调用模型补全
+这样既保留低成本，又能在必要时提高图谱质量
+```
+
+可选模式：
+
+```text
+hybrid：默认推荐，规则优先，必要时模型补全
+rule：只用本地规则，不额外消耗模型 token
+llm：只用模型抽取，质量更高但成本也更高
+```
+
+模型补全配置：
+
+```env
+GRAPH_RAG_EXTRACTOR_PROVIDER=deepseek
+GRAPH_RAG_EXTRACTOR_MODEL=deepseek-v4-flash
+```
+
+注意：`hybrid` 不是每个 chunk 都调用模型。它会先跑算法，只有算法结果不足时才调用模型。
+
+## 9. Chroma
 
 Chroma 是向量数据库。
 
@@ -258,7 +325,7 @@ src/rag/chromaVectorStore.ts
 src/rag/vectorStoreProvider.ts
 ```
 
-## 8. SQLite / FTS5 / BM25
+## 10. SQLite / FTS5 / BM25
 
 SQLite 负责保存：
 
@@ -268,6 +335,7 @@ SQLite 负责保存：
 知识库文件元数据
 chunk fallback
 FTS5 / BM25 关键词检索索引
+GraphRAG 节点和边
 LangGraph checkpoint
 长期用户偏好
 ```
@@ -283,38 +351,11 @@ BM25 是关键词相关性排序算法。
 BM25 擅长精确关键词命中
 ```
 
-相关代码：
-
-```text
-src/db/sqlite.ts
-src/rag/sqliteVectorStore.ts
-```
-
-## 9. Chunk
-
-Chunk 是文档切分后的小片段。
-
-当前项目后端配置：
-
-```ts
-chunkSize: 800
-chunkOverlap: 120
-topK: 6
-```
-
-普通用户前端不需要看到这些参数。
-
-相关代码：
-
-```text
-src/rag/documentChunkLab.ts
-```
-
-## 10. Rerank
+## 11. Rerank
 
 Rerank 是重排。
 
-当前项目不是模型 reranker，而是算法规则重排：
+当前项目不是模型 reranker，而是规则重排：
 
 ```text
 hybridScore
@@ -332,7 +373,44 @@ src/rag/vectorDocumentIndex.ts
 rerankChunks()
 ```
 
-## 11. Answer Validation
+## 12. Retrieval Validation
+
+Retrieval Validation 是检索质量验证。
+
+它发生在模型回答之前，检查“检索出来的 chunk 是否足够支撑这次回答”。
+
+当前项目会根据这些信号判断：
+
+```text
+是否是全文分析请求
+bestHybridScore 是否达到最低可用分数
+matchedTermCount 是否覆盖了足够多的查询关键词
+```
+
+作用：
+
+```text
+避免把弱相关 chunk 直接塞给模型
+发现检索结果可能不够时，给后续回答更谨慎的信号
+为 Answer Validation 提供前置判断
+```
+
+相关代码：
+
+```text
+src/rag/vectorDocumentIndex.ts
+searchHybridDocumentIndex()
+validation.isLikelySufficient
+```
+
+注意：Retrieval Validation 和 Answer Validation 不是一回事。
+
+```text
+Retrieval Validation：回答前，验证检索结果够不够好。
+Answer Validation：回答后，验证模型答案是否被上下文支持。
+```
+
+## 13. Answer Validation
 
 Answer Validation 是答案验证。
 
@@ -351,7 +429,7 @@ src/server.ts
 validateDocumentAnswer()
 ```
 
-## 12. 文件存储
+## 14. 文件存储
 
 用户上传文件：
 
@@ -367,7 +445,7 @@ data/knowledge-bases/{knowledgeBaseId}/
 
 数据库只保存相对路径 `storageKey`，不保存绝对路径，也不保存 `127.0.0.1` 这类 URL。
 
-## 13. 常用命令
+## 15. 常用命令
 
 启动 Chroma：
 
@@ -393,12 +471,13 @@ npm start
 npx.cmd tsc --noEmit
 ```
 
-## 14. 一句话记忆
+## 16. 一句话记忆
 
 ```text
-2-step RAG：固定先检索，再回答。
-Agentic RAG：Agent 自己决定是否调用检索工具。
-Hybrid RAG：检索链路加入增强、融合、重排、验证。
+2-step RAG：固定检索一次，再回答。
+Agentic RAG：Agent 决定是否调用检索工具。
+Hybrid RAG：检索链路加入增强、融合、重排、Retrieval Validation。
+GraphRAG：在文本检索之外加入实体关系图谱扩展。
+Answer Validation：模型回答后检查答案是否被检索上下文支持。
+sourceScope：只表示资料从哪里来，不是 RAG 架构。
 ```
-
-这三个才是同一个层级。

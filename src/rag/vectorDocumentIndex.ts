@@ -35,7 +35,7 @@ export interface HybridDocumentRetrievalResult {
     bestHybridScore: number;
     bestRerankScore: number;
     matchedTermCount: number;
-    retrievalStrategy: "hybrid-rag" | "hybrid-rag-whole-document";
+    retrievalStrategy: "hybrid-rag" | "hybrid-rag-whole-document" | "graph-rag";
     note: string;
   };
 }
@@ -55,7 +55,10 @@ const indexByThread = new Map<string, VectorDocumentIndex>();
 export async function buildVectorDocumentIndex(
   document: UploadedDocumentRecord
 ): Promise<VectorDocumentIndex> {
+  // 建索引发生在文件被成功解析以后。
+  // 如果文件解析失败，不应该进入这里，否则会把无效内容写入向量库和关键词索引。
   const chunks = await splitUploadedDocument(document);
+  // 每个 chunk 都要转成 embedding，后续用户提问时才能做语义相似度检索。
   const embeddings = await embeddingProvider.embedTexts(
     chunks.map((chunk) => chunk.content)
   );
@@ -74,14 +77,19 @@ export async function buildVectorDocumentIndex(
   };
 
   indexByThread.set(document.threadId, index);
+  // vectorStore 可能是 Chroma，也可能是 SQLite fallback，由 vectorStoreProvider 统一选择。
   await vectorStore.saveIndex(index);
   markVectorIndexPersisted(document.threadId);
   return index;
 }
 
 export function clearVectorDocumentIndex(threadId: string): void {
+  // 删除对话或文件时，要同时清理内存缓存、向量索引和 GraphRAG 图谱。
+  // 否则旧 chunk 可能继续参与检索，污染当前对话环境。
   indexByThread.delete(threadId);
   vectorStore.clearIndex(threadId);
+  sqliteDb.prepare("DELETE FROM document_graph_edges WHERE thread_id = ?").run(threadId);
+  sqliteDb.prepare("DELETE FROM document_graph_nodes WHERE thread_id = ?").run(threadId);
 }
 
 export async function getOrBuildVectorDocumentIndex(
@@ -134,6 +142,8 @@ export async function searchVectorDocumentIndex(
   chunks: VectorSearchChunk[];
 }> {
   const index = await getOrBuildVectorDocumentIndex(document);
+  // 2-step RAG 只把问题转成向量，然后做一次 TopK 语义检索。
+  // 它不跑关键词检索和重排，所以适合简单问答。
   const queryEmbedding = await embeddingProvider.embedText(query);
   const vectorScores = await vectorStore.searchVectorScores(
     index,
@@ -171,10 +181,16 @@ export async function searchHybridDocumentIndex(
   query: string
 ): Promise<HybridDocumentRetrievalResult> {
   const index = await getOrBuildVectorDocumentIndex(document);
+  // 全文分析和普通问答的上下文选择策略不同：
+  // 普通问答重相关性；全文分析还要尽量覆盖文档不同位置。
   const isWholeDocumentRequest = isWholeDocumentAnalysisRequest(query);
+  // Query Enhancement 是给检索器看的，不是给用户看的。
+  // 它会把文件名、全文分析提示等加入 query，提高召回稳定性。
   const enhancedQuery = enhanceRetrievalQuery(query, document);
   const queryEmbedding = await embeddingProvider.embedText(enhancedQuery);
   const queryTerms = extractTerms(enhancedQuery);
+  // FTS5/BM25 是关键词检索信号，和向量检索互补。
+  // 例如代码名、专有名词、页码、版本号这类内容，关键词检索通常更可靠。
   const bm25Scores = searchFtsBm25Scores(document.threadId, enhancedQuery);
 
   // 步骤 1：同时拿“向量检索结果”和“关键词检索结果”。
@@ -254,6 +270,8 @@ function rankChunks(
   vectorScores: Map<number, number> = new Map()
 ): VectorSearchChunk[] {
   return chunks.map((chunk) => {
+    // 一个 chunk 会同时拿到三类信号：
+    // similarity：语义相似度；keywordScore：关键词覆盖；bm25Score：FTS5/BM25 精确命中。
     const matchedTerms = getMatchedTerms(chunk.content, queryTerms);
     const similarity =
       vectorScores.get(chunk.index) ?? cosineSimilarity(queryEmbedding, chunk.embedding);
@@ -284,6 +302,7 @@ function rankVectorChunks(
   vectorScores: Map<number, number> = new Map()
 ): VectorSearchChunk[] {
   return chunks.map((chunk) => {
+    // 2-step 只使用向量相似度，所以其它分数置为 0。
     const similarity =
       vectorScores.get(chunk.index) ?? cosineSimilarity(queryEmbedding, chunk.embedding);
 
@@ -307,6 +326,8 @@ function rerankChunks(
 ): VectorSearchChunk[] {
   return chunks
     .map((chunk) => {
+      // coverageScore 看 query 里的关键词有多少被当前 chunk 覆盖。
+      // 这可以避免“语义像但关键术语没命中”的 chunk 排得太靠前。
       const coverageScore =
         queryTerms.length > 0
           ? chunk.matchedTerms.length / Math.min(queryTerms.length, 12)
@@ -316,6 +337,7 @@ function rerankChunks(
       )
         ? 0.04
         : 0;
+      // 标题和靠前位置通常更可能包含结构性信息，所以给一点轻微加权。
       const lengthPenalty = chunk.charCount > RAG_RETRIEVAL_CONFIG.maxChunkCharacters
         ? 0.03
         : 0;
@@ -389,6 +411,7 @@ function selectWholeDocumentContext(chunks: VectorSearchChunk[]): VectorSearchCh
   const selected = new Map<number, VectorSearchChunk>();
   let usedCharacters = 0;
 
+  // 先拿重排后最相关的 chunk，保证回答有直接依据。
   for (const chunk of chunks) {
     if (usedCharacters >= RAG_RETRIEVAL_CONFIG.wholeDocumentMaxContextCharacters) {
       break;
@@ -403,6 +426,7 @@ function selectWholeDocumentContext(chunks: VectorSearchChunk[]): VectorSearchCh
 
   const stride = Math.max(1, Math.floor(chunks.length / RAG_RETRIEVAL_CONFIG.topK));
 
+  // 再按间隔补一些不同位置的 chunk，避免全文总结只看到局部内容。
   for (let index = 0; index < chunks.length; index += stride) {
     if (usedCharacters >= RAG_RETRIEVAL_CONFIG.wholeDocumentMaxContextCharacters) {
       break;
@@ -424,6 +448,7 @@ function selectWholeDocumentContext(chunks: VectorSearchChunk[]): VectorSearchCh
 }
 
 function searchFtsBm25Scores(threadId: string, query: string): Map<number, number> {
+  // 如果 query 无法构造安全的 FTS5 查询，就跳过关键词检索，只使用向量信号。
   const ftsQuery = buildFtsQuery(query);
   if (!ftsQuery) {
     return new Map();
@@ -448,6 +473,7 @@ function buildFtsQuery(query: string): string {
 }
 
 function markVectorIndexPersisted(threadId: string): void {
+  // uploaded_documents.index_status 记录索引是否已完成，方便刷新页面或重启后恢复状态。
   sqliteDb
     .prepare(
       `
@@ -493,6 +519,8 @@ function calculateKeywordScore(
     return 0;
   }
 
+  // coverage 解决“命中了几个词”，density 解决“命中频次高不高”。
+  // 两者合并后作为 keywordScore，与向量相似度和 BM25 一起融合。
   const normalizedContent = content.toLowerCase();
   const coverageScore = matchedTerms.length / Math.min(queryTerms.length, 12);
   const densityScore =
@@ -505,6 +533,7 @@ function calculateKeywordScore(
 }
 
 function cosineSimilarity(left: number[], right: number[]): number {
+  // 当前 embedding 都已归一化，所以点积可以直接近似 cosine similarity。
   let dotProduct = 0;
   const length = Math.min(left.length, right.length);
 

@@ -50,6 +50,17 @@ export const appConfig = {
       process.env.OPENAI_EMBEDDING_API_URL ||
       "https://api.openai.com/v1/embeddings",
     hashDimensions: Number(process.env.HASH_EMBEDDING_DIMENSIONS || 384)
+  },
+  graphRag: {
+    entityExtractor:
+      (process.env.GRAPH_RAG_ENTITY_EXTRACTOR as
+        | "rule"
+        | "llm"
+        | "hybrid"
+        | undefined) || "hybrid",
+    extractorProvider:
+      (process.env.GRAPH_RAG_EXTRACTOR_PROVIDER as ProviderId | undefined) || "deepseek",
+    extractorModel: process.env.GRAPH_RAG_EXTRACTOR_MODEL || "deepseek-v4-flash"
   }
 };
 

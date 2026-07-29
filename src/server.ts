@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Express entrypoint for the chat demo.
  *
  * Responsibilities:
@@ -35,6 +35,7 @@ import {
 } from "./rag/uploadedDocumentStore";
 import { selectDocumentRagArchitecture } from "./rag/ragArchitectureRouter";
 import { searchKnowledgeBase } from "./rag/knowledgeBaseRetriever";
+import { searchGraphDocumentIndex } from "./rag/graphRag";
 import {
   searchHybridDocumentIndex,
   searchVectorDocumentIndex
@@ -68,12 +69,11 @@ type MulterRequest = Request & {
 };
 
 function decodeUploadedFileName(fileName: string): string {
-  // 学习点：浏览器上传中文文件名时，multer 有时会按 latin1 读出来。
-  // 为什么这样：这里尝试转回 UTF-8，避免前端显示文件名乱码。
+  // Browser uploads may decode Chinese filenames as latin1, so try UTF-8 recovery.
   const decoded = Buffer.from(fileName, "latin1").toString("utf8");
   const countChinese = (value: string) =>
     [...value].filter((char) => /[\u4e00-\u9fff]/.test(char)).length;
-  const hasMojibake = /[ÃÂ]|å.|æ.|ä./.test(fileName);
+  const hasMojibake = /[脙脗]|氓.|忙.|盲./.test(fileName);
 
   if (hasMojibake || countChinese(decoded) > countChinese(fileName)) {
     return decoded;
@@ -108,8 +108,7 @@ const maybeChatUpload: RequestHandler = (req, res, next) => {
 async function cleanupRejectedPendingUpload(
   pendingUpload: PendingUploadFile | undefined
 ): Promise<void> {
-  // 学习点：pending 清理专门处理“还没有绑定到 thread 的临时文件”。
-  // 为什么这样：pending 文件不在 SQLite 里，失败时必须靠文件系统清理。
+  // Pending files are not bound to a thread yet, so failed uploads must be removed from disk.
   await deletePendingUploadFile(pendingUpload);
 }
 
@@ -120,16 +119,14 @@ async function cleanupRejectedCommittedUpload(
     return;
   }
 
-  // 学习点：commit 成功但写 SQLite 失败时，要删除正式文件。
-  // 为什么这样：正式目录里的文件应该都能被数据库记录引用，否则就是孤儿文件。
+  // If SQLite writing fails after commit, delete the stored file to avoid orphan files.
   await deleteStoredUploadFile(storedUpload.storageKey);
 }
 
 function assertUploadCanBindToThread(
   document: UploadedDocumentRecord
 ): void {
-  // 学习点：只有“可用文件”才能绑定到当前 thread。
-  // 为什么这样：saveUploadedDocument 会按 thread_id 覆盖旧文档；错误文件如果写进去，会污染后续 RAG 上下文。
+  // Only usable files can be bound to the current thread; invalid files must not pollute RAG context.
   if (document.fileType === "image") {
     return;
   }
@@ -150,8 +147,7 @@ function assertUploadCanBindToThread(
 }
 
 function getUploadFailureStatus(message: string): 400 | 500 {
-  // 学习点：文件本身不合格是 400，服务端解析崩溃才是 500。
-  // 为什么这样：前端可以根据状态码区分“请换文件”和“服务端出错”。
+  // File validation errors return 400; server parsing failures return 500.
   return message.includes("不会绑定到当前对话") ? 400 : 500;
 }
 
@@ -166,8 +162,7 @@ async function validateDocumentAnswer(input: {
   userId: string;
   reasoningEffort?: ReasoningEffort;
 }): Promise<string> {
-  // 学习点：这是 Answer Validation。
-  // 为什么这样：Hybrid RAG 检索到的片段可能不完整，先让模型检查回答是否被上下文支持，再返回给用户。
+  // Answer Validation checks whether the generated answer is grounded in retrieved context.
   const validationPrompt = [
     "You are validating a RAG answer before it is shown to the user.",
     "Check whether the answer is supported by the retrieved document context.",
@@ -262,7 +257,6 @@ app.get("/api/auth/me", (req: Request, res: Response) => {
   const token = authorization.startsWith("Bearer ")
     ? authorization.slice("Bearer ".length).trim()
     : "";
-
   if (!token) {
     res.status(401).json({ error: "请先登录。" });
     return;
@@ -526,8 +520,7 @@ app.post(
   "/api/documents/upload",
   maybeChatUpload,
   async (rawReq, res: Response) => {
-    // 学习点：上传接口只负责“保存文件 + 建立文档记录”，不会直接让 AI 分析。
-    // 为什么这样：是否分析、怎么分析，要等用户在聊天框里明确发送问题后再由 Agent/RAG 决定。
+    // Upload only saves the file and document record; analysis starts when the user asks in chat.
     const req = rawReq as MulterRequest;
     const userId = String(req.body?.userId || "").trim();
     const threadId = String(req.body?.threadId || "").trim();
@@ -551,16 +544,15 @@ app.post(
 
     try {
       const originalName = decodeUploadedFileName(attachment.originalname);
-      // 步骤 1：先把原始文件保存到 pending 临时区，不直接进入正式上下文。
-      // 这样用户中断、解析失败时，不会污染当前 thread 的文档记录。
+      // Step 1: save original file into pending storage first.
       pendingUpload = await savePendingUploadFile({
         userId,
         threadId,
         originalName,
         buffer: attachment.buffer
       });
-      // 步骤 2：解析文件类型和可检索文本，形成 uploadedDocument 记录。
-      // PDF/Office/图片会在这里进入不同解析路径。
+
+      // Step 2: parse file type and searchable text into an uploaded document record.
       const uploadedDocument = await createUploadedDocumentRecord({
         threadId,
         userId,
@@ -572,16 +564,16 @@ app.post(
         fileBuffer: attachment.buffer
       });
 
-      // 步骤 3：先确认文件可用，再绑定到当前 thread。
-      // 为什么这样：错误文件不能覆盖旧文档，否则后续 RAG 会拿到错误上下文。
+      // Step 3: validate before binding the file to current thread.
       assertUploadCanBindToThread(uploadedDocument);
 
-      // 步骤 4：文件可用后再从 pending 移动到正式目录。
+      // Step 4: move the usable file from pending storage to final storage.
       committedUpload = await commitPendingUploadFile(pendingUpload);
       pendingUpload = undefined;
 
-      // 步骤 5：把文档元数据写入 SQLite。
-      // 后续刷新页面、继续对话、删除对话时都依赖这条记录。
+      // Step 5: persist document metadata in SQLite.
+      saveUploadedDocument(uploadedDocument);
+      committedUpload = undefined;
       saveUploadedDocument(uploadedDocument);
       committedUpload = undefined;
 
@@ -623,8 +615,7 @@ app.post(
     >,
     res: Response
   ) => {
-    // 学习点：这是“当前对话上传文件”的问答接口。
-    // 为什么这样：它只查当前 thread 绑定的文件，不会自动查长期知识库，避免上下文来源混乱。
+    // This endpoint answers questions about the document bound to the current thread.
     const userId = req.body?.userId?.trim();
     const threadId = req.body?.threadId?.trim();
     const modelId = req.body?.modelId?.trim();
@@ -675,8 +666,7 @@ app.post(
     }
 
     if (document.fileType === "image") {
-      // 学习点：图片不是普通文本 RAG。
-      // 为什么这样：只有模型配置了 supportsVision，才会进入图片理解；DeepSeek 这类不支持的模型保持提示用户切换。
+      // Images require a vision-capable model; text RAG should not pretend it can read pixels.
       const sources = [
         {
           sourceId: "image-0",
@@ -783,12 +773,9 @@ app.post(
 
     try {
       const ragDecision = await selectDocumentRagArchitecture(question, document);
-      // 学习点：这里决定走 2-step、Agentic 还是 Hybrid RAG。
-      // 为什么这样：简单问题默认最快，全文/知识库问题需要更强检索，多步骤任务交给 Agent。
-
+      // 瀛︿範鐐癸細杩欓噷鍐冲畾璧?2-step銆丄gentic 杩樻槸 Hybrid RAG銆?      // 涓轰粈涔堣繖鏍凤細绠€鍗曢棶棰橀粯璁ゆ渶蹇紝鍏ㄦ枃/鐭ヨ瘑搴撻棶棰橀渶瑕佹洿寮烘绱紝澶氭楠や换鍔′氦缁?Agent銆?
       if (ragDecision.architecture === "agentic-rag") {
-        // 学习点：Agentic RAG 不在这里手动拼 chunk，而是把“当前 thread 有附件”告诉 Agent。
-        // 为什么这样：生成、对比、改写这类任务可能需要 Agent 自己决定是否调用文档工具。
+        // Agentic RAG lets the LangChain agent decide whether to call document tools.
         const agentProvider = new LangChainProvider(model.provider, getProviderConfig(model.provider));
         const agentPrompt = [
           question,
@@ -885,14 +872,16 @@ app.post(
         ragDecision.architecture === "2-step-rag"
           ? await searchVectorDocumentIndex(document, question)
           : null;
-      // 学习点：2-step 只做一次向量检索；非 2-step 就进入 Hybrid 检索。
-      // 为什么这样：默认路径简单快速，只有复杂问题才付出 BM25、融合、重排、验证的成本。
-      const hybridRetrieval = twoStepRetrieval
+      const graphRetrieval =
+        ragDecision.architecture === "graph-rag"
+          ? await searchGraphDocumentIndex(document, question)
+          : null;
+      const hybridRetrieval = twoStepRetrieval || graphRetrieval
         ? null
         : await searchHybridDocumentIndex(document, question);
-      const retrieval = twoStepRetrieval ?? hybridRetrieval;
+      const retrieval = twoStepRetrieval ?? graphRetrieval ?? hybridRetrieval;
       const isHybridRetrieval = Boolean(hybridRetrieval);
-
+      const isGraphRetrieval = Boolean(graphRetrieval);
       if (!retrieval) {
         throw new Error("RAG retrieval did not return a result.");
       }
@@ -900,7 +889,7 @@ app.post(
       const sources = retrieval.chunks.map((chunk) => ({
         sourceId: `chunk-${chunk.index}`,
         chunkIndex: chunk.index,
-        similarity: hybridRetrieval ? chunk.hybridScore : chunk.similarity,
+        similarity: hybridRetrieval || graphRetrieval ? chunk.hybridScore : chunk.similarity,
         startChar: chunk.startChar,
         endChar: chunk.endChar,
         sourceType: chunk.sourceType,
@@ -911,8 +900,6 @@ app.post(
         contentPreview: chunk.content
       }));
       const context = retrieval.chunks
-        // 学习点：这里只把命中的片段放进 Prompt，不把整份文档塞给模型。
-        // 为什么这样：避免上下文超限，也是 RAG 的核心价值。
         .map((chunk) =>
           [
             `[Source: chunk-${chunk.index}]`,
@@ -932,15 +919,12 @@ app.post(
         )
         .join("\n\n---\n\n");
       const qaPrompt = [
-        // 学习点：这个 Prompt 是“用户问题 + 检索上下文 + RAG 策略说明”。
-        // 为什么这样：模型只根据检索片段回答，降低胡说和超上下文风险。
         "Answer the user's question using the retrieved document context below.",
-        `Selected RAG architecture: ${ragDecision.architecture}.`,
-        `RAG source scope: ${ragDecision.sourceScope}.`,
-        `Selection reason: ${ragDecision.reason}`,
         hybridRetrieval
           ? "Hybrid RAG is active: query enhancement, vector similarity, keyword matching, retrieval validation, and then generation."
-          : "2-Step RAG is active: retrieve once, then generate a grounded answer.",
+          : isGraphRetrieval
+            ? "GraphRAG is active: retrieve relevant chunks, expand through document entity relationships, then generate a grounded answer."
+            : "2-Step RAG is active: retrieve once, then generate a grounded answer.",
         hybridRetrieval?.validation.isWholeDocumentRequest
           ? "The user is asking for whole-document analysis. Use the representative chunks to provide an overall structure, key points, and reasonable limitations without claiming you saw every detail."
           : "The user is asking a focused question. Prioritize the highest scoring retrieved chunks.",
@@ -952,9 +936,20 @@ app.post(
         "",
         `Document: ${document.fileName}`,
         hybridRetrieval ? `Enhanced query: ${hybridRetrieval.enhancedQuery}` : "",
+        graphRetrieval
+          ? `GraphRAG search mode: ${graphRetrieval.graph.searchMode}.`
+          : "",
+        graphRetrieval
+          ? `Graph expansion: matched entities ${graphRetrieval.graph.matchedEntities.join(", ") || "none"}; expanded entities ${graphRetrieval.graph.expandedEntities.join(", ") || "none"}.`
+          : "",
+        graphRetrieval?.graph.generatedQuestions.length
+          ? `Question Generation suggestions: ${graphRetrieval.graph.generatedQuestions.join(" | ")}.`
+          : "",
         hybridRetrieval
           ? `Retrieval validation: ${hybridRetrieval.validation.note}`
-          : "Retrieval validation: skipped for 2-Step RAG.",
+          : graphRetrieval
+            ? `Retrieval validation: ${graphRetrieval.validation.note}`
+            : "Retrieval validation: skipped for 2-Step RAG.",
         "",
         "[Retrieved document context]",
         context,
@@ -1000,8 +995,7 @@ app.post(
           userId
         );
       }
-      // 2-step RAG 到这里就结束：一次检索 + 一次生成。
-      // Answer Validation 属于当前项目的 Hybrid 质量控制步骤，只在 Hybrid 分支执行。
+      // 2-Step 只做一次检索和一次生成；Hybrid / GraphRAG 会额外做答案校验。
       const finalAnswer = hybridRetrieval
         ? await validateDocumentAnswer({
             provider,
@@ -1014,6 +1008,18 @@ app.post(
             userId,
             reasoningEffort: model.provider === "openai" ? reasoningEffort : undefined
           })
+        : graphRetrieval
+          ? await validateDocumentAnswer({
+              provider,
+              modelId: model.id,
+              systemPrompt: role.systemPrompt,
+              question,
+              context,
+              answer,
+              threadId,
+              userId,
+              reasoningEffort: model.provider === "openai" ? reasoningEffort : undefined
+            })
         : answer;
 
       saveDocumentQaExchange({
@@ -1090,8 +1096,7 @@ app.post(
     >,
     res: Response
   ) => {
-    // 学习点：这是“长期知识库问答”接口。
-    // 为什么这样：它查询 data/knowledge-bases 已经索引的资料，不依赖用户本轮是否上传文件。
+    // Knowledge-base QA searches indexed long-term materials, not only the current upload.
     const userId = req.body?.userId?.trim();
     const threadId = req.body?.threadId?.trim() || `${userId}:knowledge-base`;
     const knowledgeBaseId =
@@ -1129,8 +1134,7 @@ app.post(
     }
 
     try {
-      // 步骤 1：跨知识库文档检索相关 chunk。
-      // 当前知识库统一使用 Hybrid RAG，提高多版本、多文档场景的召回率。
+      // Step 1: retrieve relevant chunks across indexed knowledge-base documents.
       const retrieval = await searchKnowledgeBase(knowledgeBaseId, question);
 
       if (retrieval.chunks.length === 0) {
@@ -1141,8 +1145,6 @@ app.post(
       }
 
       const context = retrieval.chunks
-        // 步骤 2：把不同文档命中的片段拼成上下文，并保留文件名/版本给模型参考。
-        // 前端不显示原始 chunk 分数，避免影响用户体验。
         .map((chunk, index) =>
           [
             `[Knowledge document ${index + 1}]`,
@@ -1155,14 +1157,19 @@ app.post(
         )
         .join("\n\n---\n\n");
       const qaPrompt = [
-        // 步骤 3：把知识库上下文交给模型生成自然回答。
-        // 注意：这里不是把整个知识库交给模型，而是只交给检索命中的片段。
         "Answer the user's question using the retrieved knowledge base context below.",
-        `Knowledge base: ${knowledgeBaseId}`,
         `Selected RAG architecture: ${retrieval.architecture}.`,
+        `RAG source scope: ${retrieval.sourceScope}.`,
         `Selection reason: ${retrieval.reason}`,
-        "Write a natural, user-facing answer.",
-        "Do not show raw chunk ids, similarity scores, BM25 scores, rerank scores, or a separate Sources line.",
+        retrieval.graph
+          ? `GraphRAG search mode: ${retrieval.graph.searchMode}.`
+          : "",
+        retrieval.graph
+          ? `Graph expansion: matched entities ${retrieval.graph.matchedEntities.join(", ") || "none"}; expanded entities ${retrieval.graph.expandedEntities.join(", ") || "none"}.`
+          : "",
+        retrieval.graph?.generatedQuestions.length
+          ? `Question Generation suggestions: ${retrieval.graph.generatedQuestions.join(" | ")}.`
+          : "",
         "When useful, mention the document version in natural language, such as v8 or v7.",
         "",
         "[Retrieved knowledge base context]",
@@ -1203,9 +1210,8 @@ app.post(
 const chatHandler: RequestHandler = async (
   rawReq,
   res: Response<{ error: string }>
-): Promise<void> => {
-  // 学习点：这是普通聊天接口，也是前端发送按钮最终调用的入口。
-  // 为什么这样：文本、角色、模型、附件、threadId 都在这里汇合，再交给 LangChain Agent。
+ ): Promise<void> => {
+  // Main chat endpoint: text, role, model, attachment, and threadId meet here.
   const req = rawReq as MulterRequest;
   const body = req.body as Partial<ChatRequestPayload>;
   const attachment = req.file;
@@ -1297,8 +1303,7 @@ const chatHandler: RequestHandler = async (
         fileSize: attachment.size,
         fileBuffer: attachment.buffer
       });
-      // 学习点：聊天入口也要先确认附件可用，再写入当前对话文档记录。
-      // 为什么这样：如果错误附件写入 thread，Agent 后续会以为当前上下文就是这个坏文件。
+      // Validate attachment before writing it into the current thread context.
       assertUploadCanBindToThread(uploadedDocument);
       committedUpload = await commitPendingUploadFile(pendingUpload);
       pendingUpload = undefined;
@@ -1323,9 +1328,7 @@ const chatHandler: RequestHandler = async (
     res.write(`data: ${JSON.stringify({ type: "meta", meta })}\n\n`);
 
     /**
-     * 把“本轮确实带了附件”显式写进发给模型的用户消息里。
-     * 这样模型在当前回合就能感知附件存在，而不是只依赖中间件里的通用背景提示。
-     */
+     * 鎶娾€滄湰杞‘瀹炲甫浜嗛檮浠垛€濇樉寮忓啓杩涘彂缁欐ā鍨嬬殑鐢ㄦ埛娑堟伅閲屻€?     * 杩欐牱妯″瀷鍦ㄥ綋鍓嶅洖鍚堝氨鑳芥劅鐭ラ檮浠跺瓨鍦紝鑰屼笉鏄彧渚濊禆涓棿浠堕噷鐨勯€氱敤鑳屾櫙鎻愮ず銆?     */
     const messageForModel = attachmentName
       ? [
           effectiveUserMessage,

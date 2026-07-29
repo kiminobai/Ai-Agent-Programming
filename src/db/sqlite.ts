@@ -97,6 +97,36 @@ sqliteDb.exec(`
   CREATE INDEX IF NOT EXISTS idx_document_chunks_thread
   ON document_chunks(thread_id, chunk_index);
 
+  -- GraphRAG entity nodes extracted from chunks.
+  CREATE TABLE IF NOT EXISTS document_graph_nodes (
+    thread_id TEXT NOT NULL,
+    entity TEXT NOT NULL,
+    entity_type TEXT NOT NULL,
+    chunk_indexes_json TEXT NOT NULL,
+    mention_count INTEGER NOT NULL,
+    built_at TEXT NOT NULL,
+    PRIMARY KEY (thread_id, entity),
+    FOREIGN KEY (thread_id) REFERENCES uploaded_documents(thread_id)
+      ON DELETE CASCADE
+  );
+
+  -- GraphRAG relation edges. This first version uses chunk co-occurrence as a lightweight relation.
+  CREATE TABLE IF NOT EXISTS document_graph_edges (
+    thread_id TEXT NOT NULL,
+    source_entity TEXT NOT NULL,
+    target_entity TEXT NOT NULL,
+    relation TEXT NOT NULL,
+    weight REAL NOT NULL,
+    chunk_indexes_json TEXT NOT NULL,
+    built_at TEXT NOT NULL,
+    PRIMARY KEY (thread_id, source_entity, target_entity, relation),
+    FOREIGN KEY (thread_id) REFERENCES uploaded_documents(thread_id)
+      ON DELETE CASCADE
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_document_graph_edges_thread_source
+  ON document_graph_edges(thread_id, source_entity);
+
   -- FTS5 keyword index used by Hybrid RAG for BM25-style retrieval.
   CREATE VIRTUAL TABLE IF NOT EXISTS document_chunks_fts USING fts5(
     thread_id UNINDEXED,
