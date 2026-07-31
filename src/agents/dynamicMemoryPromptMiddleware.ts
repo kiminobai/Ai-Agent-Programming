@@ -88,7 +88,7 @@ export const dynamicMemoryPromptMiddleware = createMiddleware({
           `File type: ${uploadedDocument.fileType}`,
           `Uploaded at: ${uploadedDocument.uploadedAt}`,
           "Do not load the whole file into the model context.",
-          "Only call retrieve_uploaded_document_chunks when the user asks to use the file content. The tool uses Hybrid RAG: query enhancement, vector similarity, keyword matching, and retrieval validation.",
+          "Only call retrieve_uploaded_document_chunks when the current question needs the uploaded file. The tool automatically selects 2-Step, Hybrid, or GraphRAG.",
           "If the user asks for whole-document analysis, the retriever will return representative chunks across the document instead of only a narrow TopK set."
         ].join("\n")
       : [
@@ -96,10 +96,17 @@ export const dynamicMemoryPromptMiddleware = createMiddleware({
           "No uploaded document is currently attached to this thread."
         ].join("\n");
 
+    const knowledgeBasePrompt = [
+      "[Knowledge base]",
+      "A long-term indexed knowledge base may be queried with retrieve_knowledge_base.",
+      "Call it only when the user refers to the knowledge base, learning manual, stored materials, multiple documents, versions, or asks for cross-document comparison.",
+      "Do not call it for ordinary conversation or questions that can be answered without stored materials."
+    ].join("\n");
+
     return handler({
       ...request,
       systemMessage: request.systemMessage.concat(
-        `\n\n${longTermMemoryPrompt}\n\n${shortTermMemoryPrompt}\n\n${uploadedDocumentPrompt}`
+        `\n\n${longTermMemoryPrompt}\n\n${shortTermMemoryPrompt}\n\n${uploadedDocumentPrompt}\n\n${knowledgeBasePrompt}`
       )
     });
   }

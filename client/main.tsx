@@ -179,6 +179,7 @@ function getInitialUserId(): string {
 const AUTO_SCROLL_THRESHOLD = 120;
 const THINKING_STATUS_TEXT = "正在思考…";
 const DOCUMENT_QA_STATUS_TEXT = "正在检索文档…";
+const APPROVAL_PROMPT_PREFIX = "需要你的确认：";
 const PENDING_STATUS_TEXTS = new Set([
   THINKING_STATUS_TEXT,
   DOCUMENT_QA_STATUS_TEXT
@@ -426,12 +427,14 @@ function App() {
   const [loginPassword, setLoginPassword] = useState("admin123");
   const [loginError, setLoginError] = useState("");
   const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [approvalRequest, setApprovalRequest] = useState<string | null>(null);
   const [attachment, setAttachment] = useState<File | null>(null);
   const [composerAttachmentPreviewUrl, setComposerAttachmentPreviewUrl] = useState("");
   const [activeDocumentName, setActiveDocumentName] = useState("");
   const chatLayoutRef = useRef<HTMLElement | null>(null);
   const composerShellRef = useRef<HTMLElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const activeRequestControllerRef = useRef<AbortController | null>(null);
   const shouldAutoScrollRef = useRef(true);
   const pendingInitialScrollRef = useRef(false);
   const lastScrollTopRef = useRef(0);
@@ -461,6 +464,19 @@ function App() {
       requestAnimationFrame(scrollToBottom);
     });
   }, [entries, isSubmitting, activeThreadId]);
+
+  useEffect(() => {
+    // 刷新页面后，LangGraph 会从 SQLite 恢复暂停状态。
+    // 如果历史中最后一条助手消息是审批请求，就重新打开审批弹窗。
+    const latestAssistantEntry = [...entries]
+      .reverse()
+      .find((entry) => entry.role === "assistant");
+    const pendingApproval =
+      latestAssistantEntry?.content.startsWith(APPROVAL_PROMPT_PREFIX)
+        ? latestAssistantEntry.content
+        : null;
+    setApprovalRequest(pendingApproval);
+  }, [entries]);
 
   const currentModel = useMemo(
     () => models.find((item) => item.id === modelId),
@@ -1039,7 +1055,8 @@ function App() {
 
   async function streamUploadedDocumentAnswer(
     question: string,
-    onEvent: (event: StreamEvent) => void
+    onEvent: (event: StreamEvent) => void,
+    signal?: AbortSignal
   ) {
     const response = await fetch("/api/documents/qa", {
       method: "POST",
@@ -1054,7 +1071,8 @@ function App() {
         roleId,
         reasoningEffort,
         question
-      })
+      }),
+      signal
     });
 
     if (!response.ok) {
@@ -1094,10 +1112,13 @@ function App() {
     }
   }
 
-  async function handleSubmit(event?: FormEvent<HTMLFormElement>) {
+  async function handleSubmit(
+    event?: FormEvent<HTMLFormElement>,
+    messageOverride?: string
+  ) {
     event?.preventDefault();
 
-    const trimmedMessage = message.trim();
+    const trimmedMessage = messageOverride?.trim() || message.trim();
     const outgoingMessage =
       trimmedMessage || (attachment ? `I uploaded a file named ${attachment.name}.` : "");
 
@@ -1106,11 +1127,19 @@ function App() {
     }
 
     setError("");
+    setApprovalRequest(null);
     setIsSubmitting(true);
     shouldAutoScrollRef.current = true;
+    const requestController = new AbortController();
+    activeRequestControllerRef.current = requestController;
 
     const assistantEntryId = `assistant-${Date.now()}`;
-    const shouldUseDocumentQa = Boolean(attachment || activeDocumentName);
+    // 文本文件统一进入 LangGraph Agent，由 Agent 决定是否调用 RAG Tool。
+    // 图片需要把像素交给视觉模型，因此仍走专用的多模态文档接口。
+    const shouldUseDocumentQa = Boolean(
+      (attachment && isImageFile(attachment.name)) ||
+      (!attachment && activeDocumentName && isImageFile(activeDocumentName))
+    );
     const attachmentPreviewUrl =
       attachment && isImageFile(attachment.name) ? URL.createObjectURL(attachment) : undefined;
     const userEntry: ChatEntry = {
@@ -1182,6 +1211,9 @@ function App() {
 
           if (streamEvent.type === "done") {
             finalDocumentReply = streamEvent.reply || finalDocumentReply;
+            if (finalDocumentReply.startsWith(APPROVAL_PROMPT_PREFIX)) {
+              setApprovalRequest(finalDocumentReply);
+            }
             updateDocumentAssistantEntry((entry) => ({
               ...entry,
               content: finalDocumentReply || "文档问答没有返回内容。",
@@ -1191,7 +1223,7 @@ function App() {
           }
 
           throw new Error(streamEvent.error || "文档流式请求失败。");
-        });
+        }, requestController.signal);
         setAttachment(null);
         if (fileInputRef.current) {
           fileInputRef.current.value = "";
@@ -1216,7 +1248,8 @@ function App() {
 
       const response = await fetch("/api/chat", {
         method: "POST",
-        body: formData
+        body: formData,
+        signal: requestController.signal
       });
 
       if (!response.ok) {
@@ -1261,6 +1294,9 @@ function App() {
 
         if (streamEvent.type === "done") {
           finalReply = streamEvent.reply || finalReply;
+          if (finalReply.startsWith(APPROVAL_PROMPT_PREFIX)) {
+            setApprovalRequest(finalReply);
+          }
           updateAssistantEntry((entry) => ({
             ...entry,
             content: finalReply || "模型没有返回内容。",
@@ -1296,6 +1332,9 @@ function App() {
       }
 
       setAttachment(null);
+      if (attachment) {
+        setActiveDocumentName(normalizeFileName(attachment.name));
+      }
       if (fileInputRef.current) {
         fileInputRef.current.value = "";
       }
@@ -1303,7 +1342,9 @@ function App() {
       await refreshThreads(activeThreadId);
     } catch (submitError) {
       const messageText =
-        submitError instanceof Error
+        submitError instanceof DOMException && submitError.name === "AbortError"
+          ? "任务已中止。"
+          : submitError instanceof Error
           ? submitError.message
           : "发送消息时发生错误。";
 
@@ -1319,6 +1360,7 @@ function App() {
         )
       );
     } finally {
+      activeRequestControllerRef.current = null;
       setIsSubmitting(false);
     }
   }
@@ -1513,6 +1555,48 @@ function App() {
               {isLoggingIn ? "登录中..." : "登录"}
             </button>
           </form>
+        </div>
+      ) : null}
+
+      {approvalRequest ? (
+        <div className="login-modal-backdrop" role="presentation">
+          <section
+            className="login-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="approval-dialog-title"
+          >
+            <div className="login-modal-header">
+              <div>
+                <h2 id="approval-dialog-title">需要确认操作</h2>
+                <p>Agent 已暂停，确认后才会继续执行。</p>
+              </div>
+            </div>
+            <div className="rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm leading-6 text-zinc-700">
+              {approvalRequest
+                .replace(APPROVAL_PROMPT_PREFIX, "")
+                .replace(/请回复[\s\S]*$/, "")
+                .trim()}
+            </div>
+            <div className="mt-4 grid grid-cols-2 gap-3">
+              <button
+                type="button"
+                className="rounded-xl border border-zinc-300 bg-white px-4 py-3 font-semibold text-zinc-800 hover:bg-zinc-100"
+                disabled={isSubmitting}
+                onClick={() => void handleSubmit(undefined, "拒绝")}
+              >
+                拒绝
+              </button>
+              <button
+                type="button"
+                className="rounded-xl bg-emerald-600 px-4 py-3 font-semibold text-white hover:bg-emerald-700"
+                disabled={isSubmitting}
+                onClick={() => void handleSubmit(undefined, "批准")}
+              >
+                批准执行
+              </button>
+            </div>
+          </section>
         </div>
       ) : null}
 
@@ -1773,9 +1857,19 @@ function App() {
                     </select>
                   </label>
                 ) : null}
-                <button className="send-button" type="submit" disabled={!canSubmit}>
-                  {isSubmitting ? "生成中..." : "发送"}
-                </button>
+                {isSubmitting ? (
+                  <button
+                    className="send-button"
+                    type="button"
+                    onClick={() => activeRequestControllerRef.current?.abort()}
+                  >
+                    停止
+                  </button>
+                ) : (
+                  <button className="send-button" type="submit" disabled={!canSubmit}>
+                    发送
+                  </button>
+                )}
               </div>
             </div>
           </form>

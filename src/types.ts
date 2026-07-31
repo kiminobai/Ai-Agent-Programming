@@ -86,6 +86,7 @@ export interface ChatProvider {
     fewShotExamples?: FewShotExample[],
     reasoningEffort?: ReasoningEffort,
     threadId?: string,
-    userId?: string
+    userId?: string,
+    signal?: AbortSignal
   ): Promise<string>;
 }

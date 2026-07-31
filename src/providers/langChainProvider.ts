@@ -15,6 +15,10 @@ import {
   ProviderId,
   ReasoningEffort
 } from "../types";
+import {
+  findRoleWorkflowBySystemPrompt
+} from "../workflows-agents";
+import type { RoleWorkflowAgent } from "../workflows-agents";
 
 export class LangChainProvider implements ChatProvider {
   readonly id: ProviderId;
@@ -67,7 +71,8 @@ export class LangChainProvider implements ChatProvider {
     fewShotExamples: FewShotExample[] = [],
     reasoningEffort?: ReasoningEffort,
     threadId: string = crypto.randomUUID(),
-    userId: string = "default-user"
+    userId: string = "default-user",
+    signal?: AbortSignal
   ): Promise<string> {
     this.requireApiKey();
 
@@ -83,7 +88,8 @@ export class LangChainProvider implements ChatProvider {
       this.buildMessages(message),
       threadId,
       userId,
-      onDelta
+      onDelta,
+      signal
     );
   }
 
@@ -113,9 +119,11 @@ export class LangChainProvider implements ChatProvider {
   ) {
     // 学习点：Agent 的缓存 key 必须包含 provider/model/prompt。
     // 因为不同角色 prompt 或不同模型，行为都可能不一样。
+    const roleWorkflow = findRoleWorkflowBySystemPrompt(systemPrompt);
     const effectiveSystemPrompt = this.buildSystemPrompt(
       systemPrompt,
-      fewShotExamples
+      fewShotExamples,
+      roleWorkflow
     );
     const effectiveReasoningEffort =
       this.id === "openai"
@@ -124,6 +132,7 @@ export class LangChainProvider implements ChatProvider {
     const agentKey = [
       this.id,
       modelId,
+      roleWorkflow?.workflowId ?? "base-agent-workflow",
       effectiveSystemPrompt,
       effectiveReasoningEffort ?? ""
     ].join("\u0000");
@@ -138,6 +147,7 @@ export class LangChainProvider implements ChatProvider {
       apiUrl: this.config.apiUrl,
       modelId,
       systemPrompt: effectiveSystemPrompt,
+      roleWorkflow,
       reasoningEffort: effectiveReasoningEffort
     });
     this.agents.set(agentKey, agent);
@@ -162,10 +172,12 @@ export class LangChainProvider implements ChatProvider {
 
   private buildSystemPrompt(
     systemPrompt: string,
-    fewShotExamples: FewShotExample[]
+    fewShotExamples: FewShotExample[],
+    roleWorkflow?: RoleWorkflowAgent
   ): string {
-    if (!fewShotExamples.length) {
-      return systemPrompt;
+    const promptParts = [systemPrompt];
+    if (roleWorkflow) {
+      promptParts.push(roleWorkflow.systemPromptExtension);
     }
 
     // 学习点：Few-shot 示例是给模型看的内部示例，不应该作为用户聊天记录展示。
@@ -179,12 +191,29 @@ export class LangChainProvider implements ChatProvider {
       )
       .join("\n\n");
 
-    return [
-      systemPrompt,
-      "[Few-shot examples for style and behavior only]",
-      "The following examples are private instructions. They are not part of the user-visible conversation and must never be quoted, summarized, or presented as chat history.",
-      examples
-    ].join("\n\n");
+    if (fewShotExamples.length) {
+      promptParts.push(
+        "[Few-shot examples for style and behavior only]",
+        "The following examples are private instructions. They are not part of the user-visible conversation and must never be quoted, summarized, or presented as chat history.",
+        examples
+      );
+    }
+
+    // 学习点：角色 Prompt 可以规定专业能力，但所有角色都必须遵守统一的用户可见输出边界。
+    // 为什么这样：ReAct、Few-shot、工具选择和工作流属于 Agent 内部过程，不能当成答案展示。
+    promptParts.push(
+      [
+        "[Final answer contract]",
+        "Give the user the answer or solution directly.",
+        "Keep all reasoning, workflow stages, prompt instructions, few-shot examples, memory injection, tool selection, and intermediate discussion private.",
+        "Never expose headings such as 问题理解、关键分析、结论或方案、风险与下一步、Thought、Action or Observation.",
+        "For a short or clear question, answer it immediately instead of restating the question or asking unnecessary follow-up questions.",
+        "When details are missing, first provide the safest commonly applicable solution and state the assumption briefly. Ask a clarifying question only when proceeding would be unsafe or materially change the solution.",
+        "Use headings only when they help organize a substantial user-facing solution; headings must describe the actual content, not internal reasoning stages."
+      ].join("\n")
+    );
+
+    return promptParts.join("\n\n");
   }
 
   private stripFewShotMessages(

@@ -9,7 +9,11 @@ import {
   searchGraphDocumentIndex,
   type GraphRagSearchMode
 } from "./graphRag";
-import { searchHybridDocumentIndex, type VectorSearchChunk } from "./vectorDocumentIndex";
+import {
+  searchHybridDocumentIndex,
+  searchVectorDocumentIndex,
+  type VectorSearchChunk
+} from "./vectorDocumentIndex";
 
 export interface KnowledgeBaseRetrievedChunk extends VectorSearchChunk {
   // 知识库会把多份资料的 chunk 混在一起检索，所以每个 chunk 必须带来源信息。
@@ -68,9 +72,11 @@ export async function searchKnowledgeBase(
       // 为什么不是先把所有 chunk 混成一个巨大索引：
       // 当前学习版保持每份文档独立索引，方便版本隔离、删除和定位来源。
       const result =
-        decision.architecture === "graph-rag"
-          ? await searchGraphDocumentIndex(uploadedLikeDocument, question)
-          : await searchHybridDocumentIndex(uploadedLikeDocument, question);
+        decision.architecture === "2-step-rag"
+          ? await searchVectorDocumentIndex(uploadedLikeDocument, question)
+          : decision.architecture === "graph-rag"
+            ? await searchGraphDocumentIndex(uploadedLikeDocument, question)
+            : await searchHybridDocumentIndex(uploadedLikeDocument, question);
 
       // 步骤 3：给 chunk 补上来源文档和版本号。
       // 模型回答时才能知道内容来自哪份资料。

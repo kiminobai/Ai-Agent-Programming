@@ -6,11 +6,18 @@
  */
 import { BaseMessage, HumanMessage, AIMessage } from "@langchain/core/messages";
 import { ChatOpenAI } from "@langchain/openai";
-import { createAgent, summarizationMiddleware } from "langchain";
+import {
+  createAgent,
+  humanInTheLoopMiddleware,
+  summarizationMiddleware
+} from "langchain";
+import { Command } from "@langchain/langgraph";
 import { sqliteCheckpointer } from "../db/sqlite";
 import { langChainTools } from "../tools/langchain";
 import { ProviderId, ReasoningEffort } from "../types";
+import type { RoleWorkflowAgent } from "../workflows-agents";
 import { AgentContext, AgentContextSchema } from "./agentContext";
+import { createAgentWorkflowGraph } from "./agentWorkflowGraph";
 import { dynamicMemoryPromptMiddleware } from "./dynamicMemoryPromptMiddleware";
 import { ToolMemoryState } from "./toolMemoryState";
 
@@ -27,6 +34,7 @@ export interface LangChainToolAgentOptions {
   apiUrl: string;
   modelId: string;
   systemPrompt: string;
+  roleWorkflow?: RoleWorkflowAgent;
   reasoningEffort?: ReasoningEffort;
 }
 
@@ -35,6 +43,8 @@ export class LangChainToolAgent {
   private static readonly SUMMARY_KEEP_MESSAGES = 12;
 
   private readonly agent;
+  private readonly workflow;
+  private readonly migratedThreads = new Set<string>();
 
   constructor(options: LangChainToolAgentOptions) {
     // 学习点：ChatOpenAI 也可以连接 DeepSeek/SiliconFlow 这类 OpenAI-compatible 接口。
@@ -66,6 +76,18 @@ export class LangChainToolAgent {
       }
     });
 
+    // 学习点：只对会修改长期数据的工具启用人工审批。
+    // 天气、计算、时间和文档检索都是只读操作，仍然自动执行。
+    const approvalMiddleware = humanInTheLoopMiddleware({
+      interruptOn: {
+        remember_preference: {
+          allowedDecisions: ["approve", "reject"],
+          description: "Agent 准备把用户偏好写入长期记忆。"
+        }
+      },
+      descriptionPrefix: "此操作需要用户确认"
+    });
+
     this.agent = createAgent({
       model,
       tools: langChainTools,
@@ -73,8 +95,18 @@ export class LangChainToolAgent {
       stateSchema: ToolMemoryState,
       contextSchema: AgentContextSchema,
       // 学习点：每次模型调用前，动态拼接长期记忆、短期工具上下文和上传文档状态。
-      middleware: [memorySummarizer, dynamicMemoryPromptMiddleware],
-      // 学习点：LangGraph thread state 写入 SQLite，项目重启后仍可恢复该 thread。
+      middleware: [
+        memorySummarizer,
+        dynamicMemoryPromptMiddleware,
+        approvalMiddleware
+      ]
+    });
+
+    // 学习点：外层 StateGraph 管项目流程，内层 createAgent 管模型与工具循环。
+    // 这样可以看到明确的 Node/Edge，同时保留原有 Streaming 和 Memory 能力。
+    this.workflow = createAgentWorkflowGraph(this.agent, {
+      roleId: options.roleWorkflow?.roleId ?? "base-agent",
+      workflowId: options.roleWorkflow?.workflowId ?? "base-agent-workflow",
       checkpointer: sqliteCheckpointer
     });
   }
@@ -84,9 +116,27 @@ export class LangChainToolAgent {
     threadId: string,
     userId: string
   ): Promise<string> {
+    await this.restoreLegacySubgraphMessages(threadId);
+    const pendingApproval = await this.getPendingApproval(threadId);
+    if (pendingApproval) {
+      const decision = this.parseApprovalDecision(messages);
+      if (!decision) {
+        return this.formatApprovalPrompt(pendingApproval);
+      }
+
+      const resumed = await this.workflow.invoke(
+        this.createApprovalCommand(decision) as never,
+        {
+          configurable: { thread_id: threadId },
+          context: this.createContext(userId, threadId)
+        }
+      );
+      return this.extractFinalText(resumed.messages);
+    }
+
     // 学习点：thread_id 是 LangGraph 短期记忆的分区键。
     // 同一个 thread 会继续使用同一份状态。
-    const result = await this.agent.invoke(
+    const result = await this.workflow.invoke(
       { messages: this.toLangChainMessages(messages) },
       {
         configurable: { thread_id: threadId },
@@ -101,34 +151,64 @@ export class LangChainToolAgent {
     messages: ToolAgentMessage[],
     threadId: string,
     userId: string,
-    onDelta: (chunk: string) => void
+    onDelta: (chunk: string) => void,
+    signal?: AbortSignal
   ): Promise<string> {
+    await this.restoreLegacySubgraphMessages(threadId);
+    const pendingApproval = await this.getPendingApproval(threadId);
+    const decision = pendingApproval
+      ? this.parseApprovalDecision(messages)
+      : null;
+
+    if (pendingApproval && !decision) {
+      const prompt = this.formatApprovalPrompt(pendingApproval);
+      onDelta(prompt);
+      return prompt;
+    }
+
     // 学习点：streamMode=messages 会持续返回模型 token。
     // 工具节点输出会被过滤，避免把内部过程展示给用户。
-    const run = await this.agent.streamEvents(
-      { messages: this.toLangChainMessages(messages) },
-      {
-        version: "v3",
-        configurable: { thread_id: threadId },
-        context: this.createContext(userId, threadId)
-      }
-    );
+    const runConfig = {
+      // v2 返回标准 StreamEvent，并会包含 run_agent 子图里的模型 token 事件。
+      version: "v2" as const,
+      configurable: { thread_id: threadId },
+      context: this.createContext(userId, threadId),
+      // 浏览器点击“停止”后，AbortSignal 会一路传到模型和工具节点。
+      signal
+    };
+    const runInput =
+      pendingApproval && decision
+        ? this.createApprovalCommand(decision)
+        : { messages: this.toLangChainMessages(messages) };
+    // Command.resume 与普通 State input 共用同一个入口，但两者的框架泛型不同。
+    // 只在这里做边界适配，运行时仍由 LangGraph 判断是恢复还是新执行。
+    const run = this.workflow.streamEvents(
+      runInput as never,
+      runConfig as never
+    ) as unknown as AsyncIterable<unknown>;
 
     let fullText = "";
 
-    for await (const messageStream of run.messages) {
-      for await (const token of messageStream.text) {
-        const delta = this.extractNewTextDelta(String(token || ""), fullText);
-        if (!delta) {
-          continue;
-        }
-
-        fullText += delta;
-        onDelta(delta);
+    // 学习点：模型位于外层工作流的 run_agent 子图中。
+    // 直接迭代全部事件，才能收到子图产生的 on_chat_model_stream token。
+    for await (const event of run) {
+      const delta = this.extractStreamEventText(event, fullText);
+      if (!delta) {
+        continue;
       }
+
+      fullText += delta;
+      onDelta(delta);
     }
 
     if (!fullText) {
+      const approvalAfterRun = await this.getPendingApproval(threadId);
+      if (approvalAfterRun) {
+        const prompt = this.formatApprovalPrompt(approvalAfterRun);
+        onDelta(prompt);
+        return prompt;
+      }
+
       // 学习点：如果流里没有 token，就从 LangGraph state 里兜底找最后一条 AI 消息。
       fullText = await this.getLatestAssistantText(threadId);
       if (fullText) {
@@ -137,14 +217,15 @@ export class LangChainToolAgent {
     }
 
     if (!fullText) {
-      return "文件已经读取并切分完成，但模型没有生成最终文本回复。请继续输入你希望我基于文件完成的具体任务，例如总结、提取重点、按章节分析或对比内容。";
+      throw new Error("模型本轮没有返回可展示的文本内容，请重新发送。");
     }
 
     return fullText;
   }
 
   async hasThreadState(threadId: string): Promise<boolean> {
-    const snapshot = (await (this.agent as {
+    await this.restoreLegacySubgraphMessages(threadId);
+    const snapshot = (await (this.workflow as {
       getState: (config: { configurable: { thread_id: string } }) => Promise<{
         values?: unknown;
       }>;
@@ -159,7 +240,8 @@ export class LangChainToolAgent {
   }
 
   async getThreadMessages(threadId: string): Promise<ToolAgentMessage[]> {
-    const snapshot = (await (this.agent as {
+    await this.restoreLegacySubgraphMessages(threadId);
+    const snapshot = (await (this.workflow as {
       getState: (config: { configurable: { thread_id: string } }) => Promise<{
         values?: unknown;
       }>;
@@ -169,13 +251,222 @@ export class LangChainToolAgent {
       values?: unknown;
     };
 
-    return this.getStateMessages(snapshot.values)
+    const messages = this.getStateMessages(snapshot.values)
       .map((message) => this.toToolAgentMessage(message))
       .filter((message): message is ToolAgentMessage => Boolean(message));
+
+    const pendingApproval = this.extractPendingApproval(snapshot);
+    if (pendingApproval) {
+      messages.push({
+        role: "assistant",
+        content: this.formatApprovalPrompt(pendingApproval)
+      });
+    }
+
+    return messages;
+  }
+
+  /**
+   * 学习点：旧版本把 SQLite checkpointer 挂在内层 createAgent 上，
+   * 因此消息被写进 run_agent:* 子图命名空间，刷新时读取根状态就会看不到。
+   *
+   * 这里做一次兼容迁移：找到每个旧子图的最新检查点，将根状态缺少的消息
+   * 按时间顺序、按消息 ID 去重后补回根工作流。旧数据不会被删除。
+   */
+  private async restoreLegacySubgraphMessages(threadId: string): Promise<void> {
+    if (!threadId || this.migratedThreads.has(threadId)) {
+      return;
+    }
+
+    const rootSnapshot = (await (this.workflow as {
+      getState: (config: { configurable: { thread_id: string } }) => Promise<{
+        values?: unknown;
+      }>;
+    }).getState({
+      configurable: { thread_id: threadId }
+    })) as { values?: unknown };
+    const rootMessages = this.getStateMessages(rootSnapshot.values);
+    const knownMessageKeys = new Set(
+      rootMessages.map((message) => this.getMessageIdentity(message))
+    );
+
+    const latestByNamespace = new Map<
+      string,
+      { timestamp: string; messages: BaseMessage[] }
+    >();
+
+    for await (const item of sqliteCheckpointer.list(
+      { configurable: { thread_id: threadId } },
+      { limit: 1_000 }
+    )) {
+      const configurable = item.config.configurable as {
+        checkpoint_ns?: string;
+      };
+      const namespace = configurable.checkpoint_ns ?? "";
+      if (
+        !namespace.startsWith("run_agent:") &&
+        !namespace.startsWith("runAgent:")
+      ) {
+        continue;
+      }
+
+      // list() 按新到旧返回；每个 namespace 只保留第一条，即该子图最终状态。
+      if (latestByNamespace.has(namespace)) {
+        continue;
+      }
+
+      const checkpoint = item.checkpoint as {
+        ts?: string;
+        channel_values?: unknown;
+      };
+      const messages = this.getStateMessages(checkpoint.channel_values);
+      if (messages.length) {
+        latestByNamespace.set(namespace, {
+          timestamp: checkpoint.ts ?? "",
+          messages
+        });
+      }
+    }
+
+    const missingMessages: BaseMessage[] = [];
+    const legacyRuns = [...latestByNamespace.values()].sort((left, right) =>
+      left.timestamp.localeCompare(right.timestamp)
+    );
+
+    for (const run of legacyRuns) {
+      for (const message of run.messages) {
+        const key = this.getMessageIdentity(message);
+        if (knownMessageKeys.has(key)) {
+          continue;
+        }
+
+        knownMessageKeys.add(key);
+        missingMessages.push(message);
+      }
+    }
+
+    if (missingMessages.length) {
+      await (this.workflow as {
+        updateState: (
+          config: { configurable: { thread_id: string } },
+          values: { messages: BaseMessage[] },
+          asNode: string
+        ) => Promise<unknown>;
+      }).updateState(
+        { configurable: { thread_id: threadId } },
+        { messages: missingMessages },
+        // 旧检查点可能记录旧版节点名；明确以新图的终点写入，避免节点名不兼容。
+        "finish"
+      );
+    }
+
+    this.migratedThreads.add(threadId);
+  }
+
+  private getMessageIdentity(message: BaseMessage): string {
+    // LangChain 通常会为消息生成稳定 ID；兼容旧数据时再用类型和内容兜底。
+    if (message.id) {
+      return `id:${message.id}`;
+    }
+
+    return `${message.getType()}:${JSON.stringify(message.content)}`;
+  }
+
+  private async getPendingApproval(
+    threadId: string
+  ): Promise<{ descriptions: string[]; toolNames: string[] } | null> {
+    const snapshot = await (this.workflow as {
+      getState: (config: { configurable: { thread_id: string } }) => Promise<unknown>;
+    }).getState({
+      configurable: { thread_id: threadId }
+    });
+
+    return this.extractPendingApproval(snapshot);
+  }
+
+  private extractPendingApproval(
+    snapshot: unknown
+  ): { descriptions: string[]; toolNames: string[] } | null {
+    if (!snapshot || typeof snapshot !== "object") {
+      return null;
+    }
+
+    const tasks = (snapshot as {
+      tasks?: Array<{
+        interrupts?: Array<{
+          value?: {
+            actionRequests?: Array<{ name?: string; description?: string }>;
+            reviewConfigs?: Array<{ actionName?: string }>;
+          };
+        }>;
+      }>;
+    }).tasks;
+
+    const interrupts = tasks?.flatMap((task) => task.interrupts ?? []) ?? [];
+    if (!interrupts.length) {
+      return null;
+    }
+
+    const descriptions = interrupts.flatMap((item) =>
+      item.value?.actionRequests
+        ?.map((request) => request.description?.trim() || "")
+        .filter(Boolean) ?? []
+    );
+    const toolNames = interrupts.flatMap((item) => [
+      ...(item.value?.actionRequests
+        ?.map((request) => request.name?.trim() || "")
+        .filter(Boolean) ?? []),
+      ...(item.value?.reviewConfigs
+        ?.map((config) => config.actionName?.trim() || "")
+        .filter(Boolean) ?? [])
+    ]);
+
+    return {
+      descriptions: [...new Set(descriptions)],
+      toolNames: [...new Set(toolNames)]
+    };
+  }
+
+  private parseApprovalDecision(
+    messages: ToolAgentMessage[]
+  ): "approve" | "reject" | null {
+    const input = messages.at(-1)?.content.trim() ?? "";
+    if (/^(批准|同意|确认|继续|approve|yes)$/i.test(input)) {
+      return "approve";
+    }
+    if (/^(拒绝|取消|不同意|reject|no)$/i.test(input)) {
+      return "reject";
+    }
+    return null;
+  }
+
+  private createApprovalCommand(decision: "approve" | "reject") {
+    return new Command({
+      resume: {
+        decisions: [
+          decision === "approve"
+            ? { type: "approve" }
+            : { type: "reject", message: "用户拒绝执行此操作。" }
+        ]
+      }
+    });
+  }
+
+  private formatApprovalPrompt(approval: {
+    descriptions: string[];
+    toolNames: string[];
+  }): string {
+    const action =
+      approval.descriptions[0] ||
+      (approval.toolNames.length
+        ? `执行工具：${approval.toolNames.join("、")}`
+        : "执行一项会修改数据的操作");
+
+    return `需要你的确认：${action}\n\n请回复“批准”继续，或回复“拒绝”取消。`;
   }
 
   private async getLatestAssistantText(threadId: string): Promise<string> {
-    const snapshot = (await (this.agent as {
+    const snapshot = (await (this.workflow as {
       getState: (config: { configurable: { thread_id: string } }) => Promise<{
         values?: unknown;
       }>;

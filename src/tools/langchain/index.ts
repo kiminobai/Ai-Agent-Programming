@@ -6,6 +6,7 @@
  */
 import { calculatorTool } from "./calculatorTool";
 import { currentTimeTool } from "./currentTimeTool";
+import { knowledgeBaseTool } from "./knowledgeBaseTool";
 import { recallPreferenceTool } from "./recallPreferenceTool";
 import { rememberPreferenceTool } from "./rememberPreferenceTool";
 import { uploadedDocumentTool } from "./uploadedDocumentTool";
@@ -13,6 +14,7 @@ import { weatherTool } from "./weatherTool";
 
 export { calculatorTool } from "./calculatorTool";
 export { currentTimeTool } from "./currentTimeTool";
+export { knowledgeBaseTool } from "./knowledgeBaseTool";
 export { recallPreferenceTool } from "./recallPreferenceTool";
 export { rememberPreferenceTool } from "./rememberPreferenceTool";
 export { uploadedDocumentTool } from "./uploadedDocumentTool";
@@ -26,6 +28,8 @@ export const langChainTools = [
   // 学习点：记忆工具，负责写入/读取长期偏好。
   rememberPreferenceTool,
   recallPreferenceTool,
+  // 长期知识库工具：按问题自动选择 Hybrid / GraphRAG，并支持多版本资料。
+  knowledgeBaseTool,
   // 学习点：文档工具，按需触发上传文件的 Hybrid RAG 检索。
   uploadedDocumentTool
 ];

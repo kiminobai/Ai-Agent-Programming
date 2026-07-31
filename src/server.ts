@@ -623,6 +623,12 @@ app.post(
     const question = req.body?.question?.trim();
     const reasoningEffort = req.body?.reasoningEffort;
     const wantsStream = req.headers.accept?.includes("text/event-stream") ?? false;
+    const documentTaskController = new AbortController();
+    res.once("close", () => {
+      if (!res.writableEnded) {
+        documentTaskController.abort();
+      }
+    });
 
     if (!userId || !threadId || !modelId || !question) {
       res.status(400).json({
@@ -808,7 +814,8 @@ app.post(
             role.fewShotExamples,
             model.provider === "openai" ? reasoningEffort : undefined,
             threadId,
-            userId
+            userId,
+            documentTaskController.signal
           );
         } else {
           answer = await agentProvider.sendChat(
@@ -982,7 +989,8 @@ app.post(
           role.fewShotExamples,
           model.provider === "openai" ? reasoningEffort : undefined,
           `${threadId}:document-qa`,
-          userId
+          userId,
+          documentTaskController.signal
         );
       } else {
         answer = await provider.sendChat(
@@ -1338,6 +1346,14 @@ const chatHandler: RequestHandler = async (
         ].join("\n")
       : effectiveUserMessage;
 
+    // 浏览器断开连接或主动停止时，中止 LangGraph 本轮执行。
+    const taskController = new AbortController();
+    res.once("close", () => {
+      if (!res.writableEnded) {
+        taskController.abort();
+      }
+    });
+
     const reply = await provider.streamChat(
       model.id,
       messageForModel,
@@ -1348,7 +1364,8 @@ const chatHandler: RequestHandler = async (
       role.fewShotExamples,
       model.provider === "openai" ? reasoningEffort : undefined,
       threadId,
-      userId
+      userId,
+      taskController.signal
     );
 
     updateThreadAfterMessage({

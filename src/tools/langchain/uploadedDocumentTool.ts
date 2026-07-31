@@ -8,7 +8,12 @@ import {
 import {
   RAG_RETRIEVAL_CONFIG
 } from "../../rag/documentChunkLab";
-import { searchHybridDocumentIndex } from "../../rag/vectorDocumentIndex";
+import { searchGraphDocumentIndex } from "../../rag/graphRag";
+import { selectDocumentRagArchitecture } from "../../rag/ragArchitectureRouter";
+import {
+  searchHybridDocumentIndex,
+  searchVectorDocumentIndex
+} from "../../rag/vectorDocumentIndex";
 import { getUploadedDocument } from "../../rag/uploadedDocumentStore";
 
 export const uploadedDocumentTool = tool(
@@ -60,9 +65,15 @@ export const uploadedDocumentTool = tool(
       );
     }
 
-    // 学习点：Agentic RAG 里的“文档工具”内部复用 Hybrid RAG。
-    // 也就是：检索 -> 融合 -> rerank -> 验证 -> 返回精选上下文。
-    const result = await searchHybridDocumentIndex(document, task);
+    // Agent 已经决定调用文档工具；工具内部再根据问题选择具体检索架构。
+    // 简单定位走 2-Step，关系问题走 GraphRAG，其余复杂任务走 Hybrid。
+    const decision = await selectDocumentRagArchitecture(task, document);
+    const result =
+      decision.architecture === "2-step-rag"
+        ? await searchVectorDocumentIndex(document, task)
+        : decision.architecture === "graph-rag"
+          ? await searchGraphDocumentIndex(document, task)
+          : await searchHybridDocumentIndex(document, task);
     const selectedChunks = result.chunks
       .sort((left, right) => left.index - right.index)
       .map(({ embedding, ...chunk }) => ({
@@ -72,6 +83,16 @@ export const uploadedDocumentTool = tool(
             ? `${chunk.content.slice(0, RAG_RETRIEVAL_CONFIG.maxChunkCharacters)}...(truncated)`
             : chunk.content
       }));
+    const retrievalValidation =
+      "validation" in result &&
+      result.validation &&
+      typeof result.validation === "object"
+        ? (result.validation as {
+            retrievalStrategy: string;
+            isLikelySufficient: boolean;
+            note: string;
+          })
+        : null;
 
     return writeToolContext(
       runtime,
@@ -82,19 +103,28 @@ export const uploadedDocumentTool = tool(
         // 学习点：answeringRule 是给模型看的输出约束。
         // 目的是避免把 chunk id、score 等开发者信息展示给用户。
         purpose:
-          "The uploaded document was searched with Hybrid RAG: query enhancement, vector similarity, SQLite FTS5/BM25 keyword retrieval, algorithmic rerank, retrieval validation, and whole-document representative retrieval when needed.",
+          "The uploaded document was searched with the RAG architecture selected for the user's current task.",
         answeringRule:
           "Answer from the returned chunks first. Do not print raw chunk ids, scores, or internal retrieval metadata to the user.",
         task,
+        architecture: decision.architecture,
+        architectureReason: decision.reason,
+        sourceScope: decision.sourceScope,
         retrievalQuery: task,
         fileName: document.fileName,
         fileType: document.fileType,
         totalCharacters: document.text.length,
         totalChunkCount: result.index.chunkCount,
         returnedChunkCount: selectedChunks.length,
-        enhancedQuery: result.enhancedQuery,
-        retrievalStrategy: result.validation.retrievalStrategy,
-        retrievalValidation: result.validation,
+        enhancedQuery: "enhancedQuery" in result ? result.enhancedQuery : task,
+        retrievalStrategy:
+          retrievalValidation?.retrievalStrategy ?? "vector-only",
+        retrievalValidation:
+          retrievalValidation ?? {
+                isLikelySufficient: selectedChunks.length > 0,
+                note:
+                  "2-Step RAG uses direct vector retrieval and skips the enhanced validation stage."
+              },
         vectorIndex: {
           dimensions: result.index.dimensions,
           builtAt: result.index.builtAt,
@@ -108,7 +138,7 @@ export const uploadedDocumentTool = tool(
   {
     name: "retrieve_uploaded_document_chunks",
     description:
-      "Retrieve document context from uploaded Markdown, TXT, PDF, PPTX, DOCX, XLSX/XLS/CSV, HTML, or images with recognized text using Hybrid RAG. The tool enhances queries, combines vector similarity with keyword matching, validates retrieval quality, and returns representative context for whole-document analysis.",
+      "Retrieve context from the file attached to the current conversation. Use only when the user's question needs that file. The tool automatically chooses 2-Step RAG, Hybrid RAG, or GraphRAG according to the task.",
     schema: z.object({
       task: z
         .string()

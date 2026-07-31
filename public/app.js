@@ -21506,6 +21506,7 @@
   var AUTO_SCROLL_THRESHOLD = 120;
   var THINKING_STATUS_TEXT = "\u6B63\u5728\u601D\u8003\u2026";
   var DOCUMENT_QA_STATUS_TEXT = "\u6B63\u5728\u68C0\u7D22\u6587\u6863\u2026";
+  var APPROVAL_PROMPT_PREFIX = "\u9700\u8981\u4F60\u7684\u786E\u8BA4\uFF1A";
   var PENDING_STATUS_TEXTS = /* @__PURE__ */ new Set([
     THINKING_STATUS_TEXT,
     DOCUMENT_QA_STATUS_TEXT
@@ -21673,12 +21674,14 @@
     const [loginPassword, setLoginPassword] = (0, import_react.useState)("admin123");
     const [loginError, setLoginError] = (0, import_react.useState)("");
     const [isLoggingIn, setIsLoggingIn] = (0, import_react.useState)(false);
+    const [approvalRequest, setApprovalRequest] = (0, import_react.useState)(null);
     const [attachment, setAttachment] = (0, import_react.useState)(null);
     const [composerAttachmentPreviewUrl, setComposerAttachmentPreviewUrl] = (0, import_react.useState)("");
     const [activeDocumentName, setActiveDocumentName] = (0, import_react.useState)("");
     const chatLayoutRef = (0, import_react.useRef)(null);
     const composerShellRef = (0, import_react.useRef)(null);
     const fileInputRef = (0, import_react.useRef)(null);
+    const activeRequestControllerRef = (0, import_react.useRef)(null);
     const shouldAutoScrollRef = (0, import_react.useRef)(true);
     const pendingInitialScrollRef = (0, import_react.useRef)(false);
     const lastScrollTopRef = (0, import_react.useRef)(0);
@@ -21703,6 +21706,11 @@
         requestAnimationFrame(scrollToBottom);
       });
     }, [entries, isSubmitting, activeThreadId]);
+    (0, import_react.useEffect)(() => {
+      const latestAssistantEntry = [...entries].reverse().find((entry) => entry.role === "assistant");
+      const pendingApproval = latestAssistantEntry?.content.startsWith(APPROVAL_PROMPT_PREFIX) ? latestAssistantEntry.content : null;
+      setApprovalRequest(pendingApproval);
+    }, [entries]);
     const currentModel = (0, import_react.useMemo)(
       () => models.find((item) => item.id === modelId),
       [models, modelId]
@@ -22167,7 +22175,7 @@
       }
       return data;
     }
-    async function streamUploadedDocumentAnswer(question, onEvent) {
+    async function streamUploadedDocumentAnswer(question, onEvent, signal) {
       const response = await fetch("/api/documents/qa", {
         method: "POST",
         headers: {
@@ -22181,7 +22189,8 @@
           roleId,
           reasoningEffort,
           question
-        })
+        }),
+        signal
       });
       if (!response.ok) {
         const data = await readJsonResponse(response, "/api/documents/qa");
@@ -22213,18 +22222,23 @@
         applyStreamEvent(buffer, onEvent);
       }
     }
-    async function handleSubmit(event) {
+    async function handleSubmit(event, messageOverride) {
       event?.preventDefault();
-      const trimmedMessage = message.trim();
+      const trimmedMessage = messageOverride?.trim() || message.trim();
       const outgoingMessage = trimmedMessage || (attachment ? `I uploaded a file named ${attachment.name}.` : "");
       if (!outgoingMessage || !modelId || !roleId || !userId.trim() || !activeThreadId) {
         return;
       }
       setError("");
+      setApprovalRequest(null);
       setIsSubmitting(true);
       shouldAutoScrollRef.current = true;
+      const requestController = new AbortController();
+      activeRequestControllerRef.current = requestController;
       const assistantEntryId = `assistant-${Date.now()}`;
-      const shouldUseDocumentQa = Boolean(attachment || activeDocumentName);
+      const shouldUseDocumentQa = Boolean(
+        attachment && isImageFile(attachment.name) || !attachment && activeDocumentName && isImageFile(activeDocumentName)
+      );
       const attachmentPreviewUrl = attachment && isImageFile(attachment.name) ? URL.createObjectURL(attachment) : void 0;
       const userEntry = {
         id: `user-${Date.now()}`,
@@ -22285,6 +22299,9 @@
             }
             if (streamEvent.type === "done") {
               finalDocumentReply = streamEvent.reply || finalDocumentReply;
+              if (finalDocumentReply.startsWith(APPROVAL_PROMPT_PREFIX)) {
+                setApprovalRequest(finalDocumentReply);
+              }
               updateDocumentAssistantEntry((entry) => ({
                 ...entry,
                 content: finalDocumentReply || "\u6587\u6863\u95EE\u7B54\u6CA1\u6709\u8FD4\u56DE\u5185\u5BB9\u3002",
@@ -22293,7 +22310,7 @@
               return;
             }
             throw new Error(streamEvent.error || "\u6587\u6863\u6D41\u5F0F\u8BF7\u6C42\u5931\u8D25\u3002");
-          });
+          }, requestController.signal);
           setAttachment(null);
           if (fileInputRef.current) {
             fileInputRef.current.value = "";
@@ -22314,7 +22331,8 @@
         }
         const response = await fetch("/api/chat", {
           method: "POST",
-          body: formData
+          body: formData,
+          signal: requestController.signal
         });
         if (!response.ok) {
           const data = await readJsonResponse(response, "/api/chat");
@@ -22350,6 +22368,9 @@
           }
           if (streamEvent.type === "done") {
             finalReply = streamEvent.reply || finalReply;
+            if (finalReply.startsWith(APPROVAL_PROMPT_PREFIX)) {
+              setApprovalRequest(finalReply);
+            }
             updateAssistantEntry((entry) => ({
               ...entry,
               content: finalReply || "\u6A21\u578B\u6CA1\u6709\u8FD4\u56DE\u5185\u5BB9\u3002",
@@ -22379,12 +22400,15 @@
           applyStreamEvent(buffer, handleEvent);
         }
         setAttachment(null);
+        if (attachment) {
+          setActiveDocumentName(normalizeFileName(attachment.name));
+        }
         if (fileInputRef.current) {
           fileInputRef.current.value = "";
         }
         await refreshThreads(activeThreadId);
       } catch (submitError) {
-        const messageText = submitError instanceof Error ? submitError.message : "\u53D1\u9001\u6D88\u606F\u65F6\u53D1\u751F\u9519\u8BEF\u3002";
+        const messageText = submitError instanceof DOMException && submitError.name === "AbortError" ? "\u4EFB\u52A1\u5DF2\u4E2D\u6B62\u3002" : submitError instanceof Error ? submitError.message : "\u53D1\u9001\u6D88\u606F\u65F6\u53D1\u751F\u9519\u8BEF\u3002";
         setError(messageText);
         setEntries(
           (prev) => prev.map(
@@ -22395,6 +22419,7 @@
           )
         );
       } finally {
+        activeRequestControllerRef.current = null;
         setIsSubmitting(false);
       }
     }
@@ -22539,7 +22564,36 @@
         type: "password",
         autoComplete: "current-password"
       }
-    )), loginError ? /* @__PURE__ */ import_react.default.createElement("div", { className: "login-error" }, loginError) : null, /* @__PURE__ */ import_react.default.createElement("button", { type: "submit", className: "login-submit-button", disabled: isLoggingIn }, isLoggingIn ? "\u767B\u5F55\u4E2D..." : "\u767B\u5F55"))) : null, /* @__PURE__ */ import_react.default.createElement(
+    )), loginError ? /* @__PURE__ */ import_react.default.createElement("div", { className: "login-error" }, loginError) : null, /* @__PURE__ */ import_react.default.createElement("button", { type: "submit", className: "login-submit-button", disabled: isLoggingIn }, isLoggingIn ? "\u767B\u5F55\u4E2D..." : "\u767B\u5F55"))) : null, approvalRequest ? /* @__PURE__ */ import_react.default.createElement("div", { className: "login-modal-backdrop", role: "presentation" }, /* @__PURE__ */ import_react.default.createElement(
+      "section",
+      {
+        className: "login-modal",
+        role: "dialog",
+        "aria-modal": "true",
+        "aria-labelledby": "approval-dialog-title"
+      },
+      /* @__PURE__ */ import_react.default.createElement("div", { className: "login-modal-header" }, /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("h2", { id: "approval-dialog-title" }, "\u9700\u8981\u786E\u8BA4\u64CD\u4F5C"), /* @__PURE__ */ import_react.default.createElement("p", null, "Agent \u5DF2\u6682\u505C\uFF0C\u786E\u8BA4\u540E\u624D\u4F1A\u7EE7\u7EED\u6267\u884C\u3002"))),
+      /* @__PURE__ */ import_react.default.createElement("div", { className: "rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm leading-6 text-zinc-700" }, approvalRequest.replace(APPROVAL_PROMPT_PREFIX, "").replace(/请回复[\s\S]*$/, "").trim()),
+      /* @__PURE__ */ import_react.default.createElement("div", { className: "mt-4 grid grid-cols-2 gap-3" }, /* @__PURE__ */ import_react.default.createElement(
+        "button",
+        {
+          type: "button",
+          className: "rounded-xl border border-zinc-300 bg-white px-4 py-3 font-semibold text-zinc-800 hover:bg-zinc-100",
+          disabled: isSubmitting,
+          onClick: () => void handleSubmit(void 0, "\u62D2\u7EDD")
+        },
+        "\u62D2\u7EDD"
+      ), /* @__PURE__ */ import_react.default.createElement(
+        "button",
+        {
+          type: "button",
+          className: "rounded-xl bg-emerald-600 px-4 py-3 font-semibold text-white hover:bg-emerald-700",
+          disabled: isSubmitting,
+          onClick: () => void handleSubmit(void 0, "\u6279\u51C6")
+        },
+        "\u6279\u51C6\u6267\u884C"
+      ))
+    )) : null, /* @__PURE__ */ import_react.default.createElement(
       "main",
       {
         ref: chatLayoutRef,
@@ -22698,7 +22752,15 @@
             /* @__PURE__ */ import_react.default.createElement("option", { value: "medium" }, "medium"),
             /* @__PURE__ */ import_react.default.createElement("option", { value: "high" }, "high")
           )
-        ) : null, /* @__PURE__ */ import_react.default.createElement("button", { className: "send-button", type: "submit", disabled: !canSubmit }, isSubmitting ? "\u751F\u6210\u4E2D..." : "\u53D1\u9001"))))
+        ) : null, isSubmitting ? /* @__PURE__ */ import_react.default.createElement(
+          "button",
+          {
+            className: "send-button",
+            type: "button",
+            onClick: () => activeRequestControllerRef.current?.abort()
+          },
+          "\u505C\u6B62"
+        ) : /* @__PURE__ */ import_react.default.createElement("button", { className: "send-button", type: "submit", disabled: !canSubmit }, "\u53D1\u9001"))))
       )
     ));
   }
