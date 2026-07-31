@@ -115,6 +115,14 @@ type StreamEvent =
   | { type: "done"; reply: string; meta: StreamMeta }
   | { type: "error"; error: string };
 
+type ApprovalDecision = "approve" | "reject";
+
+type ApprovalItem = {
+  index: number;
+  toolName: string;
+  description: string;
+};
+
 async function readJsonResponse(response: Response, apiName: string) {
   const text = await response.text();
 
@@ -186,6 +194,26 @@ const PENDING_STATUS_TEXTS = new Set([
 ]);
 const ATTACHMENT_MARKER_PATTERN =
   /\n*\[Attachment available in current thread: ([^\]]+)\]\n(?:If the user wants analysis, extraction, chunking, summarization, or document QA, call inspect_uploaded_document\.|If the user asks to use the file content, call chunk_uploaded_document to split it into bounded chunks before answering\.|If the user asks to use the file content, call retrieve_uploaded_document_chunks to retrieve only relevant chunks before answering\.)/;
+
+function parseApprovalItems(request: string): ApprovalItem[] {
+  const matches = [...request.matchAll(/^(\d+)\.\s+\[([^\]]+)\]\s+(.+)$/gm)];
+  if (matches.length) {
+    return matches.map((match, index) => ({
+      index,
+      toolName: match[2].trim(),
+      description: match[3].trim()
+    }));
+  }
+
+  // 兼容升级前已经保存在 SQLite 中的单项审批提示。
+  const description = request
+    .replace(APPROVAL_PROMPT_PREFIX, "")
+    .replace(/请(?:回复|选择)[\s\S]*$/, "")
+    .trim();
+  return description
+    ? [{ index: 0, toolName: "待执行操作", description }]
+    : [];
+}
 
 function extractAttachmentFromContent(content: string): {
   content: string;
@@ -428,6 +456,9 @@ function App() {
   const [loginError, setLoginError] = useState("");
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [approvalRequest, setApprovalRequest] = useState<string | null>(null);
+  const [approvalDecisions, setApprovalDecisions] = useState<
+    Record<number, ApprovalDecision>
+  >({});
   const [attachment, setAttachment] = useState<File | null>(null);
   const [composerAttachmentPreviewUrl, setComposerAttachmentPreviewUrl] = useState("");
   const [activeDocumentName, setActiveDocumentName] = useState("");
@@ -477,6 +508,20 @@ function App() {
         : null;
     setApprovalRequest(pendingApproval);
   }, [entries]);
+
+  const approvalItems = useMemo(
+    () => (approvalRequest ? parseApprovalItems(approvalRequest) : []),
+    [approvalRequest]
+  );
+  const canSubmitApproval =
+    approvalItems.length > 0 &&
+    approvalItems.every((item) => Boolean(approvalDecisions[item.index])) &&
+    !isSubmitting;
+
+  useEffect(() => {
+    // 每次出现一批新的审批项时清空旧选择，避免把上一批决定误用到下一批。
+    setApprovalDecisions({});
+  }, [approvalRequest]);
 
   const currentModel = useMemo(
     () => models.find((item) => item.id === modelId),
@@ -1114,7 +1159,8 @@ function App() {
 
   async function handleSubmit(
     event?: FormEvent<HTMLFormElement>,
-    messageOverride?: string
+    messageOverride?: string,
+    options?: { hideUserMessage?: boolean }
   ) {
     event?.preventDefault();
 
@@ -1134,11 +1180,15 @@ function App() {
     activeRequestControllerRef.current = requestController;
 
     const assistantEntryId = `assistant-${Date.now()}`;
+    const isApprovalSubmission =
+      Boolean(options?.hideUserMessage) &&
+      outgoingMessage.startsWith("__HITL_DECISIONS__:");
     // 文本文件统一进入 LangGraph Agent，由 Agent 决定是否调用 RAG Tool。
     // 图片需要把像素交给视觉模型，因此仍走专用的多模态文档接口。
     const shouldUseDocumentQa = Boolean(
-      (attachment && isImageFile(attachment.name)) ||
-      (!attachment && activeDocumentName && isImageFile(activeDocumentName))
+      !isApprovalSubmission &&
+        ((attachment && isImageFile(attachment.name)) ||
+          (!attachment && activeDocumentName && isImageFile(activeDocumentName)))
     );
     const attachmentPreviewUrl =
       attachment && isImageFile(attachment.name) ? URL.createObjectURL(attachment) : undefined;
@@ -1153,7 +1203,7 @@ function App() {
 
     setEntries((prev) => [
       ...prev,
-      userEntry,
+      ...(options?.hideUserMessage ? [] : [userEntry]),
       {
         id: assistantEntryId,
         role: "assistant",
@@ -1341,20 +1391,27 @@ function App() {
 
       await refreshThreads(activeThreadId);
     } catch (submitError) {
+      const wasStopped =
+        requestController.signal.aborted ||
+        (submitError instanceof DOMException && submitError.name === "AbortError");
       const messageText =
-        submitError instanceof DOMException && submitError.name === "AbortError"
-          ? "任务已中止。"
+        wasStopped
+          ? "已停止"
           : submitError instanceof Error
           ? submitError.message
           : "发送消息时发生错误。";
 
-      setError(messageText);
+      // 用户主动停止属于正常操作，不显示成红色请求错误。
+      setError(wasStopped ? "" : messageText);
       setEntries((prev) =>
         prev.map((entry) =>
           entry.id === assistantEntryId
             ? {
                 ...entry,
-                content: entry.content || `请求失败：${messageText}`
+                // 停止时替换“正在思考…”或未完成内容，明确反馈当前任务状态。
+                content: wasStopped
+                  ? "已停止"
+                  : entry.content || `请求失败：${messageText}`
               }
             : entry
         )
@@ -1572,28 +1629,102 @@ function App() {
                 <p>Agent 已暂停，确认后才会继续执行。</p>
               </div>
             </div>
-            <div className="rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm leading-6 text-zinc-700">
-              {approvalRequest
-                .replace(APPROVAL_PROMPT_PREFIX, "")
-                .replace(/请回复[\s\S]*$/, "")
-                .trim()}
+            <div className="space-y-3">
+              {approvalItems.map((item) => (
+                <div
+                  key={`${item.index}-${item.toolName}`}
+                  className="rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3"
+                >
+                  <div className="text-sm font-semibold text-zinc-900">
+                    {item.index + 1}. {item.toolName}
+                  </div>
+                  <div className="mt-1 text-sm leading-6 text-zinc-600">
+                    {item.description}
+                  </div>
+                  <div className="mt-3 grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      className={`rounded-lg border px-3 py-2 text-sm font-semibold ${
+                        approvalDecisions[item.index] === "reject"
+                          ? "border-rose-500 bg-rose-50 text-rose-700"
+                          : "border-zinc-300 bg-white text-zinc-700"
+                      }`}
+                      disabled={isSubmitting}
+                      onClick={() =>
+                        setApprovalDecisions((current) => ({
+                          ...current,
+                          [item.index]: "reject"
+                        }))
+                      }
+                    >
+                      拒绝
+                    </button>
+                    <button
+                      type="button"
+                      className={`rounded-lg border px-3 py-2 text-sm font-semibold ${
+                        approvalDecisions[item.index] === "approve"
+                          ? "border-emerald-600 bg-emerald-50 text-emerald-700"
+                          : "border-zinc-300 bg-white text-zinc-700"
+                      }`}
+                      disabled={isSubmitting}
+                      onClick={() =>
+                        setApprovalDecisions((current) => ({
+                          ...current,
+                          [item.index]: "approve"
+                        }))
+                      }
+                    >
+                      批准
+                    </button>
+                  </div>
+                </div>
+              ))}
             </div>
-            <div className="mt-4 grid grid-cols-2 gap-3">
+            <div className="mt-4 grid grid-cols-3 gap-3">
               <button
                 type="button"
                 className="rounded-xl border border-zinc-300 bg-white px-4 py-3 font-semibold text-zinc-800 hover:bg-zinc-100"
                 disabled={isSubmitting}
-                onClick={() => void handleSubmit(undefined, "拒绝")}
+                onClick={() =>
+                  setApprovalDecisions(
+                    Object.fromEntries(
+                      approvalItems.map((item) => [item.index, "reject"])
+                    )
+                  )
+                }
               >
-                拒绝
+                全部拒绝
               </button>
               <button
                 type="button"
-                className="rounded-xl bg-emerald-600 px-4 py-3 font-semibold text-white hover:bg-emerald-700"
+                className="rounded-xl border border-zinc-300 bg-white px-4 py-3 font-semibold text-zinc-800 hover:bg-zinc-100"
                 disabled={isSubmitting}
-                onClick={() => void handleSubmit(undefined, "批准")}
+                onClick={() =>
+                  setApprovalDecisions(
+                    Object.fromEntries(
+                      approvalItems.map((item) => [item.index, "approve"])
+                    )
+                  )
+                }
               >
-                批准执行
+                全部批准
+              </button>
+              <button
+                type="button"
+                className="rounded-xl bg-emerald-600 px-4 py-3 font-semibold text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-zinc-300"
+                disabled={!canSubmitApproval}
+                onClick={() => {
+                  const decisions = approvalItems.map(
+                    (item) => approvalDecisions[item.index]
+                  );
+                  void handleSubmit(
+                    undefined,
+                    `__HITL_DECISIONS__:${JSON.stringify(decisions)}`,
+                    { hideUserMessage: true }
+                  );
+                }}
+              >
+                提交决定
               </button>
             </div>
           </section>

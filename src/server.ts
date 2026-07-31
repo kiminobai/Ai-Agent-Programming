@@ -1237,6 +1237,9 @@ const chatHandler: RequestHandler = async (
   const effectiveUserMessage =
     userMessage ||
     (attachmentName ? `I uploaded a file named ${attachmentName}.` : "");
+  const isApprovalControlMessage = effectiveUserMessage.startsWith(
+    "__HITL_DECISIONS__:"
+  );
 
   if (!effectiveUserMessage) {
     res.status(400).json({ error: "message is required." });
@@ -1368,15 +1371,18 @@ const chatHandler: RequestHandler = async (
       taskController.signal
     );
 
-    updateThreadAfterMessage({
-      threadId,
-      userId,
-      providerId: model.provider,
-      modelId: model.id,
-      roleId: role.id,
-      reasoningEffort: model.provider === "openai" ? reasoningEffort : undefined,
-      userMessage: effectiveUserMessage
-    });
+    // 审批决定是控制信号，不是用户对话内容，不能污染标题和消息预览。
+    if (!isApprovalControlMessage) {
+      updateThreadAfterMessage({
+        threadId,
+        userId,
+        providerId: model.provider,
+        modelId: model.id,
+        roleId: role.id,
+        reasoningEffort: model.provider === "openai" ? reasoningEffort : undefined,
+        userMessage: effectiveUserMessage
+      });
+    }
 
     res.write(`data: ${JSON.stringify({ type: "done", reply, meta })}\n\n`);
     res.end();

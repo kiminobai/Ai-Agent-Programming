@@ -28,6 +28,16 @@ export interface ToolAgentMessage {
   content: string;
 }
 
+type ApprovalDecision = "approve" | "reject";
+
+type PendingApproval = {
+  actions: Array<{
+    index: number;
+    toolName: string;
+    description: string;
+  }>;
+};
+
 export interface LangChainToolAgentOptions {
   providerId: ProviderId;
   apiKey: string;
@@ -119,13 +129,16 @@ export class LangChainToolAgent {
     await this.restoreLegacySubgraphMessages(threadId);
     const pendingApproval = await this.getPendingApproval(threadId);
     if (pendingApproval) {
-      const decision = this.parseApprovalDecision(messages);
-      if (!decision) {
+      const decisions = this.parseApprovalDecisions(
+        messages,
+        pendingApproval.actions.length
+      );
+      if (!decisions) {
         return this.formatApprovalPrompt(pendingApproval);
       }
 
       const resumed = await this.workflow.invoke(
-        this.createApprovalCommand(decision) as never,
+        this.createApprovalCommand(decisions) as never,
         {
           configurable: { thread_id: threadId },
           context: this.createContext(userId, threadId)
@@ -156,11 +169,11 @@ export class LangChainToolAgent {
   ): Promise<string> {
     await this.restoreLegacySubgraphMessages(threadId);
     const pendingApproval = await this.getPendingApproval(threadId);
-    const decision = pendingApproval
-      ? this.parseApprovalDecision(messages)
+    const decisions = pendingApproval
+      ? this.parseApprovalDecisions(messages, pendingApproval.actions.length)
       : null;
 
-    if (pendingApproval && !decision) {
+    if (pendingApproval && !decisions) {
       const prompt = this.formatApprovalPrompt(pendingApproval);
       onDelta(prompt);
       return prompt;
@@ -177,8 +190,8 @@ export class LangChainToolAgent {
       signal
     };
     const runInput =
-      pendingApproval && decision
-        ? this.createApprovalCommand(decision)
+      pendingApproval && decisions
+        ? this.createApprovalCommand(decisions)
         : { messages: this.toLangChainMessages(messages) };
     // Command.resume 与普通 State input 共用同一个入口，但两者的框架泛型不同。
     // 只在这里做边界适配，运行时仍由 LangGraph 判断是恢复还是新执行。
@@ -191,14 +204,30 @@ export class LangChainToolAgent {
 
     // 学习点：模型位于外层工作流的 run_agent 子图中。
     // 直接迭代全部事件，才能收到子图产生的 on_chat_model_stream token。
-    for await (const event of run) {
-      const delta = this.extractStreamEventText(event, fullText);
-      if (!delta) {
-        continue;
-      }
+    try {
+      for await (const event of run) {
+        const delta = this.extractStreamEventText(event, fullText);
+        if (!delta) {
+          continue;
+        }
 
-      fullText += delta;
-      onDelta(delta);
+        fullText += delta;
+        onDelta(delta);
+      }
+    } catch (error) {
+      if (signal?.aborted) {
+        // 学习点：用户停止后也要把终止状态写入根图。
+        // 为什么这样：否则前端暂时显示“已停止”，刷新后 SQLite 中却没有该状态。
+        await this.persistStoppedState(threadId);
+      }
+      throw error;
+    }
+
+    // 某些 Provider 会在收到 abort 后正常结束事件流而不是抛出异常。
+    // 再检查一次 signal，保证这类情况同样记录为“已停止”，不会误当成完整回答。
+    if (signal?.aborted) {
+      await this.persistStoppedState(threadId);
+      throw new DOMException("用户已停止任务。", "AbortError");
     }
 
     if (!fullText) {
@@ -221,6 +250,20 @@ export class LangChainToolAgent {
     }
 
     return fullText;
+  }
+
+  private async persistStoppedState(threadId: string): Promise<void> {
+    await (this.workflow as {
+      updateState: (
+        config: { configurable: { thread_id: string } },
+        values: { messages: BaseMessage[] },
+        asNode: string
+      ) => Promise<unknown>;
+    }).updateState(
+      { configurable: { thread_id: threadId } },
+      { messages: [new AIMessage("已停止")] },
+      "finish"
+    );
   }
 
   async hasThreadState(threadId: string): Promise<boolean> {
@@ -374,7 +417,7 @@ export class LangChainToolAgent {
 
   private async getPendingApproval(
     threadId: string
-  ): Promise<{ descriptions: string[]; toolNames: string[] } | null> {
+  ): Promise<PendingApproval | null> {
     const snapshot = await (this.workflow as {
       getState: (config: { configurable: { thread_id: string } }) => Promise<unknown>;
     }).getState({
@@ -386,7 +429,7 @@ export class LangChainToolAgent {
 
   private extractPendingApproval(
     snapshot: unknown
-  ): { descriptions: string[]; toolNames: string[] } | null {
+  ): PendingApproval | null {
     if (!snapshot || typeof snapshot !== "object") {
       return null;
     }
@@ -407,62 +450,92 @@ export class LangChainToolAgent {
       return null;
     }
 
-    const descriptions = interrupts.flatMap((item) =>
-      item.value?.actionRequests
-        ?.map((request) => request.description?.trim() || "")
-        .filter(Boolean) ?? []
-    );
-    const toolNames = interrupts.flatMap((item) => [
-      ...(item.value?.actionRequests
-        ?.map((request) => request.name?.trim() || "")
-        .filter(Boolean) ?? []),
-      ...(item.value?.reviewConfigs
-        ?.map((config) => config.actionName?.trim() || "")
-        .filter(Boolean) ?? [])
-    ]);
+    const actions = interrupts.flatMap((item) => {
+      const requests = item.value?.actionRequests ?? [];
+      const reviewConfigs = item.value?.reviewConfigs ?? [];
+      const count = Math.max(requests.length, reviewConfigs.length);
+
+      return Array.from({ length: count }, (_, index) => {
+        const request = requests[index];
+        const reviewConfig = reviewConfigs[index];
+        const toolName =
+          request?.name?.trim() ||
+          reviewConfig?.actionName?.trim() ||
+          `操作 ${index + 1}`;
+        return {
+          index: 0,
+          toolName,
+          description:
+            request?.description?.trim() || `Agent 请求执行工具：${toolName}`
+        };
+      });
+    });
 
     return {
-      descriptions: [...new Set(descriptions)],
-      toolNames: [...new Set(toolNames)]
+      actions: actions.map((action, index) => ({ ...action, index }))
     };
   }
 
-  private parseApprovalDecision(
-    messages: ToolAgentMessage[]
-  ): "approve" | "reject" | null {
+  private parseApprovalDecisions(
+    messages: ToolAgentMessage[],
+    actionCount: number
+  ): ApprovalDecision[] | null {
     const input = messages.at(-1)?.content.trim() ?? "";
     if (/^(批准|同意|确认|继续|approve|yes)$/i.test(input)) {
-      return "approve";
+      return Array.from({ length: actionCount }, () => "approve");
     }
     if (/^(拒绝|取消|不同意|reject|no)$/i.test(input)) {
-      return "reject";
+      return Array.from({ length: actionCount }, () => "reject");
     }
+
+    const commandPrefix = "__HITL_DECISIONS__:";
+    if (input.startsWith(commandPrefix)) {
+      try {
+        const decisions = JSON.parse(input.slice(commandPrefix.length)) as unknown;
+        if (
+          Array.isArray(decisions) &&
+          decisions.length === actionCount &&
+          decisions.every(
+            (decision): decision is ApprovalDecision =>
+              decision === "approve" || decision === "reject"
+          )
+        ) {
+          return decisions;
+        }
+      } catch {
+        return null;
+      }
+    }
+
     return null;
   }
 
-  private createApprovalCommand(decision: "approve" | "reject") {
+  private createApprovalCommand(decisions: ApprovalDecision[]) {
     return new Command({
       resume: {
-        decisions: [
+        decisions: decisions.map((decision) =>
           decision === "approve"
             ? { type: "approve" }
             : { type: "reject", message: "用户拒绝执行此操作。" }
-        ]
+        )
       }
     });
   }
 
-  private formatApprovalPrompt(approval: {
-    descriptions: string[];
-    toolNames: string[];
-  }): string {
-    const action =
-      approval.descriptions[0] ||
-      (approval.toolNames.length
-        ? `执行工具：${approval.toolNames.join("、")}`
-        : "执行一项会修改数据的操作");
+  private formatApprovalPrompt(approval: PendingApproval): string {
+    const actionLines = approval.actions.map(
+      (action, index) =>
+        `${index + 1}. [${action.toolName}] ${action.description}`
+    );
 
-    return `需要你的确认：${action}\n\n请回复“批准”继续，或回复“拒绝”取消。`;
+    return [
+      "需要你的确认：",
+      ...actionLines,
+      "",
+      approval.actions.length > 1
+        ? "请逐项选择批准或拒绝。"
+        : "请选择批准执行或拒绝。"
+    ].join("\n");
   }
 
   private async getLatestAssistantText(threadId: string): Promise<string> {

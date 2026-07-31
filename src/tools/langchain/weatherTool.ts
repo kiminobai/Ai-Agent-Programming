@@ -14,7 +14,7 @@ export const weatherTool = tool(
   // 步骤 3：Zod 校验成功后，调用真实 Open-Meteo Executor。
   async ({ location, unit }, runtime: ToolMemoryRuntime) => {
     const argumentsValue = { location, unit };
-    const result = await executeGetWeather(argumentsValue);
+    const result = await executeGetWeather(argumentsValue, runtime.signal);
 
     // 步骤 4：Command 写入状态，并把结果作为 ToolMessage 回填给模型。
     return writeToolContext(runtime, "get_weather", argumentsValue, result);

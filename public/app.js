@@ -21512,6 +21512,18 @@
     DOCUMENT_QA_STATUS_TEXT
   ]);
   var ATTACHMENT_MARKER_PATTERN = /\n*\[Attachment available in current thread: ([^\]]+)\]\n(?:If the user wants analysis, extraction, chunking, summarization, or document QA, call inspect_uploaded_document\.|If the user asks to use the file content, call chunk_uploaded_document to split it into bounded chunks before answering\.|If the user asks to use the file content, call retrieve_uploaded_document_chunks to retrieve only relevant chunks before answering\.)/;
+  function parseApprovalItems(request) {
+    const matches = [...request.matchAll(/^(\d+)\.\s+\[([^\]]+)\]\s+(.+)$/gm)];
+    if (matches.length) {
+      return matches.map((match, index) => ({
+        index,
+        toolName: match[2].trim(),
+        description: match[3].trim()
+      }));
+    }
+    const description = request.replace(APPROVAL_PROMPT_PREFIX, "").replace(/请(?:回复|选择)[\s\S]*$/, "").trim();
+    return description ? [{ index: 0, toolName: "\u5F85\u6267\u884C\u64CD\u4F5C", description }] : [];
+  }
   function extractAttachmentFromContent(content) {
     const match = content.match(ATTACHMENT_MARKER_PATTERN);
     if (!match) {
@@ -21675,6 +21687,7 @@
     const [loginError, setLoginError] = (0, import_react.useState)("");
     const [isLoggingIn, setIsLoggingIn] = (0, import_react.useState)(false);
     const [approvalRequest, setApprovalRequest] = (0, import_react.useState)(null);
+    const [approvalDecisions, setApprovalDecisions] = (0, import_react.useState)({});
     const [attachment, setAttachment] = (0, import_react.useState)(null);
     const [composerAttachmentPreviewUrl, setComposerAttachmentPreviewUrl] = (0, import_react.useState)("");
     const [activeDocumentName, setActiveDocumentName] = (0, import_react.useState)("");
@@ -21711,6 +21724,14 @@
       const pendingApproval = latestAssistantEntry?.content.startsWith(APPROVAL_PROMPT_PREFIX) ? latestAssistantEntry.content : null;
       setApprovalRequest(pendingApproval);
     }, [entries]);
+    const approvalItems = (0, import_react.useMemo)(
+      () => approvalRequest ? parseApprovalItems(approvalRequest) : [],
+      [approvalRequest]
+    );
+    const canSubmitApproval = approvalItems.length > 0 && approvalItems.every((item) => Boolean(approvalDecisions[item.index])) && !isSubmitting;
+    (0, import_react.useEffect)(() => {
+      setApprovalDecisions({});
+    }, [approvalRequest]);
     const currentModel = (0, import_react.useMemo)(
       () => models.find((item) => item.id === modelId),
       [models, modelId]
@@ -22222,7 +22243,7 @@
         applyStreamEvent(buffer, onEvent);
       }
     }
-    async function handleSubmit(event, messageOverride) {
+    async function handleSubmit(event, messageOverride, options) {
       event?.preventDefault();
       const trimmedMessage = messageOverride?.trim() || message.trim();
       const outgoingMessage = trimmedMessage || (attachment ? `I uploaded a file named ${attachment.name}.` : "");
@@ -22236,8 +22257,9 @@
       const requestController = new AbortController();
       activeRequestControllerRef.current = requestController;
       const assistantEntryId = `assistant-${Date.now()}`;
+      const isApprovalSubmission = Boolean(options?.hideUserMessage) && outgoingMessage.startsWith("__HITL_DECISIONS__:");
       const shouldUseDocumentQa = Boolean(
-        attachment && isImageFile(attachment.name) || !attachment && activeDocumentName && isImageFile(activeDocumentName)
+        !isApprovalSubmission && (attachment && isImageFile(attachment.name) || !attachment && activeDocumentName && isImageFile(activeDocumentName))
       );
       const attachmentPreviewUrl = attachment && isImageFile(attachment.name) ? URL.createObjectURL(attachment) : void 0;
       const userEntry = {
@@ -22250,7 +22272,7 @@
       };
       setEntries((prev) => [
         ...prev,
-        userEntry,
+        ...options?.hideUserMessage ? [] : [userEntry],
         {
           id: assistantEntryId,
           role: "assistant",
@@ -22408,13 +22430,15 @@
         }
         await refreshThreads(activeThreadId);
       } catch (submitError) {
-        const messageText = submitError instanceof DOMException && submitError.name === "AbortError" ? "\u4EFB\u52A1\u5DF2\u4E2D\u6B62\u3002" : submitError instanceof Error ? submitError.message : "\u53D1\u9001\u6D88\u606F\u65F6\u53D1\u751F\u9519\u8BEF\u3002";
-        setError(messageText);
+        const wasStopped = requestController.signal.aborted || submitError instanceof DOMException && submitError.name === "AbortError";
+        const messageText = wasStopped ? "\u5DF2\u505C\u6B62" : submitError instanceof Error ? submitError.message : "\u53D1\u9001\u6D88\u606F\u65F6\u53D1\u751F\u9519\u8BEF\u3002";
+        setError(wasStopped ? "" : messageText);
         setEntries(
           (prev) => prev.map(
             (entry) => entry.id === assistantEntryId ? {
               ...entry,
-              content: entry.content || `\u8BF7\u6C42\u5931\u8D25\uFF1A${messageText}`
+              // 停止时替换“正在思考…”或未完成内容，明确反馈当前任务状态。
+              content: wasStopped ? "\u5DF2\u505C\u6B62" : entry.content || `\u8BF7\u6C42\u5931\u8D25\uFF1A${messageText}`
             } : entry
           )
         );
@@ -22573,25 +22597,84 @@
         "aria-labelledby": "approval-dialog-title"
       },
       /* @__PURE__ */ import_react.default.createElement("div", { className: "login-modal-header" }, /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("h2", { id: "approval-dialog-title" }, "\u9700\u8981\u786E\u8BA4\u64CD\u4F5C"), /* @__PURE__ */ import_react.default.createElement("p", null, "Agent \u5DF2\u6682\u505C\uFF0C\u786E\u8BA4\u540E\u624D\u4F1A\u7EE7\u7EED\u6267\u884C\u3002"))),
-      /* @__PURE__ */ import_react.default.createElement("div", { className: "rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm leading-6 text-zinc-700" }, approvalRequest.replace(APPROVAL_PROMPT_PREFIX, "").replace(/请回复[\s\S]*$/, "").trim()),
-      /* @__PURE__ */ import_react.default.createElement("div", { className: "mt-4 grid grid-cols-2 gap-3" }, /* @__PURE__ */ import_react.default.createElement(
+      /* @__PURE__ */ import_react.default.createElement("div", { className: "space-y-3" }, approvalItems.map((item) => /* @__PURE__ */ import_react.default.createElement(
+        "div",
+        {
+          key: `${item.index}-${item.toolName}`,
+          className: "rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3"
+        },
+        /* @__PURE__ */ import_react.default.createElement("div", { className: "text-sm font-semibold text-zinc-900" }, item.index + 1, ". ", item.toolName),
+        /* @__PURE__ */ import_react.default.createElement("div", { className: "mt-1 text-sm leading-6 text-zinc-600" }, item.description),
+        /* @__PURE__ */ import_react.default.createElement("div", { className: "mt-3 grid grid-cols-2 gap-2" }, /* @__PURE__ */ import_react.default.createElement(
+          "button",
+          {
+            type: "button",
+            className: `rounded-lg border px-3 py-2 text-sm font-semibold ${approvalDecisions[item.index] === "reject" ? "border-rose-500 bg-rose-50 text-rose-700" : "border-zinc-300 bg-white text-zinc-700"}`,
+            disabled: isSubmitting,
+            onClick: () => setApprovalDecisions((current) => ({
+              ...current,
+              [item.index]: "reject"
+            }))
+          },
+          "\u62D2\u7EDD"
+        ), /* @__PURE__ */ import_react.default.createElement(
+          "button",
+          {
+            type: "button",
+            className: `rounded-lg border px-3 py-2 text-sm font-semibold ${approvalDecisions[item.index] === "approve" ? "border-emerald-600 bg-emerald-50 text-emerald-700" : "border-zinc-300 bg-white text-zinc-700"}`,
+            disabled: isSubmitting,
+            onClick: () => setApprovalDecisions((current) => ({
+              ...current,
+              [item.index]: "approve"
+            }))
+          },
+          "\u6279\u51C6"
+        ))
+      ))),
+      /* @__PURE__ */ import_react.default.createElement("div", { className: "mt-4 grid grid-cols-3 gap-3" }, /* @__PURE__ */ import_react.default.createElement(
         "button",
         {
           type: "button",
           className: "rounded-xl border border-zinc-300 bg-white px-4 py-3 font-semibold text-zinc-800 hover:bg-zinc-100",
           disabled: isSubmitting,
-          onClick: () => void handleSubmit(void 0, "\u62D2\u7EDD")
+          onClick: () => setApprovalDecisions(
+            Object.fromEntries(
+              approvalItems.map((item) => [item.index, "reject"])
+            )
+          )
         },
-        "\u62D2\u7EDD"
+        "\u5168\u90E8\u62D2\u7EDD"
       ), /* @__PURE__ */ import_react.default.createElement(
         "button",
         {
           type: "button",
-          className: "rounded-xl bg-emerald-600 px-4 py-3 font-semibold text-white hover:bg-emerald-700",
+          className: "rounded-xl border border-zinc-300 bg-white px-4 py-3 font-semibold text-zinc-800 hover:bg-zinc-100",
           disabled: isSubmitting,
-          onClick: () => void handleSubmit(void 0, "\u6279\u51C6")
+          onClick: () => setApprovalDecisions(
+            Object.fromEntries(
+              approvalItems.map((item) => [item.index, "approve"])
+            )
+          )
         },
-        "\u6279\u51C6\u6267\u884C"
+        "\u5168\u90E8\u6279\u51C6"
+      ), /* @__PURE__ */ import_react.default.createElement(
+        "button",
+        {
+          type: "button",
+          className: "rounded-xl bg-emerald-600 px-4 py-3 font-semibold text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-zinc-300",
+          disabled: !canSubmitApproval,
+          onClick: () => {
+            const decisions = approvalItems.map(
+              (item) => approvalDecisions[item.index]
+            );
+            void handleSubmit(
+              void 0,
+              `__HITL_DECISIONS__:${JSON.stringify(decisions)}`,
+              { hideUserMessage: true }
+            );
+          }
+        },
+        "\u63D0\u4EA4\u51B3\u5B9A"
       ))
     )) : null, /* @__PURE__ */ import_react.default.createElement(
       "main",

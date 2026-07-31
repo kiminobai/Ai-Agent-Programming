@@ -121,13 +121,20 @@ function parseArguments(argumentsValue: unknown): GetWeatherArguments {
   return { location, unit };
 }
 
-async function fetchJson<T>(url: URL, errorPrefix: string): Promise<T> {
+async function fetchJson<T>(
+  url: URL,
+  errorPrefix: string,
+  signal?: AbortSignal
+): Promise<T> {
   // 通用请求步骤：设置 JSON Accept 和 10 秒超时，避免 Agent 永久等待。
+  const requestSignal = signal
+    ? AbortSignal.any([signal, AbortSignal.timeout(10_000)])
+    : AbortSignal.timeout(10_000);
   const response = await fetch(url, {
     headers: {
       Accept: "application/json"
     },
-    signal: AbortSignal.timeout(10_000)
+    signal: requestSignal
   });
 
   // 第三方可能返回非 JSON 错误页，因此解析失败时统一转为 null。
@@ -171,7 +178,8 @@ function buildLocationCandidates(location: string): string[] {
 }
 
 async function resolveLocation(
-  requestedLocation: string
+  requestedLocation: string,
+  signal?: AbortSignal
 ): Promise<GeocodingResult | undefined> {
   // 步骤 4：逐个调用 Geocoding API，首个命中结果用于天气查询。
   for (const candidate of buildLocationCandidates(requestedLocation)) {
@@ -187,7 +195,8 @@ async function resolveLocation(
 
     const geocoding = await fetchJson<GeocodingResponse>(
       geocodingUrl,
-      "Weather location lookup failed"
+      "Weather location lookup failed",
+      signal
     );
     const match = geocoding.results?.[0];
     if (match) {
@@ -199,12 +208,13 @@ async function resolveLocation(
 }
 
 export async function executeGetWeather(
-  argumentsValue: unknown
+  argumentsValue: unknown,
+  signal?: AbortSignal
 ): Promise<WeatherToolResult> {
   // 步骤 5：校验模型生成的 Tool arguments。
   const { location, unit } = parseArguments(argumentsValue);
   // 步骤 6：把自然语言地点解析为经纬度与标准时区。
-  const resolvedLocation = await resolveLocation(location);
+  const resolvedLocation = await resolveLocation(location, signal);
 
   if (!resolvedLocation) {
     throw new Error(`No weather location matched "${location}".`);
@@ -231,7 +241,8 @@ export async function executeGetWeather(
   // 步骤 8：请求真实数据并验证 current 字段存在。
   const weather = await fetchJson<WeatherResponse>(
     weatherUrl,
-    "Current weather lookup failed"
+    "Current weather lookup failed",
+    signal
   );
 
   if (!weather.current) {

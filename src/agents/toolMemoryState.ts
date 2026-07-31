@@ -59,6 +59,8 @@ export function writeToolContext(
   argumentsValue: unknown,
   result: unknown
 ) {
+  // 一轮里可能并行执行多个工具。任务停止后，任何晚返回的工具都不得再写状态。
+  runtime.signal?.throwIfAborted();
   const previousToolContext = readLastToolContext(runtime);
   const currentToolContext: ToolContext = {
     toolName,
