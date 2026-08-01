@@ -45,6 +45,9 @@ sqliteDb.exec(`
     model_id TEXT NOT NULL,
     role_id TEXT NOT NULL,
     reasoning_effort TEXT,
+    mode TEXT NOT NULL DEFAULT 'chat',
+    workspace_path TEXT,
+    workspace_name TEXT,
     title TEXT NOT NULL,
     last_message_preview TEXT,
     created_at TEXT NOT NULL,
@@ -53,6 +56,27 @@ sqliteDb.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_chat_threads_user_updated
   ON chat_threads(user_id, updated_at DESC);
+
+  -- Coding Agent activity is persisted separately from chat text.
+  -- The Work UI uses it to show changed files and command output after refresh.
+  CREATE TABLE IF NOT EXISTS workspace_activity (
+    activity_id TEXT PRIMARY KEY,
+    thread_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    turn_id TEXT,
+    activity_type TEXT NOT NULL,
+    file_path TEXT,
+    additions INTEGER,
+    deletions INTEGER,
+    command_text TEXT,
+    exit_code INTEGER,
+    stdout TEXT,
+    stderr TEXT,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_workspace_activity_thread_created
+  ON workspace_activity(thread_id, created_at ASC);
 
   -- Uploaded document metadata. Raw files live on disk; SQLite stores paths and parse/index status.
   CREATE TABLE IF NOT EXISTS uploaded_documents (
@@ -170,6 +194,22 @@ sqliteDb.exec(`
   CREATE INDEX IF NOT EXISTS idx_knowledge_base_documents_base
   ON knowledge_base_documents(knowledge_base_id, version);
 `);
+
+for (const [columnName, definition] of [
+  ["turn_id", "TEXT"],
+  ["additions", "INTEGER"],
+  ["deletions", "INTEGER"]
+] as const) {
+  addColumnIfMissing("workspace_activity", columnName, definition);
+}
+
+for (const [columnName, definition] of [
+  ["mode", "TEXT NOT NULL DEFAULT 'chat'"],
+  ["workspace_path", "TEXT"],
+  ["workspace_name", "TEXT"]
+] as const) {
+  addColumnIfMissing("chat_threads", columnName, definition);
+}
 
 function addColumnIfMissing(
   tableName: string,

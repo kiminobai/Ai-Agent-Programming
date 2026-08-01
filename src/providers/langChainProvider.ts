@@ -10,6 +10,7 @@ import {
 } from "../agents/langChainToolAgent";
 import {
   ChatProvider,
+  AgentProgress,
   FewShotExample,
   ProviderConfig,
   ProviderId,
@@ -44,7 +45,8 @@ export class LangChainProvider implements ChatProvider {
     fewShotExamples: FewShotExample[] = [],
     reasoningEffort?: ReasoningEffort,
     threadId: string = crypto.randomUUID(),
-    userId: string = "default-user"
+    userId: string = "default-user",
+    turnId?: string
   ): Promise<string> {
     this.requireApiKey();
 
@@ -57,9 +59,10 @@ export class LangChainProvider implements ChatProvider {
     );
 
     return agent.invoke(
-      this.buildMessages(message),
+      this.buildMessages(message, turnId),
       threadId,
-      userId
+      userId,
+      turnId
     );
   }
 
@@ -72,7 +75,9 @@ export class LangChainProvider implements ChatProvider {
     reasoningEffort?: ReasoningEffort,
     threadId: string = crypto.randomUUID(),
     userId: string = "default-user",
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    turnId?: string,
+    onProgress?: (progress: AgentProgress) => void
   ): Promise<string> {
     this.requireApiKey();
 
@@ -85,11 +90,13 @@ export class LangChainProvider implements ChatProvider {
     );
 
     return agent.stream(
-      this.buildMessages(message),
+      this.buildMessages(message, turnId),
       threadId,
       userId,
       onDelta,
-      signal
+      signal,
+      turnId,
+      onProgress
     );
   }
 
@@ -154,12 +161,13 @@ export class LangChainProvider implements ChatProvider {
     return agent;
   }
 
-  private buildMessages(message: string): ToolAgentMessage[] {
+  private buildMessages(message: string, turnId?: string): ToolAgentMessage[] {
     // 学习点：Provider 只把当前用户输入转成 LangChain Agent 需要的消息格式。
     return [
       {
         role: "user",
-        content: message
+        content: message,
+        turnId
       }
     ];
   }

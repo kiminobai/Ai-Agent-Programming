@@ -11,6 +11,12 @@ import { recallPreferenceTool } from "./recallPreferenceTool";
 import { rememberPreferenceTool } from "./rememberPreferenceTool";
 import { uploadedDocumentTool } from "./uploadedDocumentTool";
 import { weatherTool } from "./weatherTool";
+import {
+  listWorkspaceFilesTool,
+  readWorkspaceFileTool,
+  runWorkspaceCommandTool,
+  writeWorkspaceFileTool
+} from "./workspaceTools";
 
 export { calculatorTool } from "./calculatorTool";
 export { currentTimeTool } from "./currentTimeTool";
@@ -19,6 +25,12 @@ export { recallPreferenceTool } from "./recallPreferenceTool";
 export { rememberPreferenceTool } from "./rememberPreferenceTool";
 export { uploadedDocumentTool } from "./uploadedDocumentTool";
 export { weatherTool } from "./weatherTool";
+export {
+  listWorkspaceFilesTool,
+  readWorkspaceFileTool,
+  runWorkspaceCommandTool,
+  writeWorkspaceFileTool
+} from "./workspaceTools";
 
 export const langChainTools = [
   // 学习点：基础工具，负责天气、计算、当前时间。
@@ -31,5 +43,10 @@ export const langChainTools = [
   // 长期知识库工具：按问题自动选择 Hybrid / GraphRAG，并支持多版本资料。
   knowledgeBaseTool,
   // 学习点：文档工具，按需触发上传文件的 Hybrid RAG 检索。
-  uploadedDocumentTool
+  uploadedDocumentTool,
+  // Coding Agent 工具：只在绑定了工作区的 work thread 中可成功执行。
+  listWorkspaceFilesTool,
+  readWorkspaceFileTool,
+  writeWorkspaceFileTool,
+  runWorkspaceCommandTool
 ];

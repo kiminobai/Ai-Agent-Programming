@@ -286,6 +286,7 @@ input {
 }
 
 .chat-layout {
+  --composer-height: 190px;
   flex: 1;
   min-width: 0;
   display: flex;
@@ -525,7 +526,7 @@ input {
 
 .conversation {
   flex: 1;
-  padding: 24px 0 180px;
+  padding: 24px 0 calc(var(--composer-height) + 28px);
 }
 
 .chat-row {
@@ -948,12 +949,18 @@ input {
 }
 
 .composer-shell {
-  position: sticky;
-  left: auto;
-  right: auto;
+  position: fixed;
+  left: 290px;
+  right: 0;
   bottom: 0;
   padding: 20px 24px 28px;
-  background: linear-gradient(180deg, rgba(247, 247, 248, 0) 0%, rgba(247, 247, 248, 0.95) 26%, rgba(247, 247, 248, 1) 100%);
+  background: linear-gradient(
+    180deg,
+    rgba(247, 247, 248, 0) 0%,
+    rgba(247, 247, 248, 0.66) 42%,
+    rgba(247, 247, 248, 0.86) 100%
+  );
+  pointer-events: none;
   z-index: 4;
 }
 
@@ -975,7 +982,90 @@ input {
   background: var(--panel);
   box-shadow: var(--shadow);
   padding: 14px 14px 12px;
+  pointer-events: auto;
 }
+
+.work-activity-card {
+  width: min(860px, calc(100% - 32px));
+  margin: 12px auto 28px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: #fff;
+}
+
+.work-activity-inline {
+  width: 100%;
+  margin: 16px 0 4px;
+}
+
+.work-activity-card header,
+.work-file-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 13px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.work-activity-card header button {
+  border: 0;
+  background: transparent;
+  color: #52525b;
+  cursor: pointer;
+}
+
+.work-activity-caption {
+  color: #71717a;
+  font-size: 12px;
+}
+
+.work-file-row:last-child {
+  border-bottom: 0;
+}
+
+.work-file-status {
+  color: #059669;
+  font-size: 12px;
+}
+
+.agent-progress,
+.agent-elapsed {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #71717a;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.agent-progress-dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: #18181b;
+  animation: agent-progress-pulse 1.2s ease-in-out infinite;
+}
+
+.agent-elapsed {
+  margin-bottom: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgba(161, 161, 170, 0.24);
+}
+
+@keyframes agent-progress-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.82);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
 
 .composer-card textarea {
   width: 100%;
@@ -1074,7 +1164,7 @@ input {
   }
 
   .composer-shell {
-    left: auto;
+    left: 0;
   }
 }
 

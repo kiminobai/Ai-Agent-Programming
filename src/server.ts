@@ -8,6 +8,7 @@
  * - accept optional user-uploaded attachments inside the chat request
  */
 import express, { Request, RequestHandler, Response } from "express";
+import fs from "fs";
 import multer from "multer";
 import path from "path";
 import { createAuthToken, verifyAuthToken, verifyPassword } from "./auth";
@@ -48,6 +49,8 @@ import {
   renameThread,
   updateThreadAfterMessage
 } from "./threads/threadRepository";
+import type { ThreadMode } from "./threads/threadRepository";
+import { listWorkspaceActivity } from "./workspace/workspaceActivityRepository";
 import {
   listDocumentQaMessages,
   saveDocumentQaExchange
@@ -90,6 +93,17 @@ const upload = multer({
     // Office files and image uploads can be larger than plain prompt documents.
     fileSize: 50 * 1024 * 1024
   }
+});
+
+app.get("/api/workspace/activity", (req, res) => {
+  const threadId = String(req.query.threadId || "").trim();
+  const userId = String(req.query.userId || "").trim();
+  const thread = getThreadById(threadId, userId);
+  if (!thread || thread.mode !== "work") {
+    res.status(404).json({ error: "工作任务不存在。" });
+    return;
+  }
+  res.json({ activities: listWorkspaceActivity(threadId, userId) });
 });
 
 /**
@@ -307,13 +321,29 @@ app.get(
 
 app.get("/api/threads", (req: Request, res: Response) => {
   const userId = String(req.query.userId || "").trim();
+  const mode = String(req.query.mode || "chat").trim() as ThreadMode;
+  const workspacePath = String(req.query.workspacePath || "").trim();
   if (!userId) {
     res.status(400).json({ error: "userId is required." });
     return;
   }
+  if (mode !== "chat" && mode !== "work") {
+    res.status(400).json({ error: "mode must be chat or work." });
+    return;
+  }
+
+  let resolvedWorkspacePath: string | undefined;
+  if (mode === "work" && workspacePath) {
+    try {
+      resolvedWorkspacePath = fs.realpathSync.native(workspacePath);
+    } catch {
+      res.status(400).json({ error: "工作目录不存在或不可访问。" });
+      return;
+    }
+  }
 
   res.json({
-    threads: listThreadsByUser(userId)
+    threads: listThreadsByUser(userId, mode, resolvedWorkspacePath)
   });
 });
 
@@ -328,6 +358,9 @@ app.post(
         modelId: string;
         roleId: string;
         reasoningEffort?: ReasoningEffort;
+        mode?: ThreadMode;
+        workspacePath?: string;
+        workspaceName?: string;
       }
     >,
     res: Response
@@ -335,6 +368,9 @@ app.post(
     const userId = req.body?.userId?.trim();
     const modelId = req.body?.modelId?.trim();
     const roleId = req.body?.roleId?.trim() || appConfig.defaultRoleId;
+    const mode = req.body?.mode === "work" ? "work" : "chat";
+    let workspacePath: string | undefined;
+    let workspaceName: string | undefined;
 
     if (!userId) {
       res.status(400).json({ error: "userId is required." });
@@ -358,11 +394,33 @@ app.post(
       return;
     }
 
+    if (mode === "work") {
+      const requestedWorkspacePath = req.body?.workspacePath?.trim();
+      if (!requestedWorkspacePath) {
+        res.status(400).json({ error: "工作对话必须选择项目目录。" });
+        return;
+      }
+      try {
+        workspacePath = fs.realpathSync.native(requestedWorkspacePath);
+        if (!fs.statSync(workspacePath).isDirectory()) {
+          throw new Error("not a directory");
+        }
+        workspaceName =
+          req.body?.workspaceName?.trim() || path.basename(workspacePath);
+      } catch {
+        res.status(400).json({ error: "选择的工作目录不存在或不可访问。" });
+        return;
+      }
+    }
+
     const thread = createThread({
       userId,
       providerId: model.provider,
       modelId: model.id,
       roleId: role.id,
+      mode,
+      workspacePath,
+      workspaceName,
       reasoningEffort:
         model.provider === "openai" ? req.body?.reasoningEffort : undefined
     });
@@ -1229,6 +1287,7 @@ const chatHandler: RequestHandler = async (
   const roleId = body?.roleId?.trim() || appConfig.defaultRoleId;
   const threadId = body?.threadId?.trim();
   const userId = body?.userId?.trim();
+  const turnId = body?.turnId?.trim();
   const reasoningEffort = body?.reasoningEffort;
   const decodedAttachmentName = attachment
     ? decodeUploadedFileName(attachment.originalname)
@@ -1368,7 +1427,11 @@ const chatHandler: RequestHandler = async (
       model.provider === "openai" ? reasoningEffort : undefined,
       threadId,
       userId,
-      taskController.signal
+      taskController.signal,
+      turnId,
+      (progress) => {
+        res.write(`data: ${JSON.stringify({ type: "status", ...progress })}\n\n`);
+      }
     );
 
     // 审批决定是控制信号，不是用户对话内容，不能污染标题和消息预览。

@@ -14,18 +14,20 @@ import {
 import { Command } from "@langchain/langgraph";
 import { sqliteCheckpointer } from "../db/sqlite";
 import { langChainTools } from "../tools/langchain";
-import { ProviderId, ReasoningEffort } from "../types";
+import { AgentProgress, ProviderId, ReasoningEffort } from "../types";
 import type { RoleWorkflowAgent } from "../workflows-agents";
 import { AgentContext, AgentContextSchema } from "./agentContext";
 import { createAgentWorkflowGraph } from "./agentWorkflowGraph";
 import { dynamicMemoryPromptMiddleware } from "./dynamicMemoryPromptMiddleware";
 import { ToolMemoryState } from "./toolMemoryState";
+import { getThreadById } from "../threads/threadRepository";
 
 // 学习点：ToolAgentMessage 是项目自己的简单消息格式。
 // 进入 LangChain 前，会再转换成 HumanMessage / AIMessage。
 export interface ToolAgentMessage {
   role: "user" | "assistant";
   content: string;
+  turnId?: string;
 }
 
 type ApprovalDecision = "approve" | "reject";
@@ -93,6 +95,14 @@ export class LangChainToolAgent {
         remember_preference: {
           allowedDecisions: ["approve", "reject"],
           description: "Agent 准备把用户偏好写入长期记忆。"
+        },
+        write_workspace_file: {
+          allowedDecisions: ["approve", "reject"],
+          description: "Agent 准备创建或修改工作区文件。"
+        },
+        run_workspace_command: {
+          allowedDecisions: ["approve", "reject"],
+          description: "Agent 准备在工作区运行开发命令。"
         }
       },
       descriptionPrefix: "此操作需要用户确认"
@@ -124,7 +134,8 @@ export class LangChainToolAgent {
   async invoke(
     messages: ToolAgentMessage[],
     threadId: string,
-    userId: string
+    userId: string,
+    turnId?: string
   ): Promise<string> {
     await this.restoreLegacySubgraphMessages(threadId);
     const pendingApproval = await this.getPendingApproval(threadId);
@@ -141,7 +152,7 @@ export class LangChainToolAgent {
         this.createApprovalCommand(decisions) as never,
         {
           configurable: { thread_id: threadId },
-          context: this.createContext(userId, threadId)
+          context: this.createContext(userId, threadId, turnId)
         }
       );
       return this.extractFinalText(resumed.messages);
@@ -153,7 +164,7 @@ export class LangChainToolAgent {
       { messages: this.toLangChainMessages(messages) },
       {
         configurable: { thread_id: threadId },
-        context: this.createContext(userId, threadId)
+        context: this.createContext(userId, threadId, turnId)
       }
     );
 
@@ -165,7 +176,9 @@ export class LangChainToolAgent {
     threadId: string,
     userId: string,
     onDelta: (chunk: string) => void,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    turnId?: string,
+    onProgress?: (progress: AgentProgress) => void
   ): Promise<string> {
     await this.restoreLegacySubgraphMessages(threadId);
     const pendingApproval = await this.getPendingApproval(threadId);
@@ -185,7 +198,7 @@ export class LangChainToolAgent {
       // v2 返回标准 StreamEvent，并会包含 run_agent 子图里的模型 token 事件。
       version: "v2" as const,
       configurable: { thread_id: threadId },
-      context: this.createContext(userId, threadId),
+      context: this.createContext(userId, threadId, turnId),
       // 浏览器点击“停止”后，AbortSignal 会一路传到模型和工具节点。
       signal
     };
@@ -201,13 +214,41 @@ export class LangChainToolAgent {
     ) as unknown as AsyncIterable<unknown>;
 
     let fullText = "";
+    const isWorkThread = getThreadById(threadId, userId)?.mode === "work";
+    // 工作模式下，读取/分析阶段的模型文本属于 Agent 内部过程。
+    // 只有产生实际修改后，后续模型输出才是可以展示给用户的最终说明。
+    let workMutationCompleted = false;
+    onProgress?.({ stage: "thinking", message: "正在思考…" });
 
     // 学习点：模型位于外层工作流的 run_agent 子图中。
     // 直接迭代全部事件，才能收到子图产生的 on_chat_model_stream token。
     try {
       for await (const event of run) {
+        const progress = this.extractAgentProgress(event);
+        if (progress) {
+          onProgress?.(progress);
+        }
+
+        if (
+          isWorkThread &&
+          this.isCompletedWorkspaceMutationEvent(event)
+        ) {
+          workMutationCompleted = true;
+          if (!progress) {
+            onProgress?.({ stage: "finalizing", message: "正在整理结果…" });
+          }
+          // 前面被隐藏的内部分析不能参与最终文本的增量去重。
+          fullText = "";
+          continue;
+        }
+
         const delta = this.extractStreamEventText(event, fullText);
         if (!delta) {
+          continue;
+        }
+
+        if (isWorkThread && !workMutationCompleted) {
+          // 不把“提取上下文、当前任务、执行计划”等工具调用前文本发到前端。
           continue;
         }
 
@@ -230,14 +271,14 @@ export class LangChainToolAgent {
       throw new DOMException("用户已停止任务。", "AbortError");
     }
 
-    if (!fullText) {
-      const approvalAfterRun = await this.getPendingApproval(threadId);
-      if (approvalAfterRun) {
-        const prompt = this.formatApprovalPrompt(approvalAfterRun);
-        onDelta(prompt);
-        return prompt;
-      }
+    // 即使模型在工具调用前输出过说明文字，只要图进入 interrupt，
+    // 就必须立即把审批状态返回前端，不能等用户再发一条消息。
+    const approvalAfterRun = await this.getPendingApproval(threadId);
+    if (approvalAfterRun) {
+      return this.formatApprovalPrompt(approvalAfterRun);
+    }
 
+    if (!fullText) {
       // 学习点：如果流里没有 token，就从 LangGraph state 里兜底找最后一条 AI 消息。
       fullText = await this.getLatestAssistantText(threadId);
       if (fullText) {
@@ -588,14 +629,19 @@ export class LangChainToolAgent {
 
     return {
       role: role === "human" ? "user" : "assistant",
-      content: this.extractMessageText(message.content)
+      content: this.extractMessageText(message.content),
+      turnId:
+        typeof message.additional_kwargs?.turnId === "string"
+          ? message.additional_kwargs.turnId
+          : undefined
     };
   }
 
-  private createContext(userId: string, threadId: string): AgentContext {
+  private createContext(userId: string, threadId: string, turnId?: string): AgentContext {
     return AgentContextSchema.parse({
       userId: userId.trim(),
-      threadId: threadId.trim()
+      threadId: threadId.trim(),
+      turnId
     });
   }
 
@@ -614,7 +660,10 @@ export class LangChainToolAgent {
   private toLangChainMessages(messages: ToolAgentMessage[]) {
     return messages.map((message) =>
       message.role === "user"
-        ? new HumanMessage(message.content)
+        ? new HumanMessage({
+            content: message.content,
+            additional_kwargs: message.turnId ? { turnId: message.turnId } : {}
+          })
         : new AIMessage(message.content)
     );
   }
@@ -721,6 +770,59 @@ export class LangChainToolAgent {
       this.extractMessageText(candidate.data?.output);
 
     return this.extractNewTextDelta(text, currentText);
+  }
+
+  private isCompletedWorkspaceMutationEvent(event: unknown): boolean {
+    if (!event || typeof event !== "object") {
+      return false;
+    }
+    const candidate = event as {
+      event?: string;
+      name?: string;
+      metadata?: { tool_name?: string };
+    };
+    if (candidate.event !== "on_tool_end") {
+      return false;
+    }
+    const toolName = candidate.name || candidate.metadata?.tool_name || "";
+    return ["write_workspace_file", "run_workspace_command"].includes(toolName);
+  }
+
+  private extractAgentProgress(event: unknown): AgentProgress | null {
+    if (!event || typeof event !== "object") {
+      return null;
+    }
+
+    const candidate = event as {
+      event?: string;
+      name?: string;
+      metadata?: { tool_name?: string };
+      data?: { input?: unknown };
+    };
+    if (!["on_tool_start", "on_tool_end"].includes(candidate.event || "")) {
+      return null;
+    }
+
+    const toolName = candidate.name || candidate.metadata?.tool_name || "";
+    if (toolName === "write_workspace_file") {
+      return { stage: "editing_file", message: "正在修改文件…" };
+    }
+    if (toolName === "run_workspace_command") {
+      const input = candidate.data?.input as { command?: unknown } | undefined;
+      const command =
+        typeof input?.command === "string" && input.command.trim()
+          ? input.command.trim()
+          : "工作区命令";
+      return {
+        stage: "running_command",
+        message:
+          candidate.event === "on_tool_end"
+            ? `运行了命令：${command}`
+            : `正在运行命令：${command}`
+      };
+    }
+
+    return null;
   }
 
   private extractNewTextDelta(text: string, currentText: string): string {

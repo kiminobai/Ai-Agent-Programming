@@ -527,3 +527,32 @@ http://127.0.0.1:3000
 - TypeScript 分层
 
 如果你能把这个项目读明白、改明白、再自己扩展 1 到 2 个功能，基础就会扎实很多。
+# Electron 桌面版
+
+桌面版保留现有 React、LangChain、LangGraph、RAG 和 SQLite 能力，并增加系统原生工作目录选择。
+
+```powershell
+npm install
+npm run desktop
+```
+
+`npm run desktop` 会先构建服务端和 React，再启动 Electron。进入顶部“工作”模式后，点击“选择工作目录”即可使用 Windows 原生文件夹选择器。工作区按用户保存在 Electron 用户数据目录中，重启应用后会自动恢复。
+
+如果国内网络无法从默认源下载 Electron 运行时，可以执行：
+
+```powershell
+$env:ELECTRON_MIRROR="https://npmmirror.com/mirrors/electron/"
+node node_modules\electron\install.js
+```
+
+如果看到 `better-sqlite3` 的 `NODE_MODULE_VERSION` 不一致，请不要为 Electron
+重编译它。本项目会让 Express/LangGraph 后端使用系统 Node，Electron 只负责桌面窗口和
+IPC，从而避免两套 Node ABI 互相覆盖。
+
+安全边界：
+
+- Renderer 保持 `nodeIntegration: false` 和 `contextIsolation: true`。
+- React 只能通过 Preload 暴露的受控 IPC 选择、读取或打开工作区。
+- Chat 与 Work 使用独立 thread；每个 Work thread 固定绑定一个本机项目目录。
+- Coding Agent 可以列出和读取代码文件；创建/修改文件、运行开发命令必须经过人工审批。
+- 文件工具只接受工作区相对路径，并禁止访问 `.git`、`.env`、`node_modules` 和工作区外目录。

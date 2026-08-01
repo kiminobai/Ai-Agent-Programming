@@ -21457,6 +21457,15 @@
   // client/main.tsx
   var import_react = __toESM(require_react());
   var import_client = __toESM(require_client());
+  function formatElapsedTime(elapsedMs) {
+    const totalSeconds = Math.max(0, Math.floor(elapsedMs / 1e3));
+    if (totalSeconds < 60) {
+      return `${totalSeconds} \u79D2`;
+    }
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${minutes} \u5206 ${seconds} \u79D2`;
+  }
   async function readJsonResponse(response, apiName) {
     const text = await response.text();
     try {
@@ -21506,10 +21515,12 @@
   var AUTO_SCROLL_THRESHOLD = 120;
   var THINKING_STATUS_TEXT = "\u6B63\u5728\u601D\u8003\u2026";
   var DOCUMENT_QA_STATUS_TEXT = "\u6B63\u5728\u68C0\u7D22\u6587\u6863\u2026";
+  var APPROVED_ACTION_STATUS_TEXT = "\u6B63\u5728\u6267\u884C\u5DF2\u6279\u51C6\u7684\u64CD\u4F5C\u2026";
   var APPROVAL_PROMPT_PREFIX = "\u9700\u8981\u4F60\u7684\u786E\u8BA4\uFF1A";
   var PENDING_STATUS_TEXTS = /* @__PURE__ */ new Set([
     THINKING_STATUS_TEXT,
-    DOCUMENT_QA_STATUS_TEXT
+    DOCUMENT_QA_STATUS_TEXT,
+    APPROVED_ACTION_STATUS_TEXT
   ]);
   var ATTACHMENT_MARKER_PATTERN = /\n*\[Attachment available in current thread: ([^\]]+)\]\n(?:If the user wants analysis, extraction, chunking, summarization, or document QA, call inspect_uploaded_document\.|If the user asks to use the file content, call chunk_uploaded_document to split it into bounded chunks before answering\.|If the user asks to use the file content, call retrieve_uploaded_document_chunks to retrieve only relevant chunks before answering\.)/;
   function parseApprovalItems(request) {
@@ -21672,6 +21683,7 @@
     const [entries, setEntries] = (0, import_react.useState)([]);
     const [isLoading, setIsLoading] = (0, import_react.useState)(true);
     const [isSubmitting, setIsSubmitting] = (0, import_react.useState)(false);
+    const [progressClock, setProgressClock] = (0, import_react.useState)(() => Date.now());
     const [isThreadLoading, setIsThreadLoading] = (0, import_react.useState)(false);
     const [renamingThreadId, setRenamingThreadId] = (0, import_react.useState)("");
     const [renamingTitle, setRenamingTitle] = (0, import_react.useState)("");
@@ -21681,12 +21693,18 @@
       () => getStoredAuthSession()
     );
     const [userId, setUserId] = (0, import_react.useState)(() => getInitialUserId());
+    const [appMode, setAppMode] = (0, import_react.useState)("chat");
+    const [workspace, setWorkspace] = (0, import_react.useState)(null);
+    const [workspaceError, setWorkspaceError] = (0, import_react.useState)("");
+    const [isWorkspaceLoading, setIsWorkspaceLoading] = (0, import_react.useState)(false);
+    const [workspaceActivities, setWorkspaceActivities] = (0, import_react.useState)([]);
     const [isLoginOpen, setIsLoginOpen] = (0, import_react.useState)(false);
     const [loginName, setLoginName] = (0, import_react.useState)("admin");
     const [loginPassword, setLoginPassword] = (0, import_react.useState)("admin123");
     const [loginError, setLoginError] = (0, import_react.useState)("");
     const [isLoggingIn, setIsLoggingIn] = (0, import_react.useState)(false);
     const [approvalRequest, setApprovalRequest] = (0, import_react.useState)(null);
+    const [approvalTurnId, setApprovalTurnId] = (0, import_react.useState)("");
     const [approvalDecisions, setApprovalDecisions] = (0, import_react.useState)({});
     const [attachment, setAttachment] = (0, import_react.useState)(null);
     const [composerAttachmentPreviewUrl, setComposerAttachmentPreviewUrl] = (0, import_react.useState)("");
@@ -21698,6 +21716,30 @@
     const shouldAutoScrollRef = (0, import_react.useRef)(true);
     const pendingInitialScrollRef = (0, import_react.useRef)(false);
     const lastScrollTopRef = (0, import_react.useRef)(0);
+    (0, import_react.useEffect)(() => {
+      if (!isSubmitting) {
+        return;
+      }
+      const timer = window.setInterval(() => setProgressClock(Date.now()), 1e3);
+      return () => window.clearInterval(timer);
+    }, [isSubmitting]);
+    (0, import_react.useLayoutEffect)(() => {
+      const composer = composerShellRef.current;
+      const layout = chatLayoutRef.current;
+      if (!composer || !layout) {
+        return;
+      }
+      const updateComposerHeight = () => {
+        layout.style.setProperty(
+          "--composer-height",
+          `${Math.ceil(composer.getBoundingClientRect().height)}px`
+        );
+      };
+      const observer = new ResizeObserver(updateComposerHeight);
+      observer.observe(composer);
+      updateComposerHeight();
+      return () => observer.disconnect();
+    }, [appMode, entries.length, attachment]);
     (0, import_react.useLayoutEffect)(() => {
       if (!shouldAutoScrollRef.current && !pendingInitialScrollRef.current) {
         return;
@@ -21723,12 +21765,62 @@
       const latestAssistantEntry = [...entries].reverse().find((entry) => entry.role === "assistant");
       const pendingApproval = latestAssistantEntry?.content.startsWith(APPROVAL_PROMPT_PREFIX) ? latestAssistantEntry.content : null;
       setApprovalRequest(pendingApproval);
+      setApprovalTurnId(pendingApproval ? latestAssistantEntry?.turnId || "" : "");
     }, [entries]);
+    (0, import_react.useEffect)(() => {
+      let cancelled = false;
+      if (!window.desktopAPI || !userId.trim()) {
+        setWorkspace(null);
+        return;
+      }
+      setIsWorkspaceLoading(true);
+      window.desktopAPI.getWorkspace(userId.trim()).then((storedWorkspace) => {
+        if (!cancelled) {
+          setWorkspace(storedWorkspace);
+        }
+      }).catch((loadError) => {
+        if (!cancelled) {
+          setWorkspaceError(
+            loadError instanceof Error ? loadError.message : "\u8BFB\u53D6\u5DE5\u4F5C\u76EE\u5F55\u5931\u8D25\u3002"
+          );
+        }
+      }).finally(() => {
+        if (!cancelled) {
+          setIsWorkspaceLoading(false);
+        }
+      });
+      return () => {
+        cancelled = true;
+      };
+    }, [userId]);
+    (0, import_react.useEffect)(() => {
+      if (isLoading || !userId.trim() || !modelId || !roleId) {
+        return;
+      }
+      void loadThreads(
+        userId.trim(),
+        modelId,
+        roleId,
+        reasoningEffort,
+        appMode,
+        workspace
+      ).catch((modeError) => {
+        setError(
+          modeError instanceof Error ? modeError.message : "\u5207\u6362\u5BF9\u8BDD\u6A21\u5F0F\u5931\u8D25\u3002"
+        );
+      });
+    }, [appMode]);
+    (0, import_react.useEffect)(() => {
+      if (appMode !== "work" || !activeThreadId || !userId.trim()) {
+        setWorkspaceActivities([]);
+        return;
+      }
+      void loadWorkspaceActivities();
+    }, [appMode, activeThreadId, userId]);
     const approvalItems = (0, import_react.useMemo)(
       () => approvalRequest ? parseApprovalItems(approvalRequest) : [],
       [approvalRequest]
     );
-    const canSubmitApproval = approvalItems.length > 0 && approvalItems.every((item) => Boolean(approvalDecisions[item.index])) && !isSubmitting;
     (0, import_react.useEffect)(() => {
       setApprovalDecisions({});
     }, [approvalRequest]);
@@ -21740,9 +21832,36 @@
       () => roles.find((item) => item.id === roleId),
       [roles, roleId]
     );
+    const legacyActivityByEntryId = (0, import_react.useMemo)(() => {
+      const legacyActivities = workspaceActivities.filter(
+        (activity) => !activity.turnId && activity.activityType === "file_write" && activity.filePath
+      ).sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+      const groups = [];
+      const LEGACY_TURN_GAP_MS = 9e4;
+      for (const activity of legacyActivities) {
+        const latestGroup = groups.at(-1);
+        const previousActivity = latestGroup?.at(-1);
+        if (!latestGroup || !previousActivity || new Date(activity.createdAt).getTime() - new Date(previousActivity.createdAt).getTime() > LEGACY_TURN_GAP_MS) {
+          groups.push([activity]);
+        } else {
+          latestGroup.push(activity);
+        }
+      }
+      const firstPreciseTurnIndex = entries.findIndex(
+        (entry) => entry.role === "user" && Boolean(entry.turnId)
+      );
+      const legacyEntries = firstPreciseTurnIndex >= 0 ? entries.slice(0, firstPreciseTurnIndex) : entries;
+      const assistantEntries = legacyEntries.filter(
+        (entry) => entry.role === "assistant"
+      );
+      const targetEntries = assistantEntries.slice(-groups.length);
+      return new Map(
+        targetEntries.map((entry, index) => [entry.id, groups[index] || []])
+      );
+    }, [entries, workspaceActivities]);
     const isEmptyThread = !isLoading && !isThreadLoading && entries.length === 0;
     const canSubmit = Boolean(
-      !isSubmitting && !isLoading && !isThreadLoading && activeThreadId && modelId && roleId && (message.trim() || attachment)
+      !isSubmitting && !isLoading && !isThreadLoading && activeThreadId && modelId && roleId && (appMode === "chat" || workspace) && (message.trim() || attachment)
     );
     (0, import_react.useEffect)(() => {
       const session = getStoredAuthSession();
@@ -21832,7 +21951,7 @@
           setModelId(nextModelId);
           setRoleId(nextRoleId);
           if (userId.trim() && nextModelId && nextRoleId) {
-            await loadThreads(userId.trim(), nextModelId, nextRoleId, "low");
+            await loadThreads(userId.trim(), nextModelId, nextRoleId, "low", "chat");
           }
         } catch (loadError) {
           setError(
@@ -21844,9 +21963,15 @@
       }
       void bootstrap();
     }, [userId]);
-    async function loadThreads(nextUserId, fallbackModelId, fallbackRoleId, fallbackReasoningEffort) {
+    async function loadThreads(nextUserId, fallbackModelId, fallbackRoleId, fallbackReasoningEffort, mode = appMode, selectedWorkspace = workspace) {
+      if (mode === "work" && !selectedWorkspace) {
+        setThreads([]);
+        setActiveThreadId("");
+        setEntries([]);
+        return;
+      }
       const response = await fetch(
-        `/api/threads?userId=${encodeURIComponent(nextUserId)}`
+        `/api/threads?userId=${encodeURIComponent(nextUserId)}&mode=${mode}${mode === "work" && selectedWorkspace ? `&workspacePath=${encodeURIComponent(selectedWorkspace.path)}` : ""}`
       );
       const data = await readJsonResponse(response, "/api/threads");
       if (!response.ok) {
@@ -21862,7 +21987,9 @@
         nextUserId,
         nextModelId: fallbackModelId,
         nextRoleId: fallbackRoleId,
-        nextReasoningEffort: fallbackReasoningEffort
+        nextReasoningEffort: fallbackReasoningEffort,
+        nextMode: mode,
+        nextWorkspace: selectedWorkspace
       });
     }
     async function handleCreateThread(options) {
@@ -21870,7 +21997,9 @@
       const nextModelId = options?.nextModelId ?? modelId;
       const nextRoleId = options?.nextRoleId ?? roleId;
       const nextReasoningEffort = options?.nextReasoningEffort ?? reasoningEffort;
-      if (!nextUserId || !nextModelId || !nextRoleId) {
+      const nextMode = options?.nextMode ?? appMode;
+      const nextWorkspace = options?.nextWorkspace ?? workspace;
+      if (!nextUserId || !nextModelId || !nextRoleId || nextMode === "work" && !nextWorkspace) {
         return;
       }
       setError("");
@@ -21885,7 +22014,10 @@
             userId: nextUserId,
             modelId: nextModelId,
             roleId: nextRoleId,
-            reasoningEffort: nextReasoningEffort
+            reasoningEffort: nextReasoningEffort,
+            mode: nextMode,
+            workspacePath: nextMode === "work" ? nextWorkspace?.path : void 0,
+            workspaceName: nextMode === "work" ? nextWorkspace?.name : void 0
           })
         });
         const data = await readJsonResponse(response, "/api/threads");
@@ -21903,7 +22035,7 @@
         setModelId(thread.modelId);
         setRoleId(thread.roleId);
         setReasoningEffort(thread.reasoningEffort || "low");
-        sessionStorage.setItem("chat-demo-active-thread-id", thread.threadId);
+        sessionStorage.setItem(`chat-demo-active-thread-id-${nextMode}`, thread.threadId);
       } catch (threadError) {
         setError(
           threadError instanceof Error ? threadError.message : "\u521B\u5EFA\u65B0\u5BF9\u8BDD\u5931\u8D25\u3002"
@@ -21936,6 +22068,9 @@
             ...extracted,
             id: `${thread.threadId}-${index}`,
             role: entry.role,
+            turnId: entry.turnId,
+            // 从 SQLite 恢复出的消息都属于已经结束的历史轮次。
+            completed: true,
             meta: `${thread.roleId} | ${thread.modelId} | ${thread.userId}`,
             attachmentName: attachmentName || void 0,
             attachmentFileId: entry.attachmentFileId,
@@ -21943,6 +22078,14 @@
             sources: entry.sources
           };
         });
+        let currentTurnId = "";
+        for (const entry of nextEntries) {
+          if (entry.role === "user" && entry.turnId) {
+            currentTurnId = entry.turnId;
+          } else if (entry.role === "assistant" && !entry.turnId) {
+            entry.turnId = currentTurnId || void 0;
+          }
+        }
         shouldAutoScrollRef.current = true;
         pendingInitialScrollRef.current = true;
         setActiveThreadId(thread.threadId);
@@ -21956,7 +22099,10 @@
         setThreads(
           sourceThreads.map((item) => item.threadId === thread.threadId ? thread : item)
         );
-        sessionStorage.setItem("chat-demo-active-thread-id", thread.threadId);
+        sessionStorage.setItem(
+          `chat-demo-active-thread-id-${thread.mode || appMode}`,
+          thread.threadId
+        );
         setSidebarOpen(false);
       } catch (threadError) {
         setError(
@@ -22141,6 +22287,52 @@
         await loadThreads(guestUserId, modelId, roleId, reasoningEffort);
       }
     }
+    async function selectDesktopWorkspace() {
+      if (!window.desktopAPI) {
+        setWorkspaceError("\u5DE5\u4F5C\u76EE\u5F55\u9009\u62E9\u4EC5\u5728 Electron \u684C\u9762\u7248\u4E2D\u53EF\u7528\u3002");
+        return;
+      }
+      try {
+        setWorkspaceError("");
+        setIsWorkspaceLoading(true);
+        const selectedWorkspace = await window.desktopAPI.selectWorkspace(
+          userId.trim() || "guest"
+        );
+        if (selectedWorkspace) {
+          setWorkspace(selectedWorkspace);
+          if (appMode === "work" && modelId && roleId) {
+            await handleCreateThread({
+              nextMode: "work",
+              nextWorkspace: selectedWorkspace
+            });
+          }
+        }
+      } catch (selectError) {
+        setWorkspaceError(
+          selectError instanceof Error ? selectError.message : "\u9009\u62E9\u5DE5\u4F5C\u76EE\u5F55\u5931\u8D25\u3002"
+        );
+      } finally {
+        setIsWorkspaceLoading(false);
+      }
+    }
+    async function clearDesktopWorkspace() {
+      if (!window.desktopAPI) {
+        return;
+      }
+      await window.desktopAPI.clearWorkspace(userId.trim() || "guest");
+      setWorkspace(null);
+      setWorkspaceError("");
+    }
+    async function loadWorkspaceActivities() {
+      const response = await fetch(
+        `/api/workspace/activity?threadId=${encodeURIComponent(activeThreadId)}&userId=${encodeURIComponent(userId.trim())}`
+      );
+      const data = await readJsonResponse(response, "/api/workspace/activity");
+      if (!response.ok) {
+        throw new Error(data.error || "\u8BFB\u53D6\u5DE5\u4F5C\u8BB0\u5F55\u5931\u8D25\u3002");
+      }
+      setWorkspaceActivities(data.activities || []);
+    }
     async function uploadDocumentForThread(file) {
       if (!activeThreadId || !userId.trim()) {
         throw new Error("No active thread is available for document upload.");
@@ -22256,8 +22448,9 @@
       shouldAutoScrollRef.current = true;
       const requestController = new AbortController();
       activeRequestControllerRef.current = requestController;
-      const assistantEntryId = `assistant-${Date.now()}`;
       const isApprovalSubmission = Boolean(options?.hideUserMessage) && outgoingMessage.startsWith("__HITL_DECISIONS__:");
+      const assistantEntryId = `assistant-${Date.now()}`;
+      const turnId = isApprovalSubmission && approvalTurnId ? approvalTurnId : crypto.randomUUID();
       const shouldUseDocumentQa = Boolean(
         !isApprovalSubmission && (attachment && isImageFile(attachment.name) || !attachment && activeDocumentName && isImageFile(activeDocumentName))
       );
@@ -22266,17 +22459,25 @@
         id: `user-${Date.now()}`,
         role: "user",
         content: outgoingMessage,
+        turnId,
         meta: `${currentRole?.label || roleId} | ${currentModel?.label || modelId} | ${userId}`,
         attachmentName: attachment ? normalizeFileName(attachment.name) : void 0,
         attachmentPreviewUrl
       };
       setEntries((prev) => [
-        ...prev,
+        ...prev.filter(
+          (entry) => !(isApprovalSubmission && entry.role === "assistant" && entry.turnId === turnId && entry.content.startsWith(APPROVAL_PROMPT_PREFIX))
+        ),
         ...options?.hideUserMessage ? [] : [userEntry],
         {
           id: assistantEntryId,
           role: "assistant",
-          content: shouldUseDocumentQa ? DOCUMENT_QA_STATUS_TEXT : THINKING_STATUS_TEXT,
+          turnId,
+          completed: false,
+          startedAt: Date.now(),
+          elapsedMs: 0,
+          statusMessage: isApprovalSubmission ? APPROVED_ACTION_STATUS_TEXT : shouldUseDocumentQa ? DOCUMENT_QA_STATUS_TEXT : THINKING_STATUS_TEXT,
+          content: isApprovalSubmission ? APPROVED_ACTION_STATUS_TEXT : shouldUseDocumentQa ? DOCUMENT_QA_STATUS_TEXT : THINKING_STATUS_TEXT,
           meta: `${currentRole?.label || roleId} | ${currentModel?.label || modelId} | ${userId}`
         }
       ]);
@@ -22323,10 +22524,12 @@
               finalDocumentReply = streamEvent.reply || finalDocumentReply;
               if (finalDocumentReply.startsWith(APPROVAL_PROMPT_PREFIX)) {
                 setApprovalRequest(finalDocumentReply);
+                setApprovalTurnId(turnId);
               }
               updateDocumentAssistantEntry((entry) => ({
                 ...entry,
                 content: finalDocumentReply || "\u6587\u6863\u95EE\u7B54\u6CA1\u6709\u8FD4\u56DE\u5185\u5BB9\u3002",
+                completed: !finalDocumentReply.startsWith(APPROVAL_PROMPT_PREFIX),
                 meta: `${currentRole?.label || streamEvent.meta.roleId} | ${streamEvent.meta.modelId} | ${streamEvent.meta.userId}`
               }));
               return;
@@ -22345,6 +22548,7 @@
         formData.append("roleId", roleId);
         formData.append("threadId", activeThreadId);
         formData.append("userId", userId.trim());
+        formData.append("turnId", turnId);
         formData.append("message", outgoingMessage);
         formData.append("reasoningEffort", reasoningEffort);
         if (attachment) {
@@ -22380,10 +22584,18 @@
             }));
             return;
           }
+          if (streamEvent.type === "status") {
+            updateAssistantEntry((entry) => ({
+              ...entry,
+              statusMessage: streamEvent.message
+            }));
+            return;
+          }
           if (streamEvent.type === "delta") {
             finalReply += streamEvent.chunk;
             updateAssistantEntry((entry) => ({
               ...entry,
+              statusMessage: void 0,
               content: PENDING_STATUS_TEXTS.has(entry.content) ? streamEvent.chunk : entry.content + streamEvent.chunk
             }));
             return;
@@ -22392,10 +22604,14 @@
             finalReply = streamEvent.reply || finalReply;
             if (finalReply.startsWith(APPROVAL_PROMPT_PREFIX)) {
               setApprovalRequest(finalReply);
+              setApprovalTurnId(turnId);
             }
             updateAssistantEntry((entry) => ({
               ...entry,
               content: finalReply || "\u6A21\u578B\u6CA1\u6709\u8FD4\u56DE\u5185\u5BB9\u3002",
+              completed: !finalReply.startsWith(APPROVAL_PROMPT_PREFIX),
+              elapsedMs: entry.startedAt ? Date.now() - entry.startedAt : entry.elapsedMs,
+              statusMessage: void 0,
               meta: `${currentRole?.label || streamEvent.meta.roleId} | ${streamEvent.meta.modelId} | ${streamEvent.meta.userId}`
             }));
             return;
@@ -22429,6 +22645,9 @@
           fileInputRef.current.value = "";
         }
         await refreshThreads(activeThreadId);
+        if (appMode === "work") {
+          await loadWorkspaceActivities();
+        }
       } catch (submitError) {
         const wasStopped = requestController.signal.aborted || submitError instanceof DOMException && submitError.name === "AbortError";
         const messageText = wasStopped ? "\u5DF2\u505C\u6B62" : submitError instanceof Error ? submitError.message : "\u53D1\u9001\u6D88\u606F\u65F6\u53D1\u751F\u9519\u8BEF\u3002";
@@ -22437,14 +22656,39 @@
           (prev) => prev.map(
             (entry) => entry.id === assistantEntryId ? {
               ...entry,
+              completed: true,
+              stopped: wasStopped,
+              elapsedMs: entry.startedAt ? Date.now() - entry.startedAt : entry.elapsedMs,
+              statusMessage: void 0,
               // 停止时替换“正在思考…”或未完成内容，明确反馈当前任务状态。
-              content: wasStopped ? "\u5DF2\u505C\u6B62" : entry.content || `\u8BF7\u6C42\u5931\u8D25\uFF1A${messageText}`
+              content: wasStopped ? `\u4F60\u5728 ${formatElapsedTime(
+                entry.startedAt ? Date.now() - entry.startedAt : entry.elapsedMs || 0
+              )}\u540E\u505C\u6B62\u4E86` : entry.content || `\u8BF7\u6C42\u5931\u8D25\uFF1A${messageText}`
             } : entry
           )
         );
       } finally {
         activeRequestControllerRef.current = null;
         setIsSubmitting(false);
+      }
+    }
+    function submitApprovalDecisions(decisions) {
+      void handleSubmit(
+        void 0,
+        `__HITL_DECISIONS__:${JSON.stringify(decisions)}`,
+        { hideUserMessage: true }
+      );
+    }
+    function chooseApproval(itemIndex, decision) {
+      const nextDecisions = {
+        ...approvalDecisions,
+        [itemIndex]: decision
+      };
+      setApprovalDecisions(nextDecisions);
+      if (approvalItems.every((item) => Boolean(nextDecisions[item.index]))) {
+        submitApprovalDecisions(
+          approvalItems.map((item) => nextDecisions[item.index])
+        );
       }
     }
     function handleTextareaKeyDown(event) {
@@ -22484,9 +22728,9 @@
         type: "button",
         className: "new-thread-button",
         onClick: () => void handleCreateThread(),
-        disabled: !userId.trim() || !modelId || !roleId || isThreadLoading
+        disabled: !userId.trim() || !modelId || !roleId || isThreadLoading || appMode === "work" && !workspace
       },
-      "+ \u65B0\u5BF9\u8BDD"
+      appMode === "chat" ? "+ \u65B0\u5BF9\u8BDD" : "+ \u65B0\u4EFB\u52A1"
     ), /* @__PURE__ */ import_react.default.createElement("div", { className: "thread-list" }, threads.map((thread) => /* @__PURE__ */ import_react.default.createElement(
       "div",
       {
@@ -22611,10 +22855,7 @@
             type: "button",
             className: `rounded-lg border px-3 py-2 text-sm font-semibold ${approvalDecisions[item.index] === "reject" ? "border-rose-500 bg-rose-50 text-rose-700" : "border-zinc-300 bg-white text-zinc-700"}`,
             disabled: isSubmitting,
-            onClick: () => setApprovalDecisions((current) => ({
-              ...current,
-              [item.index]: "reject"
-            }))
+            onClick: () => chooseApproval(item.index, "reject")
           },
           "\u62D2\u7EDD"
         ), /* @__PURE__ */ import_react.default.createElement(
@@ -22623,24 +22864,19 @@
             type: "button",
             className: `rounded-lg border px-3 py-2 text-sm font-semibold ${approvalDecisions[item.index] === "approve" ? "border-emerald-600 bg-emerald-50 text-emerald-700" : "border-zinc-300 bg-white text-zinc-700"}`,
             disabled: isSubmitting,
-            onClick: () => setApprovalDecisions((current) => ({
-              ...current,
-              [item.index]: "approve"
-            }))
+            onClick: () => chooseApproval(item.index, "approve")
           },
           "\u6279\u51C6"
         ))
       ))),
-      /* @__PURE__ */ import_react.default.createElement("div", { className: "mt-4 grid grid-cols-3 gap-3" }, /* @__PURE__ */ import_react.default.createElement(
+      approvalItems.length > 1 ? /* @__PURE__ */ import_react.default.createElement("div", { className: "mt-4 grid grid-cols-2 gap-3" }, /* @__PURE__ */ import_react.default.createElement(
         "button",
         {
           type: "button",
           className: "rounded-xl border border-zinc-300 bg-white px-4 py-3 font-semibold text-zinc-800 hover:bg-zinc-100",
           disabled: isSubmitting,
-          onClick: () => setApprovalDecisions(
-            Object.fromEntries(
-              approvalItems.map((item) => [item.index, "reject"])
-            )
+          onClick: () => submitApprovalDecisions(
+            approvalItems.map(() => "reject")
           )
         },
         "\u5168\u90E8\u62D2\u7EDD"
@@ -22650,32 +22886,12 @@
           type: "button",
           className: "rounded-xl border border-zinc-300 bg-white px-4 py-3 font-semibold text-zinc-800 hover:bg-zinc-100",
           disabled: isSubmitting,
-          onClick: () => setApprovalDecisions(
-            Object.fromEntries(
-              approvalItems.map((item) => [item.index, "approve"])
-            )
+          onClick: () => submitApprovalDecisions(
+            approvalItems.map(() => "approve")
           )
         },
         "\u5168\u90E8\u6279\u51C6"
-      ), /* @__PURE__ */ import_react.default.createElement(
-        "button",
-        {
-          type: "button",
-          className: "rounded-xl bg-emerald-600 px-4 py-3 font-semibold text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-zinc-300",
-          disabled: !canSubmitApproval,
-          onClick: () => {
-            const decisions = approvalItems.map(
-              (item) => approvalDecisions[item.index]
-            );
-            void handleSubmit(
-              void 0,
-              `__HITL_DECISIONS__:${JSON.stringify(decisions)}`,
-              { hideUserMessage: true }
-            );
-          }
-        },
-        "\u63D0\u4EA4\u51B3\u5B9A"
-      ))
+      )) : null
     )) : null, /* @__PURE__ */ import_react.default.createElement(
       "main",
       {
@@ -22692,63 +22908,131 @@
           onClick: () => setSidebarOpen((value) => !value)
         },
         "\u2630"
-      ), /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-header-title" }, "\u89D2\u8272\u5BF9\u8BDD\u52A9\u624B")))),
-      error ? /* @__PURE__ */ import_react.default.createElement("div", { className: "top-error" }, error) : null,
-      /* @__PURE__ */ import_react.default.createElement("section", { className: "conversation" }, isLoading || isThreadLoading ? /* @__PURE__ */ import_react.default.createElement("div", { className: "empty-state" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "empty-state-title" }, isLoading ? "\u6B63\u5728\u52A0\u8F7D\u914D\u7F6E" : "\u6B63\u5728\u52A0\u8F7D\u5BF9\u8BDD"), /* @__PURE__ */ import_react.default.createElement("div", { className: "empty-state-copy" }, isLoading ? "\u6B63\u5728\u83B7\u53D6\u6A21\u578B\u548C\u89D2\u8272\u3002" : "\u6B63\u5728\u4ECE SQLite \u6062\u590D\u5BF9\u8BDD\u6D88\u606F\u3002")) : null, isEmptyThread ? /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-empty-home" }, /* @__PURE__ */ import_react.default.createElement("h2", null, "\u4ECA\u5929\u60F3\u804A\u4EC0\u4E48\uFF1F"), /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-empty-actions" }, /* @__PURE__ */ import_react.default.createElement("button", { type: "button", onClick: () => setMessage("\u5E2E\u6211\u5206\u6790\u8FD9\u4E2A\u6587\u4EF6") }, "\u5206\u6790\u6587\u4EF6"), /* @__PURE__ */ import_react.default.createElement("button", { type: "button", onClick: () => setMessage("\u5E2E\u6211\u5199\u4E00\u6BB5\u4EE3\u7801") }, "\u5199\u4EE3\u7801"), /* @__PURE__ */ import_react.default.createElement("button", { type: "button", onClick: () => setMessage("\u5E2E\u6211\u68B3\u7406\u4E00\u4E2A\u5B66\u4E60\u8BA1\u5212") }, "\u5236\u5B9A\u8BA1\u5212"))) : null, !isLoading && !isThreadLoading && entries.map((entry) => /* @__PURE__ */ import_react.default.createElement(
-        "div",
+      ), /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-header-title" }, appMode === "chat" ? "\u89D2\u8272\u5BF9\u8BDD\u52A9\u624B" : workspace?.name || "\u5DE5\u4F5C\u533A"))), /* @__PURE__ */ import_react.default.createElement("nav", { className: "flex items-center rounded-xl bg-zinc-100 p-1" }, /* @__PURE__ */ import_react.default.createElement(
+        "button",
         {
-          key: entry.id,
-          className: `mx-auto grid w-[min(860px,calc(100%_-_32px))] gap-3 px-0 py-5 ${entry.role === "user" ? "justify-items-end" : "justify-items-start"}`
+          type: "button",
+          className: `rounded-lg px-4 py-2 text-sm font-semibold transition ${appMode === "chat" ? "bg-white text-zinc-950 shadow-sm" : "text-zinc-500 hover:text-zinc-900"}`,
+          onClick: () => {
+            setAppMode("chat");
+            setThreads([]);
+            setEntries([]);
+            setActiveThreadId("");
+          }
         },
-        /* @__PURE__ */ import_react.default.createElement(
-          "div",
-          {
-            className: `flex w-full items-center gap-2 text-[13px] ${entry.role === "user" ? "justify-end" : "justify-start"}`
-          },
-          /* @__PURE__ */ import_react.default.createElement("span", { className: "font-semibold text-zinc-950" }, entry.role === "user" ? "\u4F60" : currentRole?.label || "\u52A9\u624B"),
-          entry.meta ? /* @__PURE__ */ import_react.default.createElement("span", { className: "max-w-[68vw] truncate text-xs font-normal text-zinc-500" }, entry.meta) : null
-        ),
-        /* @__PURE__ */ import_react.default.createElement(
-          "div",
-          {
-            className: `max-w-full ${entry.role === "user" ? "rounded-3xl bg-zinc-100 px-5 py-3 text-[15px] leading-8 text-zinc-950" : "w-full text-[15px] leading-8 text-zinc-950"}`
-          },
-          entry.attachmentName ? /* @__PURE__ */ import_react.default.createElement(
-            "button",
-            {
-              type: "button",
-              className: `message-attachment-card ${entry.attachmentPreviewUrl ? "image-only" : "file-card"}`,
-              onClick: () => {
-                if (entry.attachmentFileId) {
-                  window.open(
-                    `/api/files/${encodeURIComponent(entry.attachmentFileId)}?userId=${encodeURIComponent(userId.trim())}`,
-                    "_blank",
-                    "noopener,noreferrer"
-                  );
-                }
-              },
-              disabled: !entry.attachmentFileId,
-              title: entry.attachmentFileId ? "\u6253\u5F00\u4E0A\u4F20\u6587\u4EF6" : "\u6587\u4EF6\u4E0A\u4F20\u5B8C\u6210\u540E\u53EF\u4EE5\u9884\u89C8"
-            },
-            entry.attachmentPreviewUrl ? /* @__PURE__ */ import_react.default.createElement(
-              "img",
-              {
-                className: "message-attachment-preview",
-                src: entry.attachmentPreviewUrl,
-                alt: "\u4E0A\u4F20\u7684\u56FE\u7247"
-              }
-            ) : /* @__PURE__ */ import_react.default.createElement(import_react.default.Fragment, null, /* @__PURE__ */ import_react.default.createElement("div", { className: "message-attachment-icon" }, getAttachmentKind(entry.attachmentName)), /* @__PURE__ */ import_react.default.createElement("div", { className: "message-attachment-info" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "message-attachment-name" }, entry.attachmentName), /* @__PURE__ */ import_react.default.createElement("div", { className: "message-attachment-copy" }, getAttachmentKind(entry.attachmentName))))
-          ) : null,
-          entry.role === "assistant" ? /* @__PURE__ */ import_react.default.createElement("div", { className: "markdown-body" }, renderMarkdown(entry.content)) : /* @__PURE__ */ import_react.default.createElement("div", { className: "message-text" }, entry.content)
-        )
+        "\u804A\u5929"
+      ), /* @__PURE__ */ import_react.default.createElement(
+        "button",
+        {
+          type: "button",
+          className: `rounded-lg px-4 py-2 text-sm font-semibold transition ${appMode === "work" ? "bg-white text-zinc-950 shadow-sm" : "text-zinc-500 hover:text-zinc-900"}`,
+          onClick: () => {
+            setAppMode("work");
+            setThreads([]);
+            setEntries([]);
+            setActiveThreadId("");
+          }
+        },
+        "\u5DE5\u4F5C"
       ))),
+      error ? /* @__PURE__ */ import_react.default.createElement("div", { className: "top-error" }, error) : null,
+      appMode === "work" && isEmptyThread ? /* @__PURE__ */ import_react.default.createElement("section", { className: "flex min-h-[calc(100vh-76px)] items-center justify-center px-6 pb-44" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "text-center" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-zinc-200 bg-white text-2xl shadow-sm" }, "\u25C7"), /* @__PURE__ */ import_react.default.createElement("h2", { className: "mt-7 text-3xl font-medium tracking-tight text-zinc-900" }, workspace ? `\u8981\u5728 ${workspace.name} \u5185\u5F00\u53D1\u4EC0\u4E48\uFF1F` : "\u9009\u62E9\u4E00\u4E2A\u9879\u76EE\u5F00\u59CB\u5DE5\u4F5C"), !workspace ? /* @__PURE__ */ import_react.default.createElement(
+        "button",
+        {
+          type: "button",
+          className: "mt-7 rounded-xl bg-zinc-950 px-5 py-3 text-sm font-semibold text-white hover:bg-zinc-800 disabled:bg-zinc-300",
+          disabled: isWorkspaceLoading,
+          onClick: () => void selectDesktopWorkspace()
+        },
+        isWorkspaceLoading ? "\u6B63\u5728\u8BFB\u53D6\u76EE\u5F55\u2026" : "\u6253\u5F00\u6587\u4EF6\u5939"
+      ) : null, workspaceError ? /* @__PURE__ */ import_react.default.createElement("div", { className: "mx-auto mt-5 max-w-lg rounded-xl bg-rose-50 px-4 py-3 text-sm text-rose-700" }, workspaceError) : null)) : /* @__PURE__ */ import_react.default.createElement("section", { className: "conversation" }, isLoading || isThreadLoading ? /* @__PURE__ */ import_react.default.createElement("div", { className: "empty-state" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "empty-state-title" }, isLoading ? "\u6B63\u5728\u52A0\u8F7D\u914D\u7F6E" : "\u6B63\u5728\u52A0\u8F7D\u5BF9\u8BDD"), /* @__PURE__ */ import_react.default.createElement("div", { className: "empty-state-copy" }, isLoading ? "\u6B63\u5728\u83B7\u53D6\u6A21\u578B\u548C\u89D2\u8272\u3002" : "\u6B63\u5728\u4ECE SQLite \u6062\u590D\u5BF9\u8BDD\u6D88\u606F\u3002")) : null, appMode === "chat" && isEmptyThread ? /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-empty-home" }, /* @__PURE__ */ import_react.default.createElement("h2", null, "\u4ECA\u5929\u60F3\u804A\u4EC0\u4E48\uFF1F"), /* @__PURE__ */ import_react.default.createElement("div", { className: "chat-empty-actions" }, /* @__PURE__ */ import_react.default.createElement("button", { type: "button", onClick: () => setMessage("\u5E2E\u6211\u5206\u6790\u8FD9\u4E2A\u6587\u4EF6") }, "\u5206\u6790\u6587\u4EF6"), /* @__PURE__ */ import_react.default.createElement("button", { type: "button", onClick: () => setMessage("\u5E2E\u6211\u5199\u4E00\u6BB5\u4EE3\u7801") }, "\u5199\u4EE3\u7801"), /* @__PURE__ */ import_react.default.createElement("button", { type: "button", onClick: () => setMessage("\u5E2E\u6211\u68B3\u7406\u4E00\u4E2A\u5B66\u4E60\u8BA1\u5212") }, "\u5236\u5B9A\u8BA1\u5212"))) : null, !isLoading && !isThreadLoading && entries.map((entry, entryIndex) => {
+        const isLastAssistantForTurn = entry.role === "assistant" && !entries.slice(entryIndex + 1).some(
+          (candidate) => candidate.role === "assistant" && candidate.turnId === entry.turnId
+        );
+        const turnActivities = entry.role === "assistant" && entry.completed !== false && isLastAssistantForTurn ? [
+          ...workspaceActivities.filter(
+            (activity) => Boolean(activity.turnId) && activity.turnId === entry.turnId && activity.activityType === "file_write" && activity.filePath
+          ),
+          ...legacyActivityByEntryId.get(entry.id) || []
+        ] : [];
+        const changedFiles = Array.from(
+          new Set(turnActivities.map((activity) => activity.filePath))
+        );
+        return /* @__PURE__ */ import_react.default.createElement(
+          "div",
+          {
+            key: entry.id,
+            className: `mx-auto grid w-[min(860px,calc(100%_-_32px))] gap-3 px-0 py-5 ${entry.role === "user" ? "justify-items-end" : "justify-items-start"}`
+          },
+          /* @__PURE__ */ import_react.default.createElement(
+            "div",
+            {
+              className: `flex w-full items-center gap-2 text-[13px] ${entry.role === "user" ? "justify-end" : "justify-start"}`
+            },
+            /* @__PURE__ */ import_react.default.createElement("span", { className: "font-semibold text-zinc-950" }, entry.role === "user" ? "\u4F60" : currentRole?.label || "\u52A9\u624B"),
+            entry.meta ? /* @__PURE__ */ import_react.default.createElement("span", { className: "max-w-[68vw] truncate text-xs font-normal text-zinc-500" }, entry.meta) : null
+          ),
+          /* @__PURE__ */ import_react.default.createElement(
+            "div",
+            {
+              className: `max-w-full ${entry.role === "user" ? "rounded-3xl bg-zinc-100 px-5 py-3 text-[15px] leading-8 text-zinc-950" : "w-full text-[15px] leading-8 text-zinc-950"}`
+            },
+            entry.attachmentName ? /* @__PURE__ */ import_react.default.createElement(
+              "button",
+              {
+                type: "button",
+                className: `message-attachment-card ${entry.attachmentPreviewUrl ? "image-only" : "file-card"}`,
+                onClick: () => {
+                  if (entry.attachmentFileId) {
+                    window.open(
+                      `/api/files/${encodeURIComponent(entry.attachmentFileId)}?userId=${encodeURIComponent(userId.trim())}`,
+                      "_blank",
+                      "noopener,noreferrer"
+                    );
+                  }
+                },
+                disabled: !entry.attachmentFileId,
+                title: entry.attachmentFileId ? "\u6253\u5F00\u4E0A\u4F20\u6587\u4EF6" : "\u6587\u4EF6\u4E0A\u4F20\u5B8C\u6210\u540E\u53EF\u4EE5\u9884\u89C8"
+              },
+              entry.attachmentPreviewUrl ? /* @__PURE__ */ import_react.default.createElement(
+                "img",
+                {
+                  className: "message-attachment-preview",
+                  src: entry.attachmentPreviewUrl,
+                  alt: "\u4E0A\u4F20\u7684\u56FE\u7247"
+                }
+              ) : /* @__PURE__ */ import_react.default.createElement(import_react.default.Fragment, null, /* @__PURE__ */ import_react.default.createElement("div", { className: "message-attachment-icon" }, getAttachmentKind(entry.attachmentName)), /* @__PURE__ */ import_react.default.createElement("div", { className: "message-attachment-info" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "message-attachment-name" }, entry.attachmentName), /* @__PURE__ */ import_react.default.createElement("div", { className: "message-attachment-copy" }, getAttachmentKind(entry.attachmentName))))
+            ) : null,
+            entry.role === "assistant" ? /* @__PURE__ */ import_react.default.createElement(import_react.default.Fragment, null, entry.completed === false ? /* @__PURE__ */ import_react.default.createElement("div", { className: "agent-progress", role: "status", "aria-live": "polite" }, /* @__PURE__ */ import_react.default.createElement("span", { className: "agent-progress-dot", "aria-hidden": "true" }), /* @__PURE__ */ import_react.default.createElement("span", null, entry.statusMessage || "\u6B63\u5728\u751F\u6210\u56DE\u7B54\u2026", entry.startedAt ? ` \u5DF2\u5904\u7406 ${formatElapsedTime(progressClock - entry.startedAt)}` : "")) : entry.elapsedMs !== void 0 && !entry.stopped ? /* @__PURE__ */ import_react.default.createElement("div", { className: "agent-elapsed" }, "\u5DF2\u5904\u7406 ", formatElapsedTime(entry.elapsedMs)) : null, !PENDING_STATUS_TEXTS.has(entry.content) || entry.completed !== false ? /* @__PURE__ */ import_react.default.createElement("div", { className: "markdown-body" }, renderMarkdown(entry.content)) : null, changedFiles.length ? /* @__PURE__ */ import_react.default.createElement("section", { className: "work-activity-card work-activity-inline" }, /* @__PURE__ */ import_react.default.createElement("header", null, /* @__PURE__ */ import_react.default.createElement("strong", null, "\u5DF2\u7F16\u8F91 ", changedFiles.length, " \u4E2A\u6587\u4EF6"), /* @__PURE__ */ import_react.default.createElement("span", { className: "work-activity-caption" }, "Agent \u5DE5\u4F5C\u8BB0\u5F55")), changedFiles.map((filePath) => /* @__PURE__ */ import_react.default.createElement("div", { className: "work-file-row", key: filePath }, /* @__PURE__ */ import_react.default.createElement("span", null, filePath), /* @__PURE__ */ import_react.default.createElement("span", { className: "work-file-status" }, "+", turnActivities.filter((item) => item.filePath === filePath).reduce((total, item) => total + (item.additions || 0), 0), " ", "-", turnActivities.filter((item) => item.filePath === filePath).reduce((total, item) => total + (item.deletions || 0), 0))))) : null) : /* @__PURE__ */ import_react.default.createElement("div", { className: "message-text" }, entry.content)
+          )
+        );
+      })),
       /* @__PURE__ */ import_react.default.createElement(
         "footer",
         {
           ref: composerShellRef,
           className: `composer-shell ${isEmptyThread ? "home-composer" : ""}`
         },
-        /* @__PURE__ */ import_react.default.createElement("form", { className: "composer-card", onSubmit: handleSubmit }, attachment ? /* @__PURE__ */ import_react.default.createElement(
+        /* @__PURE__ */ import_react.default.createElement("form", { className: "composer-card", onSubmit: handleSubmit }, appMode === "work" ? /* @__PURE__ */ import_react.default.createElement("div", { className: "mb-2 flex min-h-10 items-center gap-1 border-b border-zinc-100 pb-2 text-xs text-zinc-600" }, /* @__PURE__ */ import_react.default.createElement(
+          "button",
+          {
+            type: "button",
+            className: "flex max-w-[45%] items-center gap-2 rounded-lg px-2.5 py-2 font-semibold text-zinc-800 hover:bg-zinc-100",
+            onClick: () => void selectDesktopWorkspace(),
+            title: workspace?.path || "\u9009\u62E9\u5DE5\u4F5C\u76EE\u5F55"
+          },
+          /* @__PURE__ */ import_react.default.createElement("span", null, "\u25B1"),
+          /* @__PURE__ */ import_react.default.createElement("span", { className: "truncate" }, workspace?.name || "\u9009\u62E9\u9879\u76EE"),
+          /* @__PURE__ */ import_react.default.createElement("span", { className: "text-zinc-400" }, "\u2304")
+        ), workspace ? /* @__PURE__ */ import_react.default.createElement(import_react.default.Fragment, null, /* @__PURE__ */ import_react.default.createElement("span", { className: "rounded-lg px-2.5 py-2 text-zinc-500" }, "\u2387 ", workspace.branch || "\u65E0 Git"), /* @__PURE__ */ import_react.default.createElement(
+          "button",
+          {
+            type: "button",
+            className: "ml-auto rounded-lg px-2.5 py-2 text-zinc-400 hover:bg-rose-50 hover:text-rose-600",
+            onClick: () => void clearDesktopWorkspace()
+          },
+          "\u79FB\u9664"
+        )) : null) : null, attachment ? /* @__PURE__ */ import_react.default.createElement(
           "div",
           {
             className: `composer-attachment-preview ${composerAttachmentPreviewUrl ? "image-only" : "file-card"}`

@@ -40,6 +40,12 @@ type ChatEntry = {
   id: string;
   role: "user" | "assistant";
   content: string;
+  turnId?: string;
+  completed?: boolean;
+  startedAt?: number;
+  elapsedMs?: number;
+  statusMessage?: string;
+  stopped?: boolean;
   meta?: string;
   attachmentName?: string;
   attachmentFileId?: string;
@@ -94,6 +100,9 @@ type ChatThread = {
   modelId: string;
   roleId: string;
   reasoningEffort?: ReasoningEffort;
+  mode: "chat" | "work";
+  workspacePath?: string;
+  workspaceName?: string;
   title: string;
   lastMessagePreview?: string;
   createdAt: string;
@@ -111,6 +120,11 @@ type StreamMeta = {
 
 type StreamEvent =
   | { type: "meta"; meta: StreamMeta }
+  | {
+      type: "status";
+      stage: "thinking" | "editing_file" | "running_command" | "finalizing";
+      message: string;
+    }
   | { type: "delta"; chunk: string }
   | { type: "done"; reply: string; meta: StreamMeta }
   | { type: "error"; error: string };
@@ -122,6 +136,49 @@ type ApprovalItem = {
   toolName: string;
   description: string;
 };
+
+function formatElapsedTime(elapsedMs: number): string {
+  const totalSeconds = Math.max(0, Math.floor(elapsedMs / 1000));
+  if (totalSeconds < 60) {
+    return `${totalSeconds} 秒`;
+  }
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes} 分 ${seconds} 秒`;
+}
+
+type DesktopWorkspace = {
+  name: string;
+  path: string;
+  branch: string;
+  selectedAt: string;
+};
+
+type WorkspaceActivity = {
+  activityId: string;
+  activityType: "file_write" | "command";
+  turnId?: string;
+  filePath?: string;
+  additions?: number;
+  deletions?: number;
+  commandText?: string;
+  exitCode?: number;
+  stdout?: string;
+  stderr?: string;
+  createdAt: string;
+};
+
+declare global {
+  interface Window {
+    desktopAPI?: {
+      platform: string;
+      selectWorkspace: (userId: string) => Promise<DesktopWorkspace | null>;
+      getWorkspace: (userId: string) => Promise<DesktopWorkspace | null>;
+      clearWorkspace: (userId: string) => Promise<void>;
+      revealWorkspace: (workspacePath: string) => Promise<void>;
+    };
+  }
+}
 
 async function readJsonResponse(response: Response, apiName: string) {
   const text = await response.text();
@@ -187,10 +244,12 @@ function getInitialUserId(): string {
 const AUTO_SCROLL_THRESHOLD = 120;
 const THINKING_STATUS_TEXT = "正在思考…";
 const DOCUMENT_QA_STATUS_TEXT = "正在检索文档…";
+const APPROVED_ACTION_STATUS_TEXT = "正在执行已批准的操作…";
 const APPROVAL_PROMPT_PREFIX = "需要你的确认：";
 const PENDING_STATUS_TEXTS = new Set([
   THINKING_STATUS_TEXT,
-  DOCUMENT_QA_STATUS_TEXT
+  DOCUMENT_QA_STATUS_TEXT,
+  APPROVED_ACTION_STATUS_TEXT
 ]);
 const ATTACHMENT_MARKER_PATTERN =
   /\n*\[Attachment available in current thread: ([^\]]+)\]\n(?:If the user wants analysis, extraction, chunking, summarization, or document QA, call inspect_uploaded_document\.|If the user asks to use the file content, call chunk_uploaded_document to split it into bounded chunks before answering\.|If the user asks to use the file content, call retrieve_uploaded_document_chunks to retrieve only relevant chunks before answering\.)/;
@@ -441,6 +500,7 @@ function App() {
   const [entries, setEntries] = useState<ChatEntry[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [progressClock, setProgressClock] = useState(() => Date.now());
   const [isThreadLoading, setIsThreadLoading] = useState(false);
   const [renamingThreadId, setRenamingThreadId] = useState("");
   const [renamingTitle, setRenamingTitle] = useState("");
@@ -450,12 +510,18 @@ function App() {
     getStoredAuthSession()
   );
   const [userId, setUserId] = useState(() => getInitialUserId());
+  const [appMode, setAppMode] = useState<"chat" | "work">("chat");
+  const [workspace, setWorkspace] = useState<DesktopWorkspace | null>(null);
+  const [workspaceError, setWorkspaceError] = useState("");
+  const [isWorkspaceLoading, setIsWorkspaceLoading] = useState(false);
+  const [workspaceActivities, setWorkspaceActivities] = useState<WorkspaceActivity[]>([]);
   const [isLoginOpen, setIsLoginOpen] = useState(false);
   const [loginName, setLoginName] = useState("admin");
   const [loginPassword, setLoginPassword] = useState("admin123");
   const [loginError, setLoginError] = useState("");
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [approvalRequest, setApprovalRequest] = useState<string | null>(null);
+  const [approvalTurnId, setApprovalTurnId] = useState("");
   const [approvalDecisions, setApprovalDecisions] = useState<
     Record<number, ApprovalDecision>
   >({});
@@ -469,6 +535,36 @@ function App() {
   const shouldAutoScrollRef = useRef(true);
   const pendingInitialScrollRef = useRef(false);
   const lastScrollTopRef = useRef(0);
+
+  useEffect(() => {
+    if (!isSubmitting) {
+      return;
+    }
+
+    const timer = window.setInterval(() => setProgressClock(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [isSubmitting]);
+
+  useLayoutEffect(() => {
+    // 固定输入框不参与文档流，消息区必须按它的实际高度预留空间。
+    // ResizeObserver 同时覆盖附件预览、窗口缩放和 textarea 变高的情况。
+    const composer = composerShellRef.current;
+    const layout = chatLayoutRef.current;
+    if (!composer || !layout) {
+      return;
+    }
+
+    const updateComposerHeight = () => {
+      layout.style.setProperty(
+        "--composer-height",
+        `${Math.ceil(composer.getBoundingClientRect().height)}px`
+      );
+    };
+    const observer = new ResizeObserver(updateComposerHeight);
+    observer.observe(composer);
+    updateComposerHeight();
+    return () => observer.disconnect();
+  }, [appMode, entries.length, attachment]);
 
   useLayoutEffect(() => {
     // 学习点：只有用户接近底部时，AI 新内容才自动滚到底部。
@@ -507,17 +603,74 @@ function App() {
         ? latestAssistantEntry.content
         : null;
     setApprovalRequest(pendingApproval);
+    setApprovalTurnId(pendingApproval ? latestAssistantEntry?.turnId || "" : "");
   }, [entries]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!window.desktopAPI || !userId.trim()) {
+      setWorkspace(null);
+      return;
+    }
+
+    setIsWorkspaceLoading(true);
+    window.desktopAPI
+      .getWorkspace(userId.trim())
+      .then((storedWorkspace) => {
+        if (!cancelled) {
+          setWorkspace(storedWorkspace);
+        }
+      })
+      .catch((loadError) => {
+        if (!cancelled) {
+          setWorkspaceError(
+            loadError instanceof Error ? loadError.message : "读取工作目录失败。"
+          );
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setIsWorkspaceLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [userId]);
+
+  useEffect(() => {
+    if (isLoading || !userId.trim() || !modelId || !roleId) {
+      return;
+    }
+
+    // Chat 与 Work 使用完全独立的 thread 列表和当前会话。
+    void loadThreads(
+      userId.trim(),
+      modelId,
+      roleId,
+      reasoningEffort,
+      appMode,
+      workspace
+    ).catch((modeError) => {
+      setError(
+        modeError instanceof Error ? modeError.message : "切换对话模式失败。"
+      );
+    });
+  }, [appMode]);
+
+  useEffect(() => {
+    if (appMode !== "work" || !activeThreadId || !userId.trim()) {
+      setWorkspaceActivities([]);
+      return;
+    }
+    void loadWorkspaceActivities();
+  }, [appMode, activeThreadId, userId]);
 
   const approvalItems = useMemo(
     () => (approvalRequest ? parseApprovalItems(approvalRequest) : []),
     [approvalRequest]
   );
-  const canSubmitApproval =
-    approvalItems.length > 0 &&
-    approvalItems.every((item) => Boolean(approvalDecisions[item.index])) &&
-    !isSubmitting;
-
   useEffect(() => {
     // 每次出现一批新的审批项时清空旧选择，避免把上一批决定误用到下一批。
     setApprovalDecisions({});
@@ -531,6 +684,52 @@ function App() {
     () => roles.find((item) => item.id === roleId),
     [roles, roleId]
   );
+  const legacyActivityByEntryId = useMemo(() => {
+    // 旧版本没有 turnId。按执行时间把相邻写入视为同一轮，再从后向前绑定助手结果。
+    // 新记录都有 turnId，不进入这段兼容逻辑。
+    const legacyActivities = workspaceActivities
+      .filter(
+        (activity) =>
+          !activity.turnId &&
+          activity.activityType === "file_write" &&
+          activity.filePath
+      )
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+    const groups: WorkspaceActivity[][] = [];
+    const LEGACY_TURN_GAP_MS = 90_000;
+    for (const activity of legacyActivities) {
+      const latestGroup = groups.at(-1);
+      const previousActivity = latestGroup?.at(-1);
+      if (
+        !latestGroup ||
+        !previousActivity ||
+        new Date(activity.createdAt).getTime() -
+          new Date(previousActivity.createdAt).getTime() >
+          LEGACY_TURN_GAP_MS
+      ) {
+        groups.push([activity]);
+      } else {
+        latestGroup.push(activity);
+      }
+    }
+
+    // 第一条带 turnId 的用户消息标志着新版精确关联开始。
+    // 旧活动只能绑定到它之前的历史回复，绝不能漂移到后续批准或拒绝轮次。
+    const firstPreciseTurnIndex = entries.findIndex(
+      (entry) => entry.role === "user" && Boolean(entry.turnId)
+    );
+    const legacyEntries =
+      firstPreciseTurnIndex >= 0
+        ? entries.slice(0, firstPreciseTurnIndex)
+        : entries;
+    const assistantEntries = legacyEntries.filter(
+      (entry) => entry.role === "assistant"
+    );
+    const targetEntries = assistantEntries.slice(-groups.length);
+    return new Map(
+      targetEntries.map((entry, index) => [entry.id, groups[index] || []])
+    );
+  }, [entries, workspaceActivities]);
   const isEmptyThread = !isLoading && !isThreadLoading && entries.length === 0;
   const canSubmit = Boolean(
     !isSubmitting &&
@@ -539,6 +738,7 @@ function App() {
       activeThreadId &&
       modelId &&
       roleId &&
+      (appMode === "chat" || workspace) &&
       (message.trim() || attachment)
   );
 
@@ -651,7 +851,7 @@ function App() {
         setRoleId(nextRoleId);
 
         if (userId.trim() && nextModelId && nextRoleId) {
-          await loadThreads(userId.trim(), nextModelId, nextRoleId, "low");
+          await loadThreads(userId.trim(), nextModelId, nextRoleId, "low", "chat");
         }
       } catch (loadError) {
         setError(
@@ -669,10 +869,23 @@ function App() {
     nextUserId: string,
     fallbackModelId: string,
     fallbackRoleId: string,
-    fallbackReasoningEffort: ReasoningEffort
+    fallbackReasoningEffort: ReasoningEffort,
+    mode: "chat" | "work" = appMode,
+    selectedWorkspace: DesktopWorkspace | null = workspace
   ) {
+    if (mode === "work" && !selectedWorkspace) {
+      setThreads([]);
+      setActiveThreadId("");
+      setEntries([]);
+      return;
+    }
+
     const response = await fetch(
-      `/api/threads?userId=${encodeURIComponent(nextUserId)}`
+      `/api/threads?userId=${encodeURIComponent(nextUserId)}&mode=${mode}${
+        mode === "work" && selectedWorkspace
+          ? `&workspacePath=${encodeURIComponent(selectedWorkspace.path)}`
+          : ""
+      }`
     );
     const data = await readJsonResponse(response, "/api/threads");
 
@@ -692,7 +905,9 @@ function App() {
       nextUserId,
       nextModelId: fallbackModelId,
       nextRoleId: fallbackRoleId,
-      nextReasoningEffort: fallbackReasoningEffort
+      nextReasoningEffort: fallbackReasoningEffort,
+      nextMode: mode,
+      nextWorkspace: selectedWorkspace
     });
   }
 
@@ -701,13 +916,22 @@ function App() {
     nextModelId?: string;
     nextRoleId?: string;
     nextReasoningEffort?: ReasoningEffort;
+    nextMode?: "chat" | "work";
+    nextWorkspace?: DesktopWorkspace | null;
   }) {
     const nextUserId = options?.nextUserId ?? userId.trim();
     const nextModelId = options?.nextModelId ?? modelId;
     const nextRoleId = options?.nextRoleId ?? roleId;
     const nextReasoningEffort = options?.nextReasoningEffort ?? reasoningEffort;
+    const nextMode = options?.nextMode ?? appMode;
+    const nextWorkspace = options?.nextWorkspace ?? workspace;
 
-    if (!nextUserId || !nextModelId || !nextRoleId) {
+    if (
+      !nextUserId ||
+      !nextModelId ||
+      !nextRoleId ||
+      (nextMode === "work" && !nextWorkspace)
+    ) {
       return;
     }
 
@@ -724,7 +948,10 @@ function App() {
           userId: nextUserId,
           modelId: nextModelId,
           roleId: nextRoleId,
-          reasoningEffort: nextReasoningEffort
+          reasoningEffort: nextReasoningEffort,
+          mode: nextMode,
+          workspacePath: nextMode === "work" ? nextWorkspace?.path : undefined,
+          workspaceName: nextMode === "work" ? nextWorkspace?.name : undefined
         })
       });
 
@@ -744,7 +971,7 @@ function App() {
       setModelId(thread.modelId);
       setRoleId(thread.roleId);
       setReasoningEffort(thread.reasoningEffort || "low");
-      sessionStorage.setItem("chat-demo-active-thread-id", thread.threadId);
+      sessionStorage.setItem(`chat-demo-active-thread-id-${nextMode}`, thread.threadId);
     } catch (threadError) {
       setError(
         threadError instanceof Error ? threadError.message : "创建新对话失败。"
@@ -780,6 +1007,7 @@ function App() {
       const nextEntries = ((data.messages || []) as Array<{
         role: "user" | "assistant";
         content: string;
+        turnId?: string;
         attachmentName?: string;
         attachmentFileId?: string;
         sources?: DocumentSource[];
@@ -793,6 +1021,9 @@ function App() {
           ...extracted,
           id: `${thread.threadId}-${index}`,
           role: entry.role,
+          turnId: entry.turnId,
+          // 从 SQLite 恢复出的消息都属于已经结束的历史轮次。
+          completed: true,
           meta: `${thread.roleId} | ${thread.modelId} | ${thread.userId}`,
           attachmentName: attachmentName || undefined,
           attachmentFileId: entry.attachmentFileId,
@@ -803,6 +1034,15 @@ function App() {
           sources: entry.sources
         };
       });
+      // LangChain 生成的 AIMessage 不携带前端 turnId，恢复时继承最近一条用户消息的 turnId。
+      let currentTurnId = "";
+      for (const entry of nextEntries) {
+        if (entry.role === "user" && entry.turnId) {
+          currentTurnId = entry.turnId;
+        } else if (entry.role === "assistant" && !entry.turnId) {
+          entry.turnId = currentTurnId || undefined;
+        }
+      }
 
       shouldAutoScrollRef.current = true;
       pendingInitialScrollRef.current = true;
@@ -817,7 +1057,10 @@ function App() {
       setThreads(
         sourceThreads.map((item) => (item.threadId === thread.threadId ? thread : item))
       );
-      sessionStorage.setItem("chat-demo-active-thread-id", thread.threadId);
+      sessionStorage.setItem(
+        `chat-demo-active-thread-id-${thread.mode || appMode}`,
+        thread.threadId
+      );
       setSidebarOpen(false);
     } catch (threadError) {
       setError(
@@ -1031,6 +1274,57 @@ function App() {
     }
   }
 
+  async function selectDesktopWorkspace() {
+    if (!window.desktopAPI) {
+      setWorkspaceError("工作目录选择仅在 Electron 桌面版中可用。");
+      return;
+    }
+
+    try {
+      setWorkspaceError("");
+      setIsWorkspaceLoading(true);
+      const selectedWorkspace = await window.desktopAPI.selectWorkspace(
+        userId.trim() || "guest"
+      );
+      if (selectedWorkspace) {
+        setWorkspace(selectedWorkspace);
+        if (appMode === "work" && modelId && roleId) {
+          await handleCreateThread({
+            nextMode: "work",
+            nextWorkspace: selectedWorkspace
+          });
+        }
+      }
+    } catch (selectError) {
+      setWorkspaceError(
+        selectError instanceof Error ? selectError.message : "选择工作目录失败。"
+      );
+    } finally {
+      setIsWorkspaceLoading(false);
+    }
+  }
+
+  async function clearDesktopWorkspace() {
+    if (!window.desktopAPI) {
+      return;
+    }
+
+    await window.desktopAPI.clearWorkspace(userId.trim() || "guest");
+    setWorkspace(null);
+    setWorkspaceError("");
+  }
+
+  async function loadWorkspaceActivities() {
+    const response = await fetch(
+      `/api/workspace/activity?threadId=${encodeURIComponent(activeThreadId)}&userId=${encodeURIComponent(userId.trim())}`
+    );
+    const data = await readJsonResponse(response, "/api/workspace/activity");
+    if (!response.ok) {
+      throw new Error(data.error || "读取工作记录失败。");
+    }
+    setWorkspaceActivities((data.activities || []) as WorkspaceActivity[]);
+  }
+
   async function uploadDocumentForThread(file: File): Promise<DocumentUploadResult> {
     // 学习点：附件先单独上传。
     // 后端保存原文件，并在 SQLite 里记录 fileId / storageKey / 解析状态。
@@ -1179,10 +1473,14 @@ function App() {
     const requestController = new AbortController();
     activeRequestControllerRef.current = requestController;
 
-    const assistantEntryId = `assistant-${Date.now()}`;
     const isApprovalSubmission =
       Boolean(options?.hideUserMessage) &&
       outgoingMessage.startsWith("__HITL_DECISIONS__:");
+    const assistantEntryId = `assistant-${Date.now()}`;
+    const turnId =
+      isApprovalSubmission && approvalTurnId
+        ? approvalTurnId
+        : crypto.randomUUID();
     // 文本文件统一进入 LangGraph Agent，由 Agent 决定是否调用 RAG Tool。
     // 图片需要把像素交给视觉模型，因此仍走专用的多模态文档接口。
     const shouldUseDocumentQa = Boolean(
@@ -1196,18 +1494,40 @@ function App() {
       id: `user-${Date.now()}`,
       role: "user",
       content: outgoingMessage,
+      turnId,
       meta: `${currentRole?.label || roleId} | ${currentModel?.label || modelId} | ${userId}`,
       attachmentName: attachment ? normalizeFileName(attachment.name) : undefined,
       attachmentPreviewUrl
     };
 
     setEntries((prev) => [
-      ...prev,
+      ...prev.filter(
+        (entry) =>
+          !(
+            isApprovalSubmission &&
+            entry.role === "assistant" &&
+            entry.turnId === turnId &&
+            entry.content.startsWith(APPROVAL_PROMPT_PREFIX)
+          )
+      ),
       ...(options?.hideUserMessage ? [] : [userEntry]),
       {
         id: assistantEntryId,
         role: "assistant",
-        content: shouldUseDocumentQa ? DOCUMENT_QA_STATUS_TEXT : THINKING_STATUS_TEXT,
+        turnId,
+        completed: false,
+        startedAt: Date.now(),
+        elapsedMs: 0,
+        statusMessage: isApprovalSubmission
+          ? APPROVED_ACTION_STATUS_TEXT
+          : shouldUseDocumentQa
+            ? DOCUMENT_QA_STATUS_TEXT
+            : THINKING_STATUS_TEXT,
+        content: isApprovalSubmission
+          ? APPROVED_ACTION_STATUS_TEXT
+          : shouldUseDocumentQa
+            ? DOCUMENT_QA_STATUS_TEXT
+            : THINKING_STATUS_TEXT,
         meta: `${currentRole?.label || roleId} | ${currentModel?.label || modelId} | ${userId}`
       }
     ]);
@@ -1263,10 +1583,12 @@ function App() {
             finalDocumentReply = streamEvent.reply || finalDocumentReply;
             if (finalDocumentReply.startsWith(APPROVAL_PROMPT_PREFIX)) {
               setApprovalRequest(finalDocumentReply);
+              setApprovalTurnId(turnId);
             }
             updateDocumentAssistantEntry((entry) => ({
               ...entry,
               content: finalDocumentReply || "文档问答没有返回内容。",
+              completed: !finalDocumentReply.startsWith(APPROVAL_PROMPT_PREFIX),
               meta: `${currentRole?.label || streamEvent.meta.roleId} | ${streamEvent.meta.modelId} | ${streamEvent.meta.userId}`
             }));
             return;
@@ -1287,6 +1609,7 @@ function App() {
       formData.append("roleId", roleId);
       formData.append("threadId", activeThreadId);
       formData.append("userId", userId.trim());
+      formData.append("turnId", turnId);
       // 即使用户只上传文件不输入文字，也给后端一条明确消息，保证本轮会进入 Agent。
       formData.append("message", outgoingMessage);
       formData.append("reasoningEffort", reasoningEffort);
@@ -1331,10 +1654,19 @@ function App() {
           return;
         }
 
+        if (streamEvent.type === "status") {
+          updateAssistantEntry((entry) => ({
+            ...entry,
+            statusMessage: streamEvent.message
+          }));
+          return;
+        }
+
         if (streamEvent.type === "delta") {
           finalReply += streamEvent.chunk;
           updateAssistantEntry((entry) => ({
             ...entry,
+            statusMessage: undefined,
             content: PENDING_STATUS_TEXTS.has(entry.content)
               ? streamEvent.chunk
               : entry.content + streamEvent.chunk
@@ -1346,10 +1678,14 @@ function App() {
           finalReply = streamEvent.reply || finalReply;
           if (finalReply.startsWith(APPROVAL_PROMPT_PREFIX)) {
             setApprovalRequest(finalReply);
+            setApprovalTurnId(turnId);
           }
           updateAssistantEntry((entry) => ({
             ...entry,
             content: finalReply || "模型没有返回内容。",
+            completed: !finalReply.startsWith(APPROVAL_PROMPT_PREFIX),
+            elapsedMs: entry.startedAt ? Date.now() - entry.startedAt : entry.elapsedMs,
+            statusMessage: undefined,
             meta: `${currentRole?.label || streamEvent.meta.roleId} | ${streamEvent.meta.modelId} | ${streamEvent.meta.userId}`
           }));
           return;
@@ -1390,6 +1726,9 @@ function App() {
       }
 
       await refreshThreads(activeThreadId);
+      if (appMode === "work") {
+        await loadWorkspaceActivities();
+      }
     } catch (submitError) {
       const wasStopped =
         requestController.signal.aborted ||
@@ -1408,9 +1747,15 @@ function App() {
           entry.id === assistantEntryId
             ? {
                 ...entry,
+                completed: true,
+                stopped: wasStopped,
+                elapsedMs: entry.startedAt ? Date.now() - entry.startedAt : entry.elapsedMs,
+                statusMessage: undefined,
                 // 停止时替换“正在思考…”或未完成内容，明确反馈当前任务状态。
                 content: wasStopped
-                  ? "已停止"
+                  ? `你在 ${formatElapsedTime(
+                      entry.startedAt ? Date.now() - entry.startedAt : entry.elapsedMs || 0
+                    )}后停止了`
                   : entry.content || `请求失败：${messageText}`
               }
             : entry
@@ -1419,6 +1764,31 @@ function App() {
     } finally {
       activeRequestControllerRef.current = null;
       setIsSubmitting(false);
+    }
+  }
+
+  function submitApprovalDecisions(decisions: ApprovalDecision[]) {
+    void handleSubmit(
+      undefined,
+      `__HITL_DECISIONS__:${JSON.stringify(decisions)}`,
+      { hideUserMessage: true }
+    );
+  }
+
+  function chooseApproval(itemIndex: number, decision: ApprovalDecision) {
+    const nextDecisions = {
+      ...approvalDecisions,
+      [itemIndex]: decision
+    };
+    setApprovalDecisions(nextDecisions);
+
+    // 单项审批点击即生效；多项审批在最后一项选择后自动提交。
+    if (
+      approvalItems.every((item) => Boolean(nextDecisions[item.index]))
+    ) {
+      submitApprovalDecisions(
+        approvalItems.map((item) => nextDecisions[item.index])
+      );
     }
   }
 
@@ -1473,9 +1843,15 @@ function App() {
             type="button"
             className="new-thread-button"
             onClick={() => void handleCreateThread()}
-            disabled={!userId.trim() || !modelId || !roleId || isThreadLoading}
+            disabled={
+              !userId.trim() ||
+              !modelId ||
+              !roleId ||
+              isThreadLoading ||
+              (appMode === "work" && !workspace)
+            }
           >
-            + 新对话
+            {appMode === "chat" ? "+ 新对话" : "+ 新任务"}
           </button>
           <div className="thread-list">
             {threads.map((thread) => (
@@ -1650,12 +2026,7 @@ function App() {
                           : "border-zinc-300 bg-white text-zinc-700"
                       }`}
                       disabled={isSubmitting}
-                      onClick={() =>
-                        setApprovalDecisions((current) => ({
-                          ...current,
-                          [item.index]: "reject"
-                        }))
-                      }
+                      onClick={() => chooseApproval(item.index, "reject")}
                     >
                       拒绝
                     </button>
@@ -1667,12 +2038,7 @@ function App() {
                           : "border-zinc-300 bg-white text-zinc-700"
                       }`}
                       disabled={isSubmitting}
-                      onClick={() =>
-                        setApprovalDecisions((current) => ({
-                          ...current,
-                          [item.index]: "approve"
-                        }))
-                      }
+                      onClick={() => chooseApproval(item.index, "approve")}
                     >
                       批准
                     </button>
@@ -1680,16 +2046,15 @@ function App() {
                 </div>
               ))}
             </div>
-            <div className="mt-4 grid grid-cols-3 gap-3">
+            {approvalItems.length > 1 ? (
+            <div className="mt-4 grid grid-cols-2 gap-3">
               <button
                 type="button"
                 className="rounded-xl border border-zinc-300 bg-white px-4 py-3 font-semibold text-zinc-800 hover:bg-zinc-100"
                 disabled={isSubmitting}
                 onClick={() =>
-                  setApprovalDecisions(
-                    Object.fromEntries(
-                      approvalItems.map((item) => [item.index, "reject"])
-                    )
+                  submitApprovalDecisions(
+                    approvalItems.map(() => "reject")
                   )
                 }
               >
@@ -1700,33 +2065,15 @@ function App() {
                 className="rounded-xl border border-zinc-300 bg-white px-4 py-3 font-semibold text-zinc-800 hover:bg-zinc-100"
                 disabled={isSubmitting}
                 onClick={() =>
-                  setApprovalDecisions(
-                    Object.fromEntries(
-                      approvalItems.map((item) => [item.index, "approve"])
-                    )
+                  submitApprovalDecisions(
+                    approvalItems.map(() => "approve")
                   )
                 }
               >
                 全部批准
               </button>
-              <button
-                type="button"
-                className="rounded-xl bg-emerald-600 px-4 py-3 font-semibold text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-zinc-300"
-                disabled={!canSubmitApproval}
-                onClick={() => {
-                  const decisions = approvalItems.map(
-                    (item) => approvalDecisions[item.index]
-                  );
-                  void handleSubmit(
-                    undefined,
-                    `__HITL_DECISIONS__:${JSON.stringify(decisions)}`,
-                    { hideUserMessage: true }
-                  );
-                }}
-              >
-                提交决定
-              </button>
             </div>
+            ) : null}
           </section>
         </div>
       ) : null}
@@ -1747,13 +2094,78 @@ function App() {
               ☰
             </button>
             <div>
-              <div className="chat-header-title">角色对话助手</div>
+              <div className="chat-header-title">
+                {appMode === "chat" ? "角色对话助手" : workspace?.name || "工作区"}
+              </div>
             </div>
           </div>
+          <nav className="flex items-center rounded-xl bg-zinc-100 p-1">
+            <button
+              type="button"
+              className={`rounded-lg px-4 py-2 text-sm font-semibold transition ${
+                appMode === "chat"
+                  ? "bg-white text-zinc-950 shadow-sm"
+                  : "text-zinc-500 hover:text-zinc-900"
+              }`}
+              onClick={() => {
+                setAppMode("chat");
+                setThreads([]);
+                setEntries([]);
+                setActiveThreadId("");
+              }}
+            >
+              聊天
+            </button>
+            <button
+              type="button"
+              className={`rounded-lg px-4 py-2 text-sm font-semibold transition ${
+                appMode === "work"
+                  ? "bg-white text-zinc-950 shadow-sm"
+                  : "text-zinc-500 hover:text-zinc-900"
+              }`}
+              onClick={() => {
+                setAppMode("work");
+                setThreads([]);
+                setEntries([]);
+                setActiveThreadId("");
+              }}
+            >
+              工作
+            </button>
+          </nav>
         </header>
 
         {error ? <div className="top-error">{error}</div> : null}
 
+        {appMode === "work" && isEmptyThread ? (
+          <section className="flex min-h-[calc(100vh-76px)] items-center justify-center px-6 pb-44">
+            <div className="text-center">
+              <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-zinc-200 bg-white text-2xl shadow-sm">
+                ◇
+              </div>
+              <h2 className="mt-7 text-3xl font-medium tracking-tight text-zinc-900">
+                {workspace
+                  ? `要在 ${workspace.name} 内开发什么？`
+                  : "选择一个项目开始工作"}
+              </h2>
+              {!workspace ? (
+                <button
+                  type="button"
+                  className="mt-7 rounded-xl bg-zinc-950 px-5 py-3 text-sm font-semibold text-white hover:bg-zinc-800 disabled:bg-zinc-300"
+                  disabled={isWorkspaceLoading}
+                  onClick={() => void selectDesktopWorkspace()}
+                >
+                  {isWorkspaceLoading ? "正在读取目录…" : "打开文件夹"}
+                </button>
+              ) : null}
+              {workspaceError ? (
+                <div className="mx-auto mt-5 max-w-lg rounded-xl bg-rose-50 px-4 py-3 text-sm text-rose-700">
+                  {workspaceError}
+                </div>
+              ) : null}
+            </div>
+          </section>
+        ) : (
         <section className="conversation">
           {isLoading || isThreadLoading ? (
             <div className="empty-state">
@@ -1768,7 +2180,7 @@ function App() {
             </div>
           ) : null}
 
-          {isEmptyThread ? (
+          {appMode === "chat" && isEmptyThread ? (
             <div className="chat-empty-home">
               <h2>今天想聊什么？</h2>
               <div className="chat-empty-actions">
@@ -1787,7 +2199,35 @@ function App() {
 
           {!isLoading &&
             !isThreadLoading &&
-            entries.map((entry) => (
+            entries.map((entry, entryIndex) => {
+              const isLastAssistantForTurn =
+                entry.role === "assistant" &&
+                !entries
+                  .slice(entryIndex + 1)
+                  .some(
+                    (candidate) =>
+                      candidate.role === "assistant" &&
+                      candidate.turnId === entry.turnId
+                  );
+              const turnActivities =
+                entry.role === "assistant" &&
+                entry.completed !== false &&
+                isLastAssistantForTurn
+                  ? [
+                      ...workspaceActivities.filter(
+                        (activity) =>
+                          Boolean(activity.turnId) &&
+                          activity.turnId === entry.turnId &&
+                          activity.activityType === "file_write" &&
+                          activity.filePath
+                      ),
+                      ...(legacyActivityByEntryId.get(entry.id) || [])
+                    ]
+                  : [];
+              const changedFiles = Array.from(
+                new Set(turnActivities.map((activity) => activity.filePath as string))
+              );
+              return (
               <div
                 key={entry.id}
                 className={`mx-auto grid w-[min(860px,calc(100%_-_32px))] gap-3 px-0 py-5 ${
@@ -1861,20 +2301,96 @@ function App() {
                       </button>
                     ) : null}
                     {entry.role === "assistant" ? (
-                      <div className="markdown-body">{renderMarkdown(entry.content)}</div>
+                      <>
+                        {entry.completed === false ? (
+                          <div className="agent-progress" role="status" aria-live="polite">
+                            <span className="agent-progress-dot" aria-hidden="true" />
+                            <span>
+                              {entry.statusMessage || "正在生成回答…"}
+                              {entry.startedAt
+                                ? ` 已处理 ${formatElapsedTime(progressClock - entry.startedAt)}`
+                                : ""}
+                            </span>
+                          </div>
+                        ) : entry.elapsedMs !== undefined && !entry.stopped ? (
+                          <div className="agent-elapsed">
+                            已处理 {formatElapsedTime(entry.elapsedMs)}
+                          </div>
+                        ) : null}
+                        {!PENDING_STATUS_TEXTS.has(entry.content) || entry.completed !== false ? (
+                          <div className="markdown-body">{renderMarkdown(entry.content)}</div>
+                        ) : null}
+                        {changedFiles.length ? (
+                          <section className="work-activity-card work-activity-inline">
+                            <header>
+                              <strong>已编辑 {changedFiles.length} 个文件</strong>
+                              <span className="work-activity-caption">Agent 工作记录</span>
+                            </header>
+                            {changedFiles.map((filePath) => (
+                              <div className="work-file-row" key={filePath}>
+                                <span>{filePath}</span>
+                                <span className="work-file-status">
+                                  +{turnActivities
+                                    .filter((item) => item.filePath === filePath)
+                                    .reduce((total, item) => total + (item.additions || 0), 0)}
+                                  {" "}
+                                  -{turnActivities
+                                    .filter((item) => item.filePath === filePath)
+                                    .reduce((total, item) => total + (item.deletions || 0), 0)}
+                                </span>
+                              </div>
+                            ))}
+                          </section>
+                        ) : null}
+                      </>
                     ) : (
                       <div className="message-text">{entry.content}</div>
                     )}
                 </div>
               </div>
-            ))}
+            )})}
         </section>
+        )}
 
         <footer
           ref={composerShellRef}
-          className={`composer-shell ${isEmptyThread ? "home-composer" : ""}`}
+          className={`composer-shell ${
+            isEmptyThread
+              ? "home-composer"
+              : ""
+          }`}
         >
           <form className="composer-card" onSubmit={handleSubmit}>
+            {appMode === "work" ? (
+              <div className="mb-2 flex min-h-10 items-center gap-1 border-b border-zinc-100 pb-2 text-xs text-zinc-600">
+                <button
+                  type="button"
+                  className="flex max-w-[45%] items-center gap-2 rounded-lg px-2.5 py-2 font-semibold text-zinc-800 hover:bg-zinc-100"
+                  onClick={() => void selectDesktopWorkspace()}
+                  title={workspace?.path || "选择工作目录"}
+                >
+                  <span>▱</span>
+                  <span className="truncate">
+                    {workspace?.name || "选择项目"}
+                  </span>
+                  <span className="text-zinc-400">⌄</span>
+                </button>
+                {workspace ? (
+                  <>
+                    <span className="rounded-lg px-2.5 py-2 text-zinc-500">
+                      ⎇ {workspace.branch || "无 Git"}
+                    </span>
+                    <button
+                      type="button"
+                      className="ml-auto rounded-lg px-2.5 py-2 text-zinc-400 hover:bg-rose-50 hover:text-rose-600"
+                      onClick={() => void clearDesktopWorkspace()}
+                    >
+                      移除
+                    </button>
+                  </>
+                ) : null}
+              </div>
+            ) : null}
             {attachment ? (
               <div
                 className={`composer-attachment-preview ${

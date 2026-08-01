@@ -44,6 +44,7 @@ export interface ChatRequestPayload {
   roleId: string;
   threadId: string;
   userId: string;
+  turnId?: string;
   reasoningEffort?: ReasoningEffort;
   attachmentName?: string;
 }
@@ -64,6 +65,11 @@ export interface ProviderConfig {
   reasoningEffort?: ReasoningEffort;
 }
 
+export type AgentProgress = {
+  stage: "thinking" | "editing_file" | "running_command" | "finalizing";
+  message: string;
+};
+
 // 学习点：ChatProvider 是所有模型供应商必须实现的统一接口。
 // DeepSeek、OpenAI、SiliconFlow 都被包装成这个形状。
 export interface ChatProvider {
@@ -76,7 +82,8 @@ export interface ChatProvider {
     fewShotExamples?: FewShotExample[],
     reasoningEffort?: ReasoningEffort,
     threadId?: string,
-    userId?: string
+    userId?: string,
+    turnId?: string
   ): Promise<string>;
   streamChat(
     modelId: string,
@@ -87,6 +94,8 @@ export interface ChatProvider {
     reasoningEffort?: ReasoningEffort,
     threadId?: string,
     userId?: string,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    turnId?: string,
+    onProgress?: (progress: AgentProgress) => void
   ): Promise<string>;
 }

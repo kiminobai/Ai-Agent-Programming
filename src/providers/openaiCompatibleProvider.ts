@@ -10,6 +10,7 @@
  */
 import OpenAI from "openai";
 import {
+  AgentProgress,
   ChatProvider,
   FewShotExample,
   ProviderConfig,
@@ -163,7 +164,9 @@ export class OpenAICompatibleProvider implements ChatProvider {
     systemPrompt: string,
     fewShotExamples: FewShotExample[] = [],
     reasoningEffort?: ReasoningEffort,
-    _threadId?: string
+    _threadId?: string,
+    _userId?: string,
+    _turnId?: string
   ): Promise<string> {
     // 学习点：非流式入口，一次请求拿完整回答。
     // 为什么这样：Answer Validation、标题生成等内部流程更适合拿完整文本再处理。
@@ -195,7 +198,11 @@ export class OpenAICompatibleProvider implements ChatProvider {
     onDelta: (chunk: string) => void,
     fewShotExamples: FewShotExample[] = [],
     reasoningEffort?: ReasoningEffort,
-    _threadId?: string
+    _threadId?: string,
+    _userId?: string,
+    _signal?: AbortSignal,
+    _turnId?: string,
+    _onProgress?: (progress: AgentProgress) => void
   ): Promise<string> {
     // 学习点：流式入口会把模型增量内容通过 onDelta 立即推给前端。
     // 为什么这样：用户可以边生成边看到内容，体验更像 ChatGPT。

@@ -3,6 +3,8 @@ import { sqliteDb } from "../db/sqlite";
 import { sqliteVectorStore } from "../rag/sqliteVectorStore";
 import { ProviderId, ReasoningEffort } from "../types";
 
+export type ThreadMode = "chat" | "work";
+
 export interface ChatThreadRecord {
   threadId: string;
   userId: string;
@@ -10,6 +12,9 @@ export interface ChatThreadRecord {
   modelId: string;
   roleId: string;
   reasoningEffort?: ReasoningEffort;
+  mode: ThreadMode;
+  workspacePath?: string;
+  workspaceName?: string;
   title: string;
   lastMessagePreview?: string;
   createdAt: string;
@@ -27,6 +32,9 @@ function mapThreadRow(
         model_id: string;
         role_id: string;
         reasoning_effort: ReasoningEffort | null;
+        mode: ThreadMode;
+        workspace_path: string | null;
+        workspace_name: string | null;
         title: string;
         last_message_preview: string | null;
         created_at: string;
@@ -45,6 +53,9 @@ function mapThreadRow(
     modelId: row.model_id,
     roleId: row.role_id,
     reasoningEffort: row.reasoning_effort ?? undefined,
+    mode: row.mode,
+    workspacePath: row.workspace_path ?? undefined,
+    workspaceName: row.workspace_name ?? undefined,
     title: row.title,
     lastMessagePreview: row.last_message_preview ?? undefined,
     createdAt: row.created_at,
@@ -58,6 +69,9 @@ export function createThread(params: {
   modelId: string;
   roleId: string;
   reasoningEffort?: ReasoningEffort;
+  mode?: ThreadMode;
+  workspacePath?: string;
+  workspaceName?: string;
 }): ChatThreadRecord {
   // 学习点：新建对话时先创建 thread 记录。
   // 真正的消息、短期记忆、上传文件会在后续发送消息时逐步写入。
@@ -74,11 +88,14 @@ export function createThread(params: {
           model_id,
           role_id,
           reasoning_effort,
+          mode,
+          workspace_path,
+          workspace_name,
           title,
           last_message_preview,
           created_at,
           updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `
     )
     .run(
@@ -88,6 +105,9 @@ export function createThread(params: {
       params.modelId,
       params.roleId,
       params.reasoningEffort ?? null,
+      params.mode ?? "chat",
+      params.workspacePath ?? null,
+      params.workspaceName ?? null,
       "New chat",
       null,
       now,
@@ -101,17 +121,25 @@ export function createThread(params: {
     modelId: params.modelId,
     roleId: params.roleId,
     reasoningEffort: params.reasoningEffort,
+    mode: params.mode ?? "chat",
+    workspacePath: params.workspacePath,
+    workspaceName: params.workspaceName,
     title: "New chat",
     createdAt: now,
     updatedAt: now
   };
 }
 
-export function listThreadsByUser(userId: string): ChatThreadRecord[] {
+export function listThreadsByUser(
+  userId: string,
+  mode: ThreadMode = "chat",
+  workspacePath?: string
+): ChatThreadRecord[] {
   // 学习点：左侧会话列表按 userId 查询，避免不同用户看到彼此对话。
-  const rows = sqliteDb
-    .prepare(
-      `
+  const workspaceFilter =
+    mode === "work" && workspacePath ? "AND workspace_path = ?" : "";
+  const statement = sqliteDb.prepare(
+    `
         SELECT
           thread_id,
           user_id,
@@ -119,22 +147,30 @@ export function listThreadsByUser(userId: string): ChatThreadRecord[] {
           model_id,
           role_id,
           reasoning_effort,
+          mode,
+          workspace_path,
+          workspace_name,
           title,
           last_message_preview,
           created_at,
           updated_at
         FROM chat_threads
-        WHERE user_id = ?
+        WHERE user_id = ? AND mode = ? ${workspaceFilter}
         ORDER BY updated_at DESC
       `
-    )
-    .all(userId) as Array<{
+  );
+  const rows = statement.all(
+    ...(workspaceFilter ? [userId, mode, workspacePath] : [userId, mode])
+  ) as Array<{
     thread_id: string;
     user_id: string;
     provider_id: ProviderId;
     model_id: string;
     role_id: string;
     reasoning_effort: ReasoningEffort | null;
+    mode: ThreadMode;
+    workspace_path: string | null;
+    workspace_name: string | null;
     title: string;
     last_message_preview: string | null;
     created_at: string;
@@ -161,6 +197,9 @@ export function getThreadById(
           model_id,
           role_id,
           reasoning_effort,
+          mode,
+          workspace_path,
+          workspace_name,
           title,
           last_message_preview,
           created_at,
@@ -177,6 +216,9 @@ export function getThreadById(
         model_id: string;
         role_id: string;
         reasoning_effort: ReasoningEffort | null;
+        mode: ThreadMode;
+        workspace_path: string | null;
+        workspace_name: string | null;
         title: string;
         last_message_preview: string | null;
         created_at: string;
@@ -281,6 +323,7 @@ export function deleteThread(threadId: string, userId: string): boolean {
   };
 
   const deleteTransaction = sqliteDb.transaction(() => {
+    sqliteDb.prepare("DELETE FROM workspace_activity WHERE thread_id = ?").run(threadId);
     sqliteDb.prepare("DELETE FROM document_qa_messages WHERE thread_id = ?").run(threadId);
     sqliteVectorStore.clearIndex(threadId);
     sqliteDb.prepare("DELETE FROM uploaded_documents WHERE thread_id = ?").run(threadId);

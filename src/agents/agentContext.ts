@@ -8,7 +8,9 @@ import { z } from "zod";
  */
 export const AgentContextSchema = z.object({
   userId: z.string().min(1),
-  threadId: z.string().min(1)
+  threadId: z.string().min(1),
+  // 每次用户提交使用独立 turnId，把工具操作绑定到对应回复。
+  turnId: z.string().optional()
 });
 
 export type AgentContext = z.infer<typeof AgentContextSchema>;
