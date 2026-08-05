@@ -21,6 +21,10 @@ import { createAgentWorkflowGraph } from "./agentWorkflowGraph";
 import { dynamicMemoryPromptMiddleware } from "./dynamicMemoryPromptMiddleware";
 import { ToolMemoryState } from "./toolMemoryState";
 import { getThreadById } from "../threads/threadRepository";
+import {
+  createRoleSubAgentTools,
+  isInternalSubAgentEvent
+} from "./roleSubAgentTools";
 
 // 学习点：ToolAgentMessage 是项目自己的简单消息格式。
 // 进入 LangChain 前，会再转换成 HumanMessage / AIMessage。
@@ -108,9 +112,16 @@ export class LangChainToolAgent {
       descriptionPrefix: "此操作需要用户确认"
     });
 
+    // 当前角色作为主管 Agent；这些内部工具分别连接该角色的专职子 Agent。
+    // 简单任务不会调用子 Agent，复杂任务才按需并行获取不同专业视角。
+    const roleSubAgentTools = createRoleSubAgentTools(
+      model,
+      options.roleWorkflow
+    );
+
     this.agent = createAgent({
       model,
-      tools: langChainTools,
+      tools: [...langChainTools, ...roleSubAgentTools],
       systemPrompt: options.systemPrompt,
       stateSchema: ToolMemoryState,
       contextSchema: AgentContextSchema,
@@ -748,7 +759,7 @@ export class LangChainToolAgent {
   private extractStreamEventText(event: unknown, currentText: string): string {
     // 学习点：streamEvents 才是 LangChain/LangGraph 的 token 级事件流。
     // 为什么这样：agent.stream 更像“状态更新流”，可能等节点结束才返回；streamEvents 可以拿到 on_chat_model_stream。
-    if (!event || typeof event !== "object") {
+    if (!event || typeof event !== "object" || isInternalSubAgentEvent(event)) {
       return "";
     }
 
@@ -804,6 +815,15 @@ export class LangChainToolAgent {
     }
 
     const toolName = candidate.name || candidate.metadata?.tool_name || "";
+    if (toolName.startsWith("consult_")) {
+      return {
+        stage: "thinking",
+        message:
+          candidate.event === "on_tool_end"
+            ? "专业子 Agent 已完成分析，正在整理结果…"
+            : "正在协调专业子 Agent…"
+      };
+    }
     if (toolName === "write_workspace_file") {
       return { stage: "editing_file", message: "正在修改文件…" };
     }

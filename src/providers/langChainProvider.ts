@@ -186,6 +186,17 @@ export class LangChainProvider implements ChatProvider {
     const promptParts = [systemPrompt];
     if (roleWorkflow) {
       promptParts.push(roleWorkflow.systemPromptExtension);
+      promptParts.push(
+        [
+          "[Multi-Agent supervisor rules]",
+          `You are the supervisor for ${roleWorkflow.label}.`,
+          "Answer simple and clear requests yourself without delegating.",
+          "For complex tasks, delegate only the parts that benefit from an independent specialist perspective.",
+          "Use multiple specialists only when their responsibilities are genuinely different.",
+          "Treat specialist results as private working material: verify and synthesize them instead of copying them verbatim.",
+          "You alone produce the final user-facing answer and perform business tool calls."
+        ].join("\n")
+      );
     }
 
     // 学习点：Few-shot 示例是给模型看的内部示例，不应该作为用户聊天记录展示。
