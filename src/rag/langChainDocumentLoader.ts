@@ -444,7 +444,7 @@ function createEnhancedDocumentLoader(
 
       if (input.fileType === "spreadsheet") {
         return splitMarkerDocuments(
-          extractTextFromSpreadsheet(input.fileBuffer),
+          await extractTextFromSpreadsheet(input.fileBuffer),
           /^\[Sheet: ([^\]]+)\]$/gm,
           "sheetName"
         );

@@ -27,6 +27,8 @@ import {
 const INTERNAL_SUB_AGENT_TAG = "internal-role-sub-agent";
 const FORBIDDEN_SUB_AGENT_TOOLS = new Set([
   "write_workspace_file",
+  "replace_workspace_text",
+  "edit_uploaded_file",
   "run_workspace_command",
   "remember_preference"
 ]);

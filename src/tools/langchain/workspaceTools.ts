@@ -141,6 +141,88 @@ export const writeWorkspaceFileTool = tool(
   }
 );
 
+export const replaceWorkspaceTextTool = tool(
+  async ({ filePath, operations }, runtime: ToolMemoryRuntime) => {
+    const durable = await executeDurableTask(
+      runtime,
+      "replace_workspace_text",
+      { filePath, operations },
+      async ({ idempotencyKey }) => {
+        const workspace = getWorkspace(runtime);
+        const absolutePath = resolveWorkspacePath(workspace.rootPath, filePath);
+        const previousContent = await fs.readFile(absolutePath, "utf8");
+        let nextContent = previousContent;
+        let replacementCount = 0;
+
+        for (const operation of operations) {
+          if (!nextContent.includes(operation.find)) {
+            // 精确匹配失败就停止，避免 Agent 猜测行号后改错代码。
+            throw new Error(
+              `文件内容已变化或目标不存在，未执行写入：${operation.find.slice(0, 80)}`
+            );
+          }
+          if (operation.replaceAll) {
+            const parts = nextContent.split(operation.find);
+            replacementCount += parts.length - 1;
+            nextContent = parts.join(operation.replace);
+          } else {
+            replacementCount += 1;
+            nextContent = nextContent.replace(operation.find, operation.replace);
+          }
+        }
+
+        await fs.writeFile(absolutePath, nextContent, "utf8");
+        const context = (runtime.context ?? {}) as AgentContext;
+        saveWorkspaceActivity({
+          threadId: context.threadId,
+          userId: context.userId,
+          turnId: context.turnId,
+          idempotencyKey,
+          activityType: "file_write",
+          filePath,
+          additions: Math.max(
+            0,
+            nextContent.split(/\r?\n/).length -
+              previousContent.split(/\r?\n/).length
+          ),
+          deletions: Math.max(
+            0,
+            previousContent.split(/\r?\n/).length -
+              nextContent.split(/\r?\n/).length
+          )
+        });
+        return {
+          filePath,
+          replacementCount,
+          bytesWritten: Buffer.byteLength(nextContent, "utf8")
+        };
+      }
+    );
+    return writeToolContext(runtime, "replace_workspace_text", {
+      filePath,
+      operations
+    }, {
+      ...durable.result,
+      replayed: durable.replayed
+    });
+  },
+  {
+    name: "replace_workspace_text",
+    description:
+      "在已读取的工作区文本/代码文件中执行精确替换。仅修改匹配内容，任一原文找不到就完全停止；修改现有文件时优先使用，且必须经过用户审批。",
+    schema: z.object({
+      filePath: z.string().min(1).describe("工作区内相对文件路径"),
+      operations: z.array(
+        z.object({
+          find: z.string().min(1).describe("文件中必须存在的精确原文"),
+          replace: z.string().describe("替换后的内容"),
+          replaceAll: z.boolean().default(false)
+        })
+      ).min(1).max(50)
+    })
+  }
+);
+
 export const runWorkspaceCommandTool = tool(
   async ({ executable, args }, runtime: ToolMemoryRuntime) => {
     const context = (runtime.context ?? {}) as AgentContext;

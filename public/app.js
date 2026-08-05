@@ -21466,6 +21466,15 @@
     const seconds = totalSeconds % 60;
     return `${minutes} \u5206 ${seconds} \u79D2`;
   }
+  function formatFileSize(bytes) {
+    if (bytes < 1024) {
+      return `${bytes} B`;
+    }
+    if (bytes < 1024 * 1024) {
+      return `${(bytes / 1024).toFixed(1)} KB`;
+    }
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
   function getTaskPlanStepIcon(status) {
     return {
       pending: "\u25CB",
@@ -21729,6 +21738,7 @@
     const [workspaceActivities, setWorkspaceActivities] = (0, import_react.useState)([]);
     const [subAgentRuns, setSubAgentRuns] = (0, import_react.useState)([]);
     const [taskPlans, setTaskPlans] = (0, import_react.useState)([]);
+    const [generatedFiles, setGeneratedFiles] = (0, import_react.useState)([]);
     const [expandedSubAgentRoots, setExpandedSubAgentRoots] = (0, import_react.useState)(
       () => /* @__PURE__ */ new Set()
     );
@@ -21872,6 +21882,13 @@
         return;
       }
       void loadWorkspaceActivities();
+    }, [appMode, activeThreadId, userId]);
+    (0, import_react.useEffect)(() => {
+      if (!activeThreadId || !userId.trim()) {
+        setGeneratedFiles([]);
+        return;
+      }
+      void loadGeneratedFiles();
     }, [appMode, activeThreadId, userId]);
     (0, import_react.useEffect)(() => {
       if (!activeThreadId || !userId.trim()) {
@@ -22439,6 +22456,16 @@
       }
       setTaskPlans(data.plans || []);
     }
+    async function loadGeneratedFiles() {
+      const response = await fetch(
+        `/api/generated-files?threadId=${encodeURIComponent(activeThreadId)}&userId=${encodeURIComponent(userId.trim())}`
+      );
+      const data = await readJsonResponse(response, "/api/generated-files");
+      if (!response.ok) {
+        throw new Error(data.error || "\u8BFB\u53D6\u751F\u6210\u6587\u4EF6\u5931\u8D25\u3002");
+      }
+      setGeneratedFiles(data.files || []);
+    }
     async function uploadDocumentForThread(file) {
       if (!activeThreadId || !userId.trim()) {
         throw new Error("No active thread is available for document upload.");
@@ -22710,6 +22737,11 @@
                 nextPlan
               ]);
             }
+            if (streamEvent.stage === "generating_file" && streamEvent.message.startsWith("\u6587\u4EF6\u5DF2\u751F\u6210") || streamEvent.stage === "editing_file" && streamEvent.message.startsWith("\u4FEE\u6539\u7248\u6587\u4EF6\u5DF2\u751F\u6210")) {
+              window.setTimeout(() => {
+                void loadGeneratedFiles();
+              }, 60);
+            }
             return;
           }
           if (streamEvent.type === "delta") {
@@ -22768,7 +22800,13 @@
         await refreshThreads(activeThreadId);
         await loadSubAgentRuns();
         if (appMode === "work") {
-          await Promise.all([loadWorkspaceActivities(), loadTaskPlans()]);
+          await Promise.all([
+            loadWorkspaceActivities(),
+            loadTaskPlans(),
+            loadGeneratedFiles()
+          ]);
+        } else {
+          await loadGeneratedFiles();
         }
       } catch (submitError) {
         const wasStopped = requestController.signal.aborted || submitError instanceof DOMException && submitError.name === "AbortError";
@@ -23084,6 +23122,9 @@
           (run) => run.turnId === entry.turnId && run.depth === 1
         ) : [];
         const turnPlan = entry.role === "assistant" && entry.turnId && isLastAssistantForTurn ? taskPlans.find((plan) => plan.turnId === entry.turnId) : void 0;
+        const turnGeneratedFiles = entry.role === "assistant" && entry.turnId && isLastAssistantForTurn ? generatedFiles.filter(
+          (file) => file.turnId === entry.turnId
+        ) : [];
         return /* @__PURE__ */ import_react.default.createElement(
           "div",
           {
@@ -23191,7 +23232,32 @@
                   new Date(child.completedAt).getTime() - new Date(child.startedAt).getTime()
                 )) : null))))) : null
               );
-            }), !PENDING_STATUS_TEXTS.has(entry.content) || entry.completed !== false ? /* @__PURE__ */ import_react.default.createElement("div", { className: "markdown-body" }, renderMarkdown(entry.content)) : null, changedFiles.length ? /* @__PURE__ */ import_react.default.createElement("section", { className: "work-activity-card work-activity-inline" }, /* @__PURE__ */ import_react.default.createElement("header", null, /* @__PURE__ */ import_react.default.createElement("strong", null, "\u5DF2\u7F16\u8F91 ", changedFiles.length, " \u4E2A\u6587\u4EF6"), /* @__PURE__ */ import_react.default.createElement("span", { className: "work-activity-caption" }, "Agent \u5DE5\u4F5C\u8BB0\u5F55")), changedFiles.map((filePath) => /* @__PURE__ */ import_react.default.createElement("div", { className: "work-file-row", key: filePath }, /* @__PURE__ */ import_react.default.createElement("span", null, filePath), /* @__PURE__ */ import_react.default.createElement("span", { className: "work-file-status" }, "+", turnActivities.filter((item) => item.filePath === filePath).reduce((total, item) => total + (item.additions || 0), 0), " ", "-", turnActivities.filter((item) => item.filePath === filePath).reduce((total, item) => total + (item.deletions || 0), 0))))) : null) : /* @__PURE__ */ import_react.default.createElement("div", { className: "message-text" }, entry.content)
+            }), !PENDING_STATUS_TEXTS.has(entry.content) || entry.completed !== false ? /* @__PURE__ */ import_react.default.createElement("div", { className: "markdown-body" }, renderMarkdown(entry.content)) : null, turnGeneratedFiles.length ? /* @__PURE__ */ import_react.default.createElement(
+              "section",
+              {
+                className: "generated-file-list",
+                "aria-label": "AI \u751F\u6210\u7684\u6587\u4EF6"
+              },
+              turnGeneratedFiles.map((file) => /* @__PURE__ */ import_react.default.createElement(
+                "a",
+                {
+                  className: "generated-file-card",
+                  href: `/api/generated-files/${encodeURIComponent(file.fileId)}/download?userId=${encodeURIComponent(userId.trim())}`,
+                  key: file.fileId,
+                  download: file.fileName
+                },
+                /* @__PURE__ */ import_react.default.createElement("span", { className: "generated-file-icon" }, getAttachmentKind(file.fileName)),
+                /* @__PURE__ */ import_react.default.createElement("span", { className: "generated-file-info" }, /* @__PURE__ */ import_react.default.createElement("strong", null, file.fileName), /* @__PURE__ */ import_react.default.createElement("small", null, file.editMode === "preserve-layout" ? `\u539F\u6587\u4EF6\u4FEE\u6539\u7248 v${file.version}` : "AI \u751F\u6210\u6587\u4EF6", " \xB7 ", formatFileSize(file.fileSize), " \xB7 \u70B9\u51FB\u4E0B\u8F7D")),
+                /* @__PURE__ */ import_react.default.createElement(
+                  "span",
+                  {
+                    className: "generated-file-download",
+                    "aria-hidden": "true"
+                  },
+                  "\u2193"
+                )
+              ))
+            ) : null, changedFiles.length ? /* @__PURE__ */ import_react.default.createElement("section", { className: "work-activity-card work-activity-inline" }, /* @__PURE__ */ import_react.default.createElement("header", null, /* @__PURE__ */ import_react.default.createElement("strong", null, "\u5DF2\u7F16\u8F91 ", changedFiles.length, " \u4E2A\u6587\u4EF6"), /* @__PURE__ */ import_react.default.createElement("span", { className: "work-activity-caption" }, "Agent \u5DE5\u4F5C\u8BB0\u5F55")), changedFiles.map((filePath) => /* @__PURE__ */ import_react.default.createElement("div", { className: "work-file-row", key: filePath }, /* @__PURE__ */ import_react.default.createElement("span", null, filePath), /* @__PURE__ */ import_react.default.createElement("span", { className: "work-file-status" }, "+", turnActivities.filter((item) => item.filePath === filePath).reduce((total, item) => total + (item.additions || 0), 0), " ", "-", turnActivities.filter((item) => item.filePath === filePath).reduce((total, item) => total + (item.deletions || 0), 0))))) : null) : /* @__PURE__ */ import_react.default.createElement("div", { className: "message-text" }, entry.content)
           )
         );
       })),

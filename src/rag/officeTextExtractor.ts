@@ -1,5 +1,5 @@
+import ExcelJS from "exceljs";
 import mammoth from "mammoth";
-import * as XLSX from "xlsx";
 
 export async function extractTextFromDocx(fileBuffer: Buffer): Promise<string> {
   // 学习点：Word 文档先提取成纯文本，后面才能统一进入 chunk / embedding 流程。
@@ -7,33 +7,49 @@ export async function extractTextFromDocx(fileBuffer: Buffer): Promise<string> {
   return result.value || "";
 }
 
-export function extractTextFromSpreadsheet(fileBuffer: Buffer): string {
+export async function extractTextFromSpreadsheet(
+  fileBuffer: Buffer
+): Promise<string> {
   // 学习点：Excel/CSV 的表格结构会被转成“文本行”。
   // 这样模型虽然看不到真正的表格 UI，但可以检索到单元格里的内容。
-  const workbook = XLSX.read(fileBuffer, {
-    type: "buffer",
-    cellDates: true,
-    dense: false
-  });
-  const sheets = workbook.SheetNames.map((sheetName) => {
-    const sheet = workbook.Sheets[sheetName];
-    const rows = XLSX.utils.sheet_to_json<Array<string | number | boolean | null>>(
-      sheet,
-      {
-        header: 1,
-        blankrows: false,
-        defval: ""
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(fileBuffer as unknown as ExcelJS.Buffer);
+  const sheets = workbook.worksheets.map((sheet) => {
+    const renderedRows: string[] = [];
+    sheet.eachRow({ includeEmpty: false }, (row) => {
+      const cells: string[] = [];
+      for (let index = 1; index <= row.cellCount; index += 1) {
+        cells.push(renderSpreadsheetCell(row.getCell(index).value));
       }
-    );
-    const renderedRows = rows.map((row) =>
       // 学习点：用竖线连接单元格，保留“这一行有哪些列”的感觉。
-      row.map((cell) => String(cell ?? "").trim()).join(" | ")
-    );
-
-    return [`[Sheet: ${sheetName}]`, ...renderedRows].join("\n");
+      renderedRows.push(cells.join(" | "));
+    });
+    return [`[Sheet: ${sheet.name}]`, ...renderedRows].join("\n");
   });
 
   return sheets.join("\n\n");
+}
+
+function renderSpreadsheetCell(value: ExcelJS.CellValue): string {
+  if (value === null || value === undefined) {
+    return "";
+  }
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+  if (typeof value !== "object") {
+    return String(value).trim();
+  }
+  if ("result" in value) {
+    return renderSpreadsheetCell(value.result ?? value.formula);
+  }
+  if ("richText" in value) {
+    return value.richText.map((part) => part.text).join("").trim();
+  }
+  if ("text" in value) {
+    return String(value.text).trim();
+  }
+  return JSON.stringify(value);
 }
 
 export function extractTextFromHtml(fileBuffer: Buffer): string {

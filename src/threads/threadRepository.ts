@@ -338,6 +338,7 @@ export function deleteThread(threadId: string, userId: string): boolean {
     database.prepare("DELETE FROM workspace_activity WHERE thread_id = ?").run(threadId);
     database.prepare("DELETE FROM subagent_runs WHERE thread_id = ?").run(threadId);
     database.prepare("DELETE FROM agent_task_plans WHERE thread_id = ?").run(threadId);
+    database.prepare("DELETE FROM generated_files WHERE thread_id = ?").run(threadId);
     database.prepare("DELETE FROM agent_task_executions WHERE thread_id = ?").run(threadId);
     database.prepare("DELETE FROM document_qa_messages WHERE thread_id = ?").run(threadId);
     sqliteVectorStore.clearIndex(threadId, database);

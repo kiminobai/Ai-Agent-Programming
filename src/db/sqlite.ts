@@ -150,6 +150,26 @@ sqliteDb.exec(`
   CREATE INDEX IF NOT EXISTS idx_agent_task_plans_thread_updated
   ON agent_task_plans(thread_id, updated_at ASC);
 
+  -- Chat 模式由 Agent 生成、供用户下载的文件。文件本体保存在 data/generated。
+  CREATE TABLE IF NOT EXISTS generated_files (
+    file_id TEXT PRIMARY KEY,
+    thread_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    turn_id TEXT,
+    source_file_id TEXT,
+    parent_file_id TEXT,
+    version INTEGER NOT NULL DEFAULT 1,
+    edit_mode TEXT NOT NULL DEFAULT 'generated',
+    file_name TEXT NOT NULL,
+    storage_key TEXT NOT NULL,
+    mime_type TEXT NOT NULL,
+    file_size INTEGER NOT NULL,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_generated_files_thread_turn
+  ON generated_files(thread_id, turn_id, created_at ASC);
+
   -- Uploaded document metadata. Raw files live on disk; SQLite stores paths and parse/index status.
   CREATE TABLE IF NOT EXISTS uploaded_documents (
     thread_id TEXT PRIMARY KEY,
@@ -333,6 +353,16 @@ for (const [columnName, definition] of [
   addColumnIfMissing("document_chunks", columnName, definition);
 }
 
+for (const [columnName, definition] of [
+  ["source_file_id", "TEXT"],
+  ["parent_file_id", "TEXT"],
+  ["version", "INTEGER NOT NULL DEFAULT 1"],
+  ["edit_mode", "TEXT NOT NULL DEFAULT 'generated'"]
+] as const) {
+  // 修改版文件必须保留来源和版本，重启后才不会把它误当成全新文件。
+  addColumnIfMissing("generated_files", columnName, definition);
+}
+
 sqliteDb.exec(`
   CREATE UNIQUE INDEX IF NOT EXISTS idx_uploaded_documents_file_id
   ON uploaded_documents(file_id)
@@ -384,6 +414,23 @@ function createEmptyWorkDatabase(): Database.Database {
 }
 
 export const workSqliteDb = createEmptyWorkDatabase();
+
+for (const [columnName, definition] of [
+  ["source_file_id", "TEXT"],
+  ["parent_file_id", "TEXT"],
+  ["version", "INTEGER NOT NULL DEFAULT 1"],
+  ["edit_mode", "TEXT NOT NULL DEFAULT 'generated'"]
+] as const) {
+  const rows = workSqliteDb
+    .prepare("PRAGMA table_info(generated_files)")
+    .all() as Array<{ name: string }>;
+  if (!rows.some((row) => row.name === columnName)) {
+    // 已存在的 Work 数据库不会重新复制主库 Schema，因此需要单独迁移。
+    workSqliteDb.exec(
+      `ALTER TABLE generated_files ADD COLUMN ${columnName} ${definition}`
+    );
+  }
+}
 
 export function getDatabaseForThread(threadId: string): Database.Database {
   const isWorkThread = workSqliteDb

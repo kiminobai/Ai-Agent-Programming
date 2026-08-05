@@ -115,6 +115,14 @@ export class LangChainToolAgent {
           allowedDecisions: ["approve", "reject"],
           description: "Agent 准备创建或修改工作区文件。"
         },
+        replace_workspace_text: {
+          allowedDecisions: ["approve", "reject"],
+          description: "Agent 准备精确修改工作区中的现有文件。"
+        },
+        edit_uploaded_file: {
+          allowedDecisions: ["approve", "reject"],
+          description: "Agent 准备基于当前上传原件生成一个可下载的修改版本。"
+        },
         run_workspace_command: {
           allowedDecisions: ["approve", "reject"],
           description: "Agent 准备在工作区运行开发命令。"
@@ -813,7 +821,12 @@ export class LangChainToolAgent {
       return false;
     }
     const toolName = candidate.name || candidate.metadata?.tool_name || "";
-    return ["write_workspace_file", "run_workspace_command"].includes(toolName);
+    return [
+      "write_workspace_file",
+      "replace_workspace_text",
+      "edit_uploaded_file",
+      "run_workspace_command"
+    ].includes(toolName);
   }
 
   private extractAgentProgress(event: unknown): AgentProgress | null {
@@ -923,8 +936,37 @@ export class LangChainToolAgent {
         }
       };
     }
-    if (toolName === "write_workspace_file") {
+    if (
+      toolName === "write_workspace_file" ||
+      toolName === "replace_workspace_text"
+    ) {
       return { stage: "editing_file", message: "正在修改文件…" };
+    }
+    if (toolName === "edit_uploaded_file") {
+      return {
+        stage: "editing_file",
+        message:
+          candidate.event === "on_tool_end"
+            ? "修改版文件已生成，正在整理回复…"
+            : "正在基于原文件生成修改版本…"
+      };
+    }
+    if (
+      [
+        "generate_chat_file",
+        "generate_pdf_file",
+        "generate_word_document",
+        "generate_excel_workbook",
+        "generate_presentation"
+      ].includes(toolName)
+    ) {
+      return {
+        stage: "generating_file",
+        message:
+          candidate.event === "on_tool_end"
+            ? "文件已生成，正在整理回复…"
+            : "正在生成可下载文件…"
+      };
     }
     if (toolName === "run_workspace_command") {
       const input = candidate.data?.input as { command?: unknown } | undefined;

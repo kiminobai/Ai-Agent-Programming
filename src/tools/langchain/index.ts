@@ -13,9 +13,18 @@ import { uploadedDocumentTool } from "./uploadedDocumentTool";
 import { parallelReadTool } from "./parallelReadTool";
 import { weatherTool } from "./weatherTool";
 import { taskPlanTool } from "./taskPlanTool";
+import { generateChatFileTool } from "./generateChatFileTool";
+import { editUploadedFileTool } from "./editUploadedFileTool";
+import {
+  generateExcelWorkbookTool,
+  generatePdfFileTool,
+  generatePresentationTool,
+  generateWordDocumentTool
+} from "./officeFileTools";
 import {
   listWorkspaceFilesTool,
   readWorkspaceFileTool,
+  replaceWorkspaceTextTool,
   runWorkspaceCommandTool,
   writeWorkspaceFileTool
 } from "./workspaceTools";
@@ -29,9 +38,18 @@ export { uploadedDocumentTool } from "./uploadedDocumentTool";
 export { parallelReadTool } from "./parallelReadTool";
 export { weatherTool } from "./weatherTool";
 export { taskPlanTool } from "./taskPlanTool";
+export { generateChatFileTool } from "./generateChatFileTool";
+export { editUploadedFileTool } from "./editUploadedFileTool";
+export {
+  generateExcelWorkbookTool,
+  generatePdfFileTool,
+  generatePresentationTool,
+  generateWordDocumentTool
+} from "./officeFileTools";
 export {
   listWorkspaceFilesTool,
   readWorkspaceFileTool,
+  replaceWorkspaceTextTool,
   runWorkspaceCommandTool,
   writeWorkspaceFileTool
 } from "./workspaceTools";
@@ -52,9 +70,18 @@ export const langChainTools = [
   parallelReadTool,
   // Work 复杂任务的结构化计划，只记录执行状态，不把内部推理暴露给用户。
   taskPlanTool,
+  // Chat 文件交付工具：生成文本类文件并提供持久化下载。
+  generateChatFileTool,
+  generatePdfFileTool,
+  generateWordDocumentTool,
+  generateExcelWorkbookTool,
+  generatePresentationTool,
+  // 原文件编辑工具：绑定上传件并生成有来源、有版本的修改副本。
+  editUploadedFileTool,
   // Coding Agent 工具：只在绑定了工作区的 work thread 中可成功执行。
   listWorkspaceFilesTool,
   readWorkspaceFileTool,
+  replaceWorkspaceTextTool,
   writeWorkspaceFileTool,
   runWorkspaceCommandTool
 ];

@@ -71,6 +71,12 @@ import {
   DEFAULT_WORKSPACE_ROOT,
   deleteWorkThreadStorage
 } from "./workspace/localWorkStorage";
+import {
+  deleteGeneratedThreadDirectory,
+  getGeneratedFile,
+  listGeneratedFiles,
+  resolveGeneratedFileStorageKey
+} from "./files/generatedFileStore";
 import type { UploadedDocumentRecord } from "./rag/uploadedDocumentStore";
 
 type MulterRequest = Request & {
@@ -131,6 +137,37 @@ app.get("/api/task-plans", (req, res) => {
     return;
   }
   res.json({ plans: listTaskPlans(threadId, userId) });
+});
+
+app.get("/api/generated-files", (req, res) => {
+  const threadId = String(req.query.threadId || "").trim();
+  const userId = String(req.query.userId || "").trim();
+  const thread = getThreadById(threadId, userId);
+  if (!thread) {
+    res.status(404).json({ error: "对话不存在。" });
+    return;
+  }
+  res.json({ files: listGeneratedFiles(threadId, userId) });
+});
+
+app.get("/api/generated-files/:fileId/download", (req, res) => {
+  const fileId = String(req.params.fileId || "").trim();
+  const userId = String(req.query.userId || "").trim();
+  if (!fileId || !userId) {
+    res.status(400).json({ error: "fileId and userId are required." });
+    return;
+  }
+  const file = getGeneratedFile(fileId, userId);
+  if (!file) {
+    res.status(404).json({ error: "生成文件不存在。" });
+    return;
+  }
+  res.setHeader("Content-Type", file.mimeType);
+  res.setHeader(
+    "Content-Disposition",
+    `attachment; filename*=UTF-8''${encodeURIComponent(file.fileName)}`
+  );
+  res.sendFile(resolveGeneratedFileStorageKey(file.storageKey));
 });
 
 /**
@@ -526,7 +563,10 @@ app.delete("/api/threads/:threadId", async (req: Request, res: Response) => {
       // 这里只删除 KimiBai 为任务创建的数据，绝不删除用户选择的工作目录。
       await deleteWorkThreadStorage(threadId);
     } else {
-      await deleteUploadThreadDirectory({ userId, threadId });
+      await Promise.all([
+        deleteUploadThreadDirectory({ userId, threadId }),
+        deleteGeneratedThreadDirectory({ userId, threadId })
+      ]);
     }
     res.json({ ok: true });
   } catch (error) {
@@ -660,8 +700,6 @@ app.post(
       pendingUpload = undefined;
 
       // Step 5: persist document metadata in SQLite.
-      saveUploadedDocument(uploadedDocument);
-      committedUpload = undefined;
       saveUploadedDocument(uploadedDocument);
       committedUpload = undefined;
 

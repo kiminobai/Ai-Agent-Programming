@@ -71,6 +71,7 @@ export type AgentProgress = {
     | "subagent"
     | "editing_file"
     | "running_command"
+    | "generating_file"
     | "finalizing"
     | "task_plan";
   message: string;

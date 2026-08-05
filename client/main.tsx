@@ -127,6 +127,7 @@ type StreamEvent =
         | "subagent"
         | "editing_file"
         | "running_command"
+        | "generating_file"
         | "finalizing"
         | "task_plan";
       message: string;
@@ -158,6 +159,16 @@ function formatElapsedTime(elapsedMs: number): string {
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   return `${minutes} 分 ${seconds} 秒`;
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function getTaskPlanStepIcon(status: TaskPlanStepStatus): string {
@@ -250,6 +261,20 @@ type TaskPlan = {
     status: TaskPlanStepStatus;
   }>;
   updatedAt?: string;
+};
+
+type GeneratedFile = {
+  fileId: string;
+  threadId: string;
+  turnId?: string;
+  sourceFileId?: string;
+  parentFileId?: string;
+  version: number;
+  editMode: "generated" | "preserve-layout" | "regenerated";
+  fileName: string;
+  mimeType: string;
+  fileSize: number;
+  createdAt: string;
 };
 
 declare global {
@@ -601,6 +626,7 @@ function App() {
   const [workspaceActivities, setWorkspaceActivities] = useState<WorkspaceActivity[]>([]);
   const [subAgentRuns, setSubAgentRuns] = useState<SubAgentRun[]>([]);
   const [taskPlans, setTaskPlans] = useState<TaskPlan[]>([]);
+  const [generatedFiles, setGeneratedFiles] = useState<GeneratedFile[]>([]);
   const [expandedSubAgentRoots, setExpandedSubAgentRoots] = useState<Set<string>>(
     () => new Set()
   );
@@ -791,6 +817,15 @@ function App() {
       return;
     }
     void loadWorkspaceActivities();
+  }, [appMode, activeThreadId, userId]);
+
+  useEffect(() => {
+    if (!activeThreadId || !userId.trim()) {
+      setGeneratedFiles([]);
+      return;
+    }
+    // Chat 与 Work 的修改版文件都持久化；切换任务或刷新后重新查询。
+    void loadGeneratedFiles();
   }, [appMode, activeThreadId, userId]);
 
   useEffect(() => {
@@ -1507,6 +1542,17 @@ function App() {
     setTaskPlans((data.plans || []) as TaskPlan[]);
   }
 
+  async function loadGeneratedFiles() {
+    const response = await fetch(
+      `/api/generated-files?threadId=${encodeURIComponent(activeThreadId)}&userId=${encodeURIComponent(userId.trim())}`
+    );
+    const data = await readJsonResponse(response, "/api/generated-files");
+    if (!response.ok) {
+      throw new Error(data.error || "读取生成文件失败。");
+    }
+    setGeneratedFiles((data.files || []) as GeneratedFile[]);
+  }
+
   async function uploadDocumentForThread(file: File): Promise<DocumentUploadResult> {
     // 学习点：附件先单独上传。
     // 后端保存原文件，并在 SQLite 里记录 fileId / storageKey / 解析状态。
@@ -1858,6 +1904,16 @@ function App() {
               nextPlan
             ]);
           }
+          if (
+            (streamEvent.stage === "generating_file" &&
+              streamEvent.message.startsWith("文件已生成")) ||
+            (streamEvent.stage === "editing_file" &&
+              streamEvent.message.startsWith("修改版文件已生成"))
+          ) {
+            window.setTimeout(() => {
+              void loadGeneratedFiles();
+            }, 60);
+          }
           return;
         }
 
@@ -1927,7 +1983,13 @@ function App() {
       await refreshThreads(activeThreadId);
       await loadSubAgentRuns();
       if (appMode === "work") {
-        await Promise.all([loadWorkspaceActivities(), loadTaskPlans()]);
+        await Promise.all([
+          loadWorkspaceActivities(),
+          loadTaskPlans(),
+          loadGeneratedFiles()
+        ]);
+      } else {
+        await loadGeneratedFiles();
       }
     } catch (submitError) {
       const wasStopped =
@@ -2439,6 +2501,14 @@ function App() {
                 isLastAssistantForTurn
                   ? taskPlans.find((plan) => plan.turnId === entry.turnId)
                   : undefined;
+              const turnGeneratedFiles =
+                entry.role === "assistant" &&
+                entry.turnId &&
+                isLastAssistantForTurn
+                  ? generatedFiles.filter(
+                      (file) => file.turnId === entry.turnId
+                    )
+                  : [];
               return (
               <div
                 key={entry.id}
@@ -2668,6 +2738,41 @@ function App() {
                         })}
                         {!PENDING_STATUS_TEXTS.has(entry.content) || entry.completed !== false ? (
                           <div className="markdown-body">{renderMarkdown(entry.content)}</div>
+                        ) : null}
+                        {turnGeneratedFiles.length ? (
+                          <section
+                            className="generated-file-list"
+                            aria-label="AI 生成的文件"
+                          >
+                            {turnGeneratedFiles.map((file) => (
+                              <a
+                                className="generated-file-card"
+                                href={`/api/generated-files/${encodeURIComponent(file.fileId)}/download?userId=${encodeURIComponent(userId.trim())}`}
+                                key={file.fileId}
+                                download={file.fileName}
+                              >
+                                <span className="generated-file-icon">
+                                  {getAttachmentKind(file.fileName)}
+                                </span>
+                                <span className="generated-file-info">
+                                  <strong>{file.fileName}</strong>
+                                  <small>
+                                    {file.editMode === "preserve-layout"
+                                      ? `原文件修改版 v${file.version}`
+                                      : "AI 生成文件"}
+                                    {" · "}
+                                    {formatFileSize(file.fileSize)} · 点击下载
+                                  </small>
+                                </span>
+                                <span
+                                  className="generated-file-download"
+                                  aria-hidden="true"
+                                >
+                                  ↓
+                                </span>
+                              </a>
+                            ))}
+                          </section>
                         ) : null}
                         {changedFiles.length ? (
                           <section className="work-activity-card work-activity-inline">

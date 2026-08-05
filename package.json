@@ -40,13 +40,16 @@
     "@langchain/langgraph-checkpoint-sqlite": "^1.0.3",
     "@langchain/openai": "^1.5.5",
     "@langchain/textsplitters": "^1.0.1",
+    "@types/pdfkit": "^0.17.6",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "cheerio": "^1.2.0",
     "chromadb": "^3.5.0",
     "d3-dsv": "^2.0.0",
+    "docx": "^9.7.1",
     "dotenv": "^16.6.1",
     "esbuild": "^0.28.1",
+    "exceljs": "^4.4.0",
     "express": "^4.21.2",
     "js-tiktoken": "^1.0.21",
     "jszip": "^3.10.1",
@@ -56,12 +59,19 @@
     "officeparser": "^7.5.1",
     "openai": "^6.49.0",
     "pdf-parse": "^2.4.5",
+    "pdfkit": "^0.19.1",
+    "pptxgenjs": "^4.0.1",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
+    "sharp": "^0.35.3",
     "tesseract.js": "^7.0.0",
     "word-extractor": "^1.0.4",
-    "xlsx": "^0.18.5",
     "zod": "^4.4.3"
+  },
+  "overrides": {
+    "exceljs": {
+      "uuid": "^11.1.1"
+    }
   },
   "devDependencies": {
     "@tailwindcss/cli": "^4.3.3",

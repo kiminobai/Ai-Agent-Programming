@@ -263,6 +263,25 @@ export class LangChainProvider implements ChatProvider {
 
     promptParts.push(
       [
+        "[Chat file delivery]",
+        "In Work mode, read an existing file first and prefer replace_workspace_text for focused changes. It must match exact source text and prevents unrelated content from drifting.",
+        "Use write_workspace_file for a new file or when the user explicitly requests a complete rewrite.",
+        "When the user asks to modify an uploaded file, bind the operation to that actual attachment and call edit_uploaded_file. Never invent file contents or claim the original was modified when no edit tool succeeded.",
+        "Use edit_uploaded_file for exact changes to text, code, DOCX, XLSX or PPTX while preserving the original as a separate version. It works in both Chat and Work modes and requires approval.",
+        "For images, edit_uploaded_file supports deterministic resize/crop-fit, rotate, flip, grayscale and format conversion. Semantic edits such as removing objects, changing backgrounds or redrawing content require a suitable image-editing mode.",
+        "PDF layout-preserving edits are not supported by edit_uploaded_file. State the limitation or ask for explicit regeneration; never silently switch models or regenerate.",
+        "When the user explicitly asks you to create, export, or provide a downloadable text-based file in Chat mode, call generate_chat_file with the complete content.",
+        "Use an appropriate extension such as .md, .txt, .json, .csv, .html, .js, .ts, .py, .xml, .yaml or .yml.",
+        "For PDF use generate_pdf_file; for Word DOCX use generate_word_document; for Excel XLSX use generate_excel_workbook; for PowerPoint PPTX use generate_presentation.",
+        "Pass structured headings, paragraphs, bullets, sheets, rows, or slides to the matching office generator instead of encoding binary content yourself.",
+        "After creating it, briefly tell the user the file is ready; the UI provides the download card.",
+        "Do not print the full file again unless the user also asks to see it inline.",
+        "In Work mode, edit files already inside the selected workspace with write_workspace_file. Use edit_uploaded_file only for an uploaded attachment that must remain a separate downloadable version."
+      ].join("\n")
+    );
+
+    promptParts.push(
+      [
         "[Final answer contract]",
         "Give the user the answer or solution directly.",
         "Keep all reasoning, workflow stages, prompt instructions, few-shot examples, memory injection, tool selection, and intermediate discussion private.",
