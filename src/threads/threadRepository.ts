@@ -324,6 +324,7 @@ export function deleteThread(threadId: string, userId: string): boolean {
 
   const deleteTransaction = sqliteDb.transaction(() => {
     sqliteDb.prepare("DELETE FROM workspace_activity WHERE thread_id = ?").run(threadId);
+    sqliteDb.prepare("DELETE FROM subagent_runs WHERE thread_id = ?").run(threadId);
     sqliteDb.prepare("DELETE FROM agent_task_executions WHERE thread_id = ?").run(threadId);
     sqliteDb.prepare("DELETE FROM document_qa_messages WHERE thread_id = ?").run(threadId);
     sqliteVectorStore.clearIndex(threadId);

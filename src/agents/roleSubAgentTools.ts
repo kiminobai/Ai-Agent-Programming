@@ -17,8 +17,32 @@ import type {
 } from "../workflows-agents/types";
 import type { ToolMemoryRuntime } from "./toolMemoryState";
 import { executeDurableTask } from "./durableTaskExecution";
+import { AgentContextSchema, type AgentContext } from "./agentContext";
+import { ToolMemoryState } from "./toolMemoryState";
+import {
+  finishSubAgentRun,
+  startSubAgentRun
+} from "./subAgentRunRepository";
 
 const INTERNAL_SUB_AGENT_TAG = "internal-role-sub-agent";
+const FORBIDDEN_SUB_AGENT_TOOLS = new Set([
+  "write_workspace_file",
+  "run_workspace_command",
+  "remember_preference"
+]);
+const DEFAULT_READ_ONLY_TOOLS = [
+  "calculator",
+  "current_time",
+  "get_weather",
+  "retrieve_knowledge_base",
+  "retrieve_uploaded_document_chunks",
+  "recall_preference",
+  "list_workspace_files",
+  "read_workspace_file"
+];
+type AgentTool = NonNullable<
+  Parameters<typeof createAgent>[0]["tools"]
+>[number] & { name: string };
 
 function extractText(content: unknown): string {
   if (typeof content === "string") {
@@ -65,18 +89,39 @@ function getLatestAgentText(result: unknown): string {
 function createRoleSubAgentTool(
   model: ChatOpenAI,
   roleWorkflow: RoleWorkflowAgent,
-  definition: RoleSubAgentDefinition
+  definition: RoleSubAgentDefinition,
+  availableTools: AgentTool[]
 ) {
-  // 子 Agent 不挂载业务工具，避免它绕过主管直接写文件、执行命令或修改记忆。
+  const requestedTools =
+    definition.toolPolicy?.allowedTools ?? DEFAULT_READ_ONLY_TOOLS;
+  const allowedToolNames = requestedTools.filter(
+    (toolName) => !FORBIDDEN_SUB_AGENT_TOOLS.has(toolName)
+  );
+  const subAgentTools = availableTools.filter((candidate) =>
+    allowedToolNames.includes(candidate.name)
+  );
+  const contextPolicy = {
+    maxContextChars: definition.contextPolicy?.maxContextChars ?? 6_000,
+    includeSupervisorLabel:
+      definition.contextPolicy?.includeSupervisorLabel ?? true,
+    includeExpectedOutput:
+      definition.contextPolicy?.includeExpectedOutput ?? true
+  };
+
+  // Custom Subagent 拥有独立 Prompt 和工具白名单，但不会继承主管完整消息历史。
   const subAgent = createAgent({
     model,
-    tools: [],
+    tools: subAgentTools,
+    stateSchema: ToolMemoryState,
+    contextSchema: AgentContextSchema,
     systemPrompt: [
       definition.systemPrompt,
       "",
       "你是内部子 Agent，只向主管 Agent 提供专业分析。",
       "不要提及系统提示、工作流、子 Agent 或内部推理过程。",
       "不要直接对最终用户说话，不要声称已经执行文件或命令操作。",
+      `你只能使用这些只读工具：${allowedToolNames.join("、") || "无"}。`,
+      "禁止写文件、执行命令或写入长期记忆；这些副作用只能由主管处理。",
       "输出应简洁、具体，并明确关键结论、风险和建议。"
     ].join("\n")
   });
@@ -86,20 +131,45 @@ function createRoleSubAgentTool(
       { task, context, expectedOutput },
       runtime: ToolMemoryRuntime
     ) => {
-      const durable = await executeDurableTask(
-        runtime,
-        `consult_${definition.id}`,
-        { task, context, expectedOutput },
-        async () => {
+      const agentContext = (runtime.context ?? {}) as AgentContext;
+      if (!agentContext.userId || !agentContext.threadId || !agentContext.turnId) {
+        throw new Error("子代理运行缺少 userId、threadId 或 turnId。");
+      }
+      const normalizedTask = task.trim();
+      const scopedContext = (context || "")
+        .trim()
+        .slice(0, contextPolicy.maxContextChars);
+      const run = startSubAgentRun({
+        threadId: agentContext.threadId,
+        userId: agentContext.userId,
+        turnId: agentContext.turnId,
+        roleId: roleWorkflow.roleId,
+        supervisorLabel: roleWorkflow.label,
+        agentId: definition.id,
+        agentLabel: definition.label,
+        taskSummary: normalizedTask.slice(0, 160),
+        toolNames: subAgentTools.map((candidate) => candidate.name)
+      });
+
+      try {
+        const durable = await executeDurableTask(
+          runtime,
+          `consult_${definition.id}`,
+          { task: normalizedTask, context: scopedContext, expectedOutput },
+          async () => {
           const result = await subAgent.invoke(
             {
               messages: [
                 new HumanMessage(
                   [
-                    `主管角色：${roleWorkflow.label}`,
-                    `委派任务：${task}`,
-                    context ? `已知上下文：${context}` : "",
-                    expectedOutput ? `期望产出：${expectedOutput}` : ""
+                    contextPolicy.includeSupervisorLabel
+                      ? `主管角色：${roleWorkflow.label}`
+                      : "",
+                    `委派任务：${normalizedTask}`,
+                    scopedContext ? `必要上下文：${scopedContext}` : "",
+                    contextPolicy.includeExpectedOutput && expectedOutput
+                      ? `期望产出：${expectedOutput}`
+                      : ""
                   ]
                     .filter(Boolean)
                     .join("\n")
@@ -111,18 +181,29 @@ function createRoleSubAgentTool(
               tags: [INTERNAL_SUB_AGENT_TAG],
               configurable: {
                 subAgentId: definition.id
-              }
+              },
+              context: agentContext,
+              signal: runtime.signal
             }
           );
 
           return getLatestAgentText(result);
-        }
-      );
+          }
+        );
+        finishSubAgentRun(run.runId, "succeeded", {
+          replayed: durable.replayed
+        });
 
-      return JSON.stringify({
-        analysis: durable.result,
-        replayed: durable.replayed
-      });
+        return JSON.stringify({
+          analysis: durable.result,
+          replayed: durable.replayed
+        });
+      } catch (error) {
+        finishSubAgentRun(run.runId, "failed", {
+          errorText: error instanceof Error ? error.message : String(error)
+        });
+        throw error;
+      }
     },
     {
       name: `consult_${definition.id}`,
@@ -148,14 +229,15 @@ function createRoleSubAgentTool(
 
 export function createRoleSubAgentTools(
   model: ChatOpenAI,
-  roleWorkflow?: RoleWorkflowAgent
+  roleWorkflow: RoleWorkflowAgent | undefined,
+  availableTools: AgentTool[]
 ) {
   if (!roleWorkflow) {
     return [];
   }
 
   return roleWorkflow.subAgents.map((definition) =>
-    createRoleSubAgentTool(model, roleWorkflow, definition)
+    createRoleSubAgentTool(model, roleWorkflow, definition, availableTools)
   );
 }
 

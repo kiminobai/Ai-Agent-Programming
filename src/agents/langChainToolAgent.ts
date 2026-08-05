@@ -60,9 +60,11 @@ export class LangChainToolAgent {
 
   private readonly agent;
   private readonly workflow;
+  private readonly roleWorkflow?: RoleWorkflowAgent;
   private readonly migratedThreads = new Set<string>();
 
   constructor(options: LangChainToolAgentOptions) {
+    this.roleWorkflow = options.roleWorkflow;
     // 学习点：ChatOpenAI 也可以连接 DeepSeek/SiliconFlow 这类 OpenAI-compatible 接口。
     // 关键是 apiKey、model 和 baseURL。
     const model = new ChatOpenAI({
@@ -116,7 +118,8 @@ export class LangChainToolAgent {
     // 简单任务不会调用子 Agent，复杂任务才按需并行获取不同专业视角。
     const roleSubAgentTools = createRoleSubAgentTools(
       model,
-      options.roleWorkflow
+      options.roleWorkflow,
+      langChainTools
     );
 
     this.agent = createAgent({
@@ -825,12 +828,29 @@ export class LangChainToolAgent {
       };
     }
     if (toolName.startsWith("consult_")) {
+      const input = candidate.data?.input as
+        | { task?: unknown }
+        | undefined;
+      const agentId = toolName.slice("consult_".length);
+      const definition = this.roleWorkflow?.subAgents.find(
+        (item) => item.id === agentId
+      );
       return {
-        stage: "thinking",
+        stage: "subagent",
         message:
           candidate.event === "on_tool_end"
             ? "专业子 Agent 已完成分析，正在整理结果…"
-            : "正在协调专业子 Agent…"
+            : `正在调用${definition?.label || "专业子代理"}…`,
+        subAgent: {
+          agentId,
+          agentLabel: definition?.label || agentId,
+          taskSummary:
+            typeof input?.task === "string"
+              ? input.task.slice(0, 160)
+              : "处理主管委派的专业任务",
+          status:
+            candidate.event === "on_tool_end" ? "succeeded" : "running"
+        }
       };
     }
     if (toolName === "write_workspace_file") {

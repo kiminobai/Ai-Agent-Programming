@@ -66,8 +66,19 @@ export interface ProviderConfig {
 }
 
 export type AgentProgress = {
-  stage: "thinking" | "editing_file" | "running_command" | "finalizing";
+  stage:
+    | "thinking"
+    | "subagent"
+    | "editing_file"
+    | "running_command"
+    | "finalizing";
   message: string;
+  subAgent?: {
+    agentId: string;
+    agentLabel: string;
+    taskSummary: string;
+    status: "running" | "succeeded" | "failed";
+  };
 };
 
 // 学习点：ChatProvider 是所有模型供应商必须实现的统一接口。

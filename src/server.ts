@@ -51,6 +51,7 @@ import {
 } from "./threads/threadRepository";
 import type { ThreadMode } from "./threads/threadRepository";
 import { listWorkspaceActivity } from "./workspace/workspaceActivityRepository";
+import { listSubAgentRuns } from "./agents/subAgentRunRepository";
 import {
   listDocumentQaMessages,
   saveDocumentQaExchange
@@ -104,6 +105,16 @@ app.get("/api/workspace/activity", (req, res) => {
     return;
   }
   res.json({ activities: listWorkspaceActivity(threadId, userId) });
+});
+
+app.get("/api/subagents/runs", (req, res) => {
+  const threadId = String(req.query.threadId || "").trim();
+  const userId = String(req.query.userId || "").trim();
+  if (!getThreadById(threadId, userId)) {
+    res.status(404).json({ error: "对话不存在。" });
+    return;
+  }
+  res.json({ runs: listSubAgentRuns(threadId, userId) });
 });
 
 /**

@@ -21466,6 +21466,18 @@
     const seconds = totalSeconds % 60;
     return `${minutes} \u5206 ${seconds} \u79D2`;
   }
+  function formatSubAgentToolName(toolName) {
+    return {
+      calculator: "\u8BA1\u7B97\u5668",
+      current_time: "\u5F53\u524D\u65F6\u95F4",
+      get_weather: "\u5929\u6C14\u67E5\u8BE2",
+      retrieve_knowledge_base: "\u77E5\u8BC6\u5E93\u68C0\u7D22",
+      retrieve_uploaded_document_chunks: "\u4E0A\u4F20\u6587\u6863\u68C0\u7D22",
+      recall_preference: "\u8BFB\u53D6\u7528\u6237\u504F\u597D",
+      list_workspace_files: "\u67E5\u770B\u5DE5\u4F5C\u533A\u76EE\u5F55",
+      read_workspace_file: "\u8BFB\u53D6\u5DE5\u4F5C\u533A\u6587\u4EF6"
+    }[toolName] || toolName;
+  }
   async function readJsonResponse(response, apiName) {
     const text = await response.text();
     try {
@@ -21698,6 +21710,10 @@
     const [workspaceError, setWorkspaceError] = (0, import_react.useState)("");
     const [isWorkspaceLoading, setIsWorkspaceLoading] = (0, import_react.useState)(false);
     const [workspaceActivities, setWorkspaceActivities] = (0, import_react.useState)([]);
+    const [subAgentRuns, setSubAgentRuns] = (0, import_react.useState)([]);
+    const [expandedSubAgentRoots, setExpandedSubAgentRoots] = (0, import_react.useState)(
+      () => /* @__PURE__ */ new Set()
+    );
     const [isLoginOpen, setIsLoginOpen] = (0, import_react.useState)(false);
     const [loginName, setLoginName] = (0, import_react.useState)("admin");
     const [loginPassword, setLoginPassword] = (0, import_react.useState)("admin123");
@@ -21817,6 +21833,13 @@
       }
       void loadWorkspaceActivities();
     }, [appMode, activeThreadId, userId]);
+    (0, import_react.useEffect)(() => {
+      if (!activeThreadId || !userId.trim()) {
+        setSubAgentRuns([]);
+        return;
+      }
+      void loadSubAgentRuns();
+    }, [activeThreadId, userId]);
     const approvalItems = (0, import_react.useMemo)(
       () => approvalRequest ? parseApprovalItems(approvalRequest) : [],
       [approvalRequest]
@@ -22333,6 +22356,26 @@
       }
       setWorkspaceActivities(data.activities || []);
     }
+    async function loadSubAgentRuns() {
+      const response = await fetch(
+        `/api/subagents/runs?threadId=${encodeURIComponent(activeThreadId)}&userId=${encodeURIComponent(userId.trim())}`
+      );
+      const data = await readJsonResponse(response, "/api/subagents/runs");
+      if (!response.ok) {
+        throw new Error(data.error || "\u8BFB\u53D6\u5B50\u4EE3\u7406\u4EFB\u52A1\u8BB0\u5F55\u5931\u8D25\u3002");
+      }
+      const runs = data.runs || [];
+      setSubAgentRuns(runs);
+      setExpandedSubAgentRoots((current) => {
+        const next = new Set(current);
+        for (const run of runs) {
+          if (run.depth === 1 && run.status === "running") {
+            next.add(run.runId);
+          }
+        }
+        return next;
+      });
+    }
     async function uploadDocumentForThread(file) {
       if (!activeThreadId || !userId.trim()) {
         throw new Error("No active thread is available for document upload.");
@@ -22589,6 +22632,11 @@
               ...entry,
               statusMessage: streamEvent.message
             }));
+            if (streamEvent.stage === "subagent") {
+              window.setTimeout(() => {
+                void loadSubAgentRuns();
+              }, 60);
+            }
             return;
           }
           if (streamEvent.type === "delta") {
@@ -22645,6 +22693,7 @@
           fileInputRef.current.value = "";
         }
         await refreshThreads(activeThreadId);
+        await loadSubAgentRuns();
         if (appMode === "work") {
           await loadWorkspaceActivities();
         }
@@ -22958,6 +23007,9 @@
         const changedFiles = Array.from(
           new Set(turnActivities.map((activity) => activity.filePath))
         );
+        const turnSubAgentRoots = entry.role === "assistant" && entry.turnId ? subAgentRuns.filter(
+          (run) => run.turnId === entry.turnId && run.depth === 1
+        ) : [];
         return /* @__PURE__ */ import_react.default.createElement(
           "div",
           {
@@ -23003,7 +23055,43 @@
                 }
               ) : /* @__PURE__ */ import_react.default.createElement(import_react.default.Fragment, null, /* @__PURE__ */ import_react.default.createElement("div", { className: "message-attachment-icon" }, getAttachmentKind(entry.attachmentName)), /* @__PURE__ */ import_react.default.createElement("div", { className: "message-attachment-info" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "message-attachment-name" }, entry.attachmentName), /* @__PURE__ */ import_react.default.createElement("div", { className: "message-attachment-copy" }, getAttachmentKind(entry.attachmentName))))
             ) : null,
-            entry.role === "assistant" ? /* @__PURE__ */ import_react.default.createElement(import_react.default.Fragment, null, entry.completed === false ? /* @__PURE__ */ import_react.default.createElement("div", { className: "agent-progress", role: "status", "aria-live": "polite" }, /* @__PURE__ */ import_react.default.createElement("span", { className: "agent-progress-dot", "aria-hidden": "true" }), /* @__PURE__ */ import_react.default.createElement("span", null, entry.statusMessage || "\u6B63\u5728\u751F\u6210\u56DE\u7B54\u2026", entry.startedAt ? ` \u5DF2\u5904\u7406 ${formatElapsedTime(progressClock - entry.startedAt)}` : "")) : entry.elapsedMs !== void 0 && !entry.stopped ? /* @__PURE__ */ import_react.default.createElement("div", { className: "agent-elapsed" }, "\u5DF2\u5904\u7406 ", formatElapsedTime(entry.elapsedMs)) : null, !PENDING_STATUS_TEXTS.has(entry.content) || entry.completed !== false ? /* @__PURE__ */ import_react.default.createElement("div", { className: "markdown-body" }, renderMarkdown(entry.content)) : null, changedFiles.length ? /* @__PURE__ */ import_react.default.createElement("section", { className: "work-activity-card work-activity-inline" }, /* @__PURE__ */ import_react.default.createElement("header", null, /* @__PURE__ */ import_react.default.createElement("strong", null, "\u5DF2\u7F16\u8F91 ", changedFiles.length, " \u4E2A\u6587\u4EF6"), /* @__PURE__ */ import_react.default.createElement("span", { className: "work-activity-caption" }, "Agent \u5DE5\u4F5C\u8BB0\u5F55")), changedFiles.map((filePath) => /* @__PURE__ */ import_react.default.createElement("div", { className: "work-file-row", key: filePath }, /* @__PURE__ */ import_react.default.createElement("span", null, filePath), /* @__PURE__ */ import_react.default.createElement("span", { className: "work-file-status" }, "+", turnActivities.filter((item) => item.filePath === filePath).reduce((total, item) => total + (item.additions || 0), 0), " ", "-", turnActivities.filter((item) => item.filePath === filePath).reduce((total, item) => total + (item.deletions || 0), 0))))) : null) : /* @__PURE__ */ import_react.default.createElement("div", { className: "message-text" }, entry.content)
+            entry.role === "assistant" ? /* @__PURE__ */ import_react.default.createElement(import_react.default.Fragment, null, entry.completed === false ? /* @__PURE__ */ import_react.default.createElement("div", { className: "agent-progress", role: "status", "aria-live": "polite" }, /* @__PURE__ */ import_react.default.createElement("span", { className: "agent-progress-dot", "aria-hidden": "true" }), /* @__PURE__ */ import_react.default.createElement("span", null, entry.statusMessage || "\u6B63\u5728\u751F\u6210\u56DE\u7B54\u2026", entry.startedAt ? ` \u5DF2\u5904\u7406 ${formatElapsedTime(progressClock - entry.startedAt)}` : "")) : entry.elapsedMs !== void 0 && !entry.stopped ? /* @__PURE__ */ import_react.default.createElement("div", { className: "agent-elapsed" }, "\u5DF2\u5904\u7406 ", formatElapsedTime(entry.elapsedMs)) : null, turnSubAgentRoots.map((rootRun) => {
+              const children = subAgentRuns.filter(
+                (run) => run.parentRunId === rootRun.runId
+              );
+              const expanded = expandedSubAgentRoots.has(rootRun.runId) || rootRun.status === "running";
+              return /* @__PURE__ */ import_react.default.createElement(
+                "section",
+                {
+                  className: "subagent-tree",
+                  key: rootRun.runId,
+                  "aria-label": "\u5B50\u4EE3\u7406\u4EFB\u52A1\u76EE\u5F55"
+                },
+                /* @__PURE__ */ import_react.default.createElement(
+                  "button",
+                  {
+                    type: "button",
+                    className: "subagent-root",
+                    onClick: () => setExpandedSubAgentRoots((current) => {
+                      const next = new Set(current);
+                      if (next.has(rootRun.runId)) {
+                        next.delete(rootRun.runId);
+                      } else {
+                        next.add(rootRun.runId);
+                      }
+                      return next;
+                    }),
+                    "aria-expanded": expanded
+                  },
+                  /* @__PURE__ */ import_react.default.createElement("span", { className: "subagent-chevron" }, expanded ? "\u2304" : "\u203A"),
+                  /* @__PURE__ */ import_react.default.createElement("span", { className: "subagent-root-copy" }, /* @__PURE__ */ import_react.default.createElement("strong", null, rootRun.agentLabel), /* @__PURE__ */ import_react.default.createElement("small", null, children.length, " \u4E2A\u5B50\u4EE3\u7406\u4EFB\u52A1")),
+                  /* @__PURE__ */ import_react.default.createElement("span", { className: `subagent-status ${rootRun.status}` }, rootRun.status === "running" ? "\u8FDB\u884C\u4E2D" : rootRun.status === "succeeded" ? "\u5DF2\u5B8C\u6210" : "\u6709\u4EFB\u52A1\u5931\u8D25")
+                ),
+                expanded ? /* @__PURE__ */ import_react.default.createElement("div", { className: "subagent-children" }, children.map((child) => /* @__PURE__ */ import_react.default.createElement("div", { className: "subagent-child", key: child.runId }, /* @__PURE__ */ import_react.default.createElement("span", { className: "subagent-branch", "aria-hidden": "true" }, "\u2514"), /* @__PURE__ */ import_react.default.createElement("div", { className: "subagent-child-main" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "subagent-child-title" }, /* @__PURE__ */ import_react.default.createElement("strong", null, child.agentLabel), /* @__PURE__ */ import_react.default.createElement("span", { className: `subagent-status ${child.status}` }, child.status === "running" ? "\u6B63\u5728\u5904\u7406" : child.status === "succeeded" ? child.replayed ? "\u5DF2\u590D\u7528" : "\u5DF2\u5B8C\u6210" : "\u5931\u8D25")), /* @__PURE__ */ import_react.default.createElement("p", null, child.taskSummary), /* @__PURE__ */ import_react.default.createElement("div", { className: "subagent-meta" }, /* @__PURE__ */ import_react.default.createElement("span", null, "\u5DE5\u5177\uFF1A", child.toolNames.length ? child.toolNames.map(formatSubAgentToolName).join("\u3001") : "\u65E0"), child.completedAt ? /* @__PURE__ */ import_react.default.createElement("span", null, formatElapsedTime(
+                  new Date(child.completedAt).getTime() - new Date(child.startedAt).getTime()
+                )) : null))))) : null
+              );
+            }), !PENDING_STATUS_TEXTS.has(entry.content) || entry.completed !== false ? /* @__PURE__ */ import_react.default.createElement("div", { className: "markdown-body" }, renderMarkdown(entry.content)) : null, changedFiles.length ? /* @__PURE__ */ import_react.default.createElement("section", { className: "work-activity-card work-activity-inline" }, /* @__PURE__ */ import_react.default.createElement("header", null, /* @__PURE__ */ import_react.default.createElement("strong", null, "\u5DF2\u7F16\u8F91 ", changedFiles.length, " \u4E2A\u6587\u4EF6"), /* @__PURE__ */ import_react.default.createElement("span", { className: "work-activity-caption" }, "Agent \u5DE5\u4F5C\u8BB0\u5F55")), changedFiles.map((filePath) => /* @__PURE__ */ import_react.default.createElement("div", { className: "work-file-row", key: filePath }, /* @__PURE__ */ import_react.default.createElement("span", null, filePath), /* @__PURE__ */ import_react.default.createElement("span", { className: "work-file-status" }, "+", turnActivities.filter((item) => item.filePath === filePath).reduce((total, item) => total + (item.additions || 0), 0), " ", "-", turnActivities.filter((item) => item.filePath === filePath).reduce((total, item) => total + (item.deletions || 0), 0))))) : null) : /* @__PURE__ */ import_react.default.createElement("div", { className: "message-text" }, entry.content)
           )
         );
       })),

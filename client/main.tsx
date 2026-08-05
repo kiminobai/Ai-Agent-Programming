@@ -122,8 +122,19 @@ type StreamEvent =
   | { type: "meta"; meta: StreamMeta }
   | {
       type: "status";
-      stage: "thinking" | "editing_file" | "running_command" | "finalizing";
+      stage:
+        | "thinking"
+        | "subagent"
+        | "editing_file"
+        | "running_command"
+        | "finalizing";
       message: string;
+      subAgent?: {
+        agentId: string;
+        agentLabel: string;
+        taskSummary: string;
+        status: "running" | "succeeded" | "failed";
+      };
     }
   | { type: "delta"; chunk: string }
   | { type: "done"; reply: string; meta: StreamMeta }
@@ -147,6 +158,21 @@ function formatElapsedTime(elapsedMs: number): string {
   return `${minutes} 分 ${seconds} 秒`;
 }
 
+function formatSubAgentToolName(toolName: string): string {
+  return (
+    {
+      calculator: "计算器",
+      current_time: "当前时间",
+      get_weather: "天气查询",
+      retrieve_knowledge_base: "知识库检索",
+      retrieve_uploaded_document_chunks: "上传文档检索",
+      recall_preference: "读取用户偏好",
+      list_workspace_files: "查看工作区目录",
+      read_workspace_file: "读取工作区文件"
+    }[toolName] || toolName
+  );
+}
+
 type DesktopWorkspace = {
   name: string;
   path: string;
@@ -166,6 +192,23 @@ type WorkspaceActivity = {
   stdout?: string;
   stderr?: string;
   createdAt: string;
+};
+
+type SubAgentRun = {
+  runId: string;
+  parentRunId?: string;
+  turnId?: string;
+  roleId: string;
+  agentId: string;
+  agentLabel: string;
+  taskSummary: string;
+  depth: 1 | 2;
+  status: "running" | "succeeded" | "failed";
+  toolNames: string[];
+  replayed: boolean;
+  startedAt: string;
+  completedAt?: string;
+  errorText?: string;
 };
 
 declare global {
@@ -515,6 +558,10 @@ function App() {
   const [workspaceError, setWorkspaceError] = useState("");
   const [isWorkspaceLoading, setIsWorkspaceLoading] = useState(false);
   const [workspaceActivities, setWorkspaceActivities] = useState<WorkspaceActivity[]>([]);
+  const [subAgentRuns, setSubAgentRuns] = useState<SubAgentRun[]>([]);
+  const [expandedSubAgentRoots, setExpandedSubAgentRoots] = useState<Set<string>>(
+    () => new Set()
+  );
   const [isLoginOpen, setIsLoginOpen] = useState(false);
   const [loginName, setLoginName] = useState("admin");
   const [loginPassword, setLoginPassword] = useState("admin123");
@@ -666,6 +713,14 @@ function App() {
     }
     void loadWorkspaceActivities();
   }, [appMode, activeThreadId, userId]);
+
+  useEffect(() => {
+    if (!activeThreadId || !userId.trim()) {
+      setSubAgentRuns([]);
+      return;
+    }
+    void loadSubAgentRuns();
+  }, [activeThreadId, userId]);
 
   const approvalItems = useMemo(
     () => (approvalRequest ? parseApprovalItems(approvalRequest) : []),
@@ -1325,6 +1380,27 @@ function App() {
     setWorkspaceActivities((data.activities || []) as WorkspaceActivity[]);
   }
 
+  async function loadSubAgentRuns() {
+    const response = await fetch(
+      `/api/subagents/runs?threadId=${encodeURIComponent(activeThreadId)}&userId=${encodeURIComponent(userId.trim())}`
+    );
+    const data = await readJsonResponse(response, "/api/subagents/runs");
+    if (!response.ok) {
+      throw new Error(data.error || "读取子代理任务记录失败。");
+    }
+    const runs = (data.runs || []) as SubAgentRun[];
+    setSubAgentRuns(runs);
+    setExpandedSubAgentRoots((current) => {
+      const next = new Set(current);
+      for (const run of runs) {
+        if (run.depth === 1 && run.status === "running") {
+          next.add(run.runId);
+        }
+      }
+      return next;
+    });
+  }
+
   async function uploadDocumentForThread(file: File): Promise<DocumentUploadResult> {
     // 学习点：附件先单独上传。
     // 后端保存原文件，并在 SQLite 里记录 fileId / storageKey / 解析状态。
@@ -1659,6 +1735,13 @@ function App() {
             ...entry,
             statusMessage: streamEvent.message
           }));
+          if (streamEvent.stage === "subagent") {
+            // 子代理 Tool 已在后端写入 SQLite；短暂延后读取可避免 Tool start
+            // 事件先于数据库事务完成时出现空目录。
+            window.setTimeout(() => {
+              void loadSubAgentRuns();
+            }, 60);
+          }
           return;
         }
 
@@ -1726,6 +1809,7 @@ function App() {
       }
 
       await refreshThreads(activeThreadId);
+      await loadSubAgentRuns();
       if (appMode === "work") {
         await loadWorkspaceActivities();
       }
@@ -2227,6 +2311,12 @@ function App() {
               const changedFiles = Array.from(
                 new Set(turnActivities.map((activity) => activity.filePath as string))
               );
+              const turnSubAgentRoots =
+                entry.role === "assistant" && entry.turnId
+                  ? subAgentRuns.filter(
+                      (run) => run.turnId === entry.turnId && run.depth === 1
+                    )
+                  : [];
               return (
               <div
                 key={entry.id}
@@ -2317,6 +2407,99 @@ function App() {
                             已处理 {formatElapsedTime(entry.elapsedMs)}
                           </div>
                         ) : null}
+                        {turnSubAgentRoots.map((rootRun) => {
+                          const children = subAgentRuns.filter(
+                            (run) => run.parentRunId === rootRun.runId
+                          );
+                          const expanded =
+                            expandedSubAgentRoots.has(rootRun.runId) ||
+                            rootRun.status === "running";
+                          return (
+                            <section
+                              className="subagent-tree"
+                              key={rootRun.runId}
+                              aria-label="子代理任务目录"
+                            >
+                              <button
+                                type="button"
+                                className="subagent-root"
+                                onClick={() =>
+                                  setExpandedSubAgentRoots((current) => {
+                                    const next = new Set(current);
+                                    if (next.has(rootRun.runId)) {
+                                      next.delete(rootRun.runId);
+                                    } else {
+                                      next.add(rootRun.runId);
+                                    }
+                                    return next;
+                                  })
+                                }
+                                aria-expanded={expanded}
+                              >
+                                <span className="subagent-chevron">
+                                  {expanded ? "⌄" : "›"}
+                                </span>
+                                <span className="subagent-root-copy">
+                                  <strong>{rootRun.agentLabel}</strong>
+                                  <small>
+                                    {children.length} 个子代理任务
+                                  </small>
+                                </span>
+                                <span className={`subagent-status ${rootRun.status}`}>
+                                  {rootRun.status === "running"
+                                    ? "进行中"
+                                    : rootRun.status === "succeeded"
+                                      ? "已完成"
+                                      : "有任务失败"}
+                                </span>
+                              </button>
+                              {expanded ? (
+                                <div className="subagent-children">
+                                  {children.map((child) => (
+                                    <div className="subagent-child" key={child.runId}>
+                                      <span className="subagent-branch" aria-hidden="true">
+                                        └
+                                      </span>
+                                      <div className="subagent-child-main">
+                                        <div className="subagent-child-title">
+                                          <strong>{child.agentLabel}</strong>
+                                          <span className={`subagent-status ${child.status}`}>
+                                            {child.status === "running"
+                                              ? "正在处理"
+                                              : child.status === "succeeded"
+                                                ? child.replayed
+                                                  ? "已复用"
+                                                  : "已完成"
+                                                : "失败"}
+                                          </span>
+                                        </div>
+                                        <p>{child.taskSummary}</p>
+                                        <div className="subagent-meta">
+                                          <span>
+                                            工具：
+                                            {child.toolNames.length
+                                              ? child.toolNames
+                                                  .map(formatSubAgentToolName)
+                                                  .join("、")
+                                              : "无"}
+                                          </span>
+                                          {child.completedAt ? (
+                                            <span>
+                                              {formatElapsedTime(
+                                                new Date(child.completedAt).getTime() -
+                                                  new Date(child.startedAt).getTime()
+                                              )}
+                                            </span>
+                                          ) : null}
+                                        </div>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : null}
+                            </section>
+                          );
+                        })}
                         {!PENDING_STATUS_TEXTS.has(entry.content) || entry.completed !== false ? (
                           <div className="markdown-body">{renderMarkdown(entry.content)}</div>
                         ) : null}

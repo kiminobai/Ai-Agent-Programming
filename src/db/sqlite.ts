@@ -97,6 +97,30 @@ sqliteDb.exec(`
   CREATE INDEX IF NOT EXISTS idx_agent_task_thread_started
   ON agent_task_executions(thread_id, started_at ASC);
 
+  -- Supervisor/Subagent task tree. The UI restores this hierarchy after refresh.
+  -- Only task metadata and status are stored; private subagent analysis is not exposed.
+  CREATE TABLE IF NOT EXISTS subagent_runs (
+    run_id TEXT PRIMARY KEY,
+    parent_run_id TEXT,
+    thread_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    turn_id TEXT,
+    role_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    agent_label TEXT NOT NULL,
+    task_summary TEXT NOT NULL,
+    depth INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    tool_names_json TEXT NOT NULL DEFAULT '[]',
+    replayed INTEGER NOT NULL DEFAULT 0,
+    started_at TEXT NOT NULL,
+    completed_at TEXT,
+    error_text TEXT
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_subagent_runs_thread_turn
+  ON subagent_runs(thread_id, turn_id, started_at ASC);
+
   -- Uploaded document metadata. Raw files live on disk; SQLite stores paths and parse/index status.
   CREATE TABLE IF NOT EXISTS uploaded_documents (
     thread_id TEXT PRIMARY KEY,

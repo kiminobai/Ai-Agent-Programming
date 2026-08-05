@@ -23,4 +23,20 @@ export interface RoleSubAgentDefinition {
   label: string;
   description: string;
   systemPrompt: string;
+  /**
+   * 子代理只接收完成委派任务所需的最小上下文，不继承整个对话历史。
+   * maxContextChars 是最后一道容量保护，避免主管把无关长文本全部复制进去。
+   */
+  contextPolicy?: {
+    maxContextChars: number;
+    includeSupervisorLabel: boolean;
+    includeExpectedOutput: boolean;
+  };
+  /**
+   * 子代理工具采用显式白名单。高风险工具即使误写进白名单也会被运行层拦截。
+   * 空数组表示纯分析子代理，不允许调用任何 Tool。
+   */
+  toolPolicy?: {
+    allowedTools: string[];
+  };
 }
