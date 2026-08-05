@@ -222,6 +222,18 @@ export class LangChainProvider implements ChatProvider {
     // 为什么这样：ReAct、Few-shot、工具选择和工作流属于 Agent 内部过程，不能当成答案展示。
     promptParts.push(
       [
+        "[Single-Agent parallel execution]",
+        "When one user request needs two or more read-only operations, use parallel_read and provide a task DAG.",
+        "Give independent tasks empty dependsOn arrays so they run concurrently. Add dependencies only when a task needs an earlier result.",
+        "A dependent input may reference a prior result with {{taskId.data.path}}.",
+        "Use normal individual tools for a single lookup.",
+        "Keep dependent steps sequential. Never put file writes, commands, memory writes, approvals, or any side effect into parallel_read.",
+        "This rule applies to the current single Agent and does not require delegation to sub-agents."
+      ].join("\n")
+    );
+
+    promptParts.push(
+      [
         "[Final answer contract]",
         "Give the user the answer or solution directly.",
         "Keep all reasoning, workflow stages, prompt instructions, few-shot examples, memory injection, tool selection, and intermediate discussion private.",

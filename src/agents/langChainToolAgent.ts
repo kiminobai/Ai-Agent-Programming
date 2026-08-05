@@ -815,6 +815,15 @@ export class LangChainToolAgent {
     }
 
     const toolName = candidate.name || candidate.metadata?.tool_name || "";
+    if (toolName === "parallel_read") {
+      return {
+        stage: "thinking",
+        message:
+          candidate.event === "on_tool_end"
+            ? "并行查询已完成，正在汇总结果…"
+            : "正在动态调度多个只读任务…"
+      };
+    }
     if (toolName.startsWith("consult_")) {
       return {
         stage: "thinking",

@@ -10,6 +10,7 @@ import { knowledgeBaseTool } from "./knowledgeBaseTool";
 import { recallPreferenceTool } from "./recallPreferenceTool";
 import { rememberPreferenceTool } from "./rememberPreferenceTool";
 import { uploadedDocumentTool } from "./uploadedDocumentTool";
+import { parallelReadTool } from "./parallelReadTool";
 import { weatherTool } from "./weatherTool";
 import {
   listWorkspaceFilesTool,
@@ -24,6 +25,7 @@ export { knowledgeBaseTool } from "./knowledgeBaseTool";
 export { recallPreferenceTool } from "./recallPreferenceTool";
 export { rememberPreferenceTool } from "./rememberPreferenceTool";
 export { uploadedDocumentTool } from "./uploadedDocumentTool";
+export { parallelReadTool } from "./parallelReadTool";
 export { weatherTool } from "./weatherTool";
 export {
   listWorkspaceFilesTool,
@@ -44,6 +46,8 @@ export const langChainTools = [
   knowledgeBaseTool,
   // 学习点：文档工具，按需触发上传文件的 Hybrid RAG 检索。
   uploadedDocumentTool,
+  // 单 Agent 公共并行工具：多个独立只读任务由 LangGraph 同时执行并统一汇总。
+  parallelReadTool,
   // Coding Agent 工具：只在绑定了工作区的 work thread 中可成功执行。
   listWorkspaceFilesTool,
   readWorkspaceFileTool,

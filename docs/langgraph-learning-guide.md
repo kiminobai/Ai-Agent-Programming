@@ -329,11 +329,110 @@ Generator → Evaluator
     └─反馈─────┘
 ```
 
-## 12. Agent 与 Multi-Agent 模式
+## 12. Parallel Nodes、Send、Reducer 与 Map-Reduce
+
+这四个概念属于同一条并行执行链路，但职责不同：
+
+| 概念 | 负责什么 | 当前项目对应实现 |
+| --- | --- | --- |
+| Parallel Nodes | 同一个 Superstep 中同时运行多个 Node 实例 | 多个 `execute_task` Worker |
+| `Send` API | 运行时为同一个 Worker 动态创建不同任务 | `new Send("execute_task", taskState)` |
+| `ReducedValue` | 安全合并多个并行 Worker 对同一 State 字段的更新 | 把各 Worker 的 `results` 数组连接起来 |
+| Map-Reduce | Map 并行处理子任务，Reduce 汇总为稳定结果 | `execute_task` → `aggregate_results` |
+
+### 为什么不能只用 `Promise.all`
+
+`Promise.all` 只能让普通 JavaScript Promise 并行；LangGraph 无法把每个任务看成独立 Node，也就不便于：
+
+- 按 Node 观察执行状态。
+- 为不同 Worker 保存或恢复状态。
+- 使用 Reducer 合并并发更新。
+- 和 Conditional Edge、Checkpoint、Streaming 统一编排。
+
+当前项目不在一个 Node 内用 `Promise.all` 冒充图并行，而是由 `Send` 创建真正的并行 Worker Node。
+
+### 当前项目的标准执行流程
+
+```text
+validate_plan
+      │
+      ▼
+prepare_wave
+      │
+      ├─ Send(execute_task, 时间任务) ─┐
+      ├─ Send(execute_task, 天气任务) ─┼─ 同一 Superstep 并行
+      └─ Send(execute_task, 检索任务) ─┘
+                         │
+                         ▼
+              ReducedValue 合并 results
+                         │
+                         ▼
+              prepare_wave 检查下一批依赖
+                    │              │
+               还有任务         全部完成
+                    │              │
+                    └──循环        ▼
+                           aggregate_results
+                                   │
+                                  END
+```
+
+### 动态 DAG 与分波执行
+
+Agent 调用 `parallel_read` 时提交 2～8 个只读任务。每个任务可以通过 `dependsOn` 声明依赖，系统先校验：
+
+- 任务 ID 是否重复。
+- 依赖是否存在。
+- 是否依赖自身。
+- 是否存在循环依赖。
+
+没有依赖的任务属于第一波，可以并行；依赖第一波结果的任务进入下一波。LangGraph 会等待当前 Superstep 的所有 `Send` Worker 完成，再根据最新 State 调度下一波。
+
+后续任务可用占位符读取前置结果：
+
+```text
+{{taskId.data.path}}
+```
+
+例如先计算 `6 × 7`，再让下一任务读取结果并计算 `42 + 8`。这不是固定流水线，而是运行时根据 DAG 动态决定顺序。
+
+### 并发安全与失败传播
+
+- `maxConcurrency` 控制每波最大并发数，当前范围为 1～4。
+- 每个任务拥有独立超时和重试次数。
+- 一个任务失败不会抹掉其他成功结果。
+- 依赖失败任务的后续任务标记为 `blocked`，不会错误执行。
+- Reduce Node 按原计划顺序排序，避免并发完成顺序导致输出不稳定。
+- 只有只读任务能进入并行图；写文件、运行命令和写记忆仍走审批与串行副作用保护。
+
+当前可并行的数据源是知识库、当前上传文档、天气、当前时间和计算器。项目尚未提供网页搜索与通用数据库查询 Tool，因此调度器不会假装拥有这些能力。
+
+## 13. Durable Execution 与幂等
+
+Durable Execution 和幂等解决的是两个不同问题：
+
+| 能力 | 回答的问题 | 当前项目保存位置 |
+| --- | --- | --- |
+| LangGraph Checkpoint | 图执行到哪里、State 是什么 | SQLite Checkpointer |
+| 幂等执行账本 | 某个副作用或高成本操作是否已经执行成功 | `agent_task_executions` 表 |
+
+仅有 Checkpoint 并不能保证恢复时绝不重复写文件或调用外部服务。当前项目给工具调用生成稳定幂等键，并保存输入哈希、运行状态和结果：
+
+```text
+第一次执行 → 领取幂等键 → running → 执行 → succeeded + result
+恢复或重试 → 命中相同幂等键 → 直接复用 result，不重复执行
+并发重复请求 → 只有一个请求领取成功，另一个被阻止
+```
+
+对 `running` 状态不会盲目重跑，因为进程可能在外部操作已经成功、但数据库尚未写回时崩溃。此时宁可要求确认，也不能重复写文件或执行命令。
+
+## 14. Agent 与 Multi-Agent 模式
 
 ### 单 Agent
 
 一个 Agent 配合合适的 Prompt、Tools 和动态上下文。大多数项目应先从单 Agent 开始。
+
+当前项目的 `parallel_read` 仍然是**单 Agent 并行**：同一个主管 Agent 动态调度多个确定性只读 Worker，Worker 不是会独立推理和对话的 Agent。
 
 ### Subagents
 
@@ -353,7 +452,24 @@ Router 对输入分类，把任务发送给一个或多个专用 Agent，再汇�
 
 Multi-Agent 不是越多越好。只有在工具太多、上下文隔离、并行任务或团队独立维护确实需要时再使用。
 
-## 13. Thinking in LangGraph
+当前项目的角色子 Agent 使用 Supervisor 模式：
+
+```text
+用户
+  ↓
+当前角色主管 Agent
+  ├─ 简单任务：直接回答或调用普通 Tool
+  ├─ 多个独立查询：调用 parallel_read 图
+  └─ 需要专业视角：调用一个或多个角色子 Agent
+                         ↓
+                    主管统一汇总
+                         ↓
+                      最终回答
+```
+
+子 Agent 不挂载业务工具，不能写文件、运行命令或直接面向用户输出；内部 Token 也会从用户事件流中滤除。
+
+## 15. Thinking in LangGraph
 
 官方推荐的设计顺序：
 
@@ -368,7 +484,7 @@ Multi-Agent 不是越多越好。只有在工具太多、上下文隔离、并�
 9. 配置 Checkpointer。
 10. 加入 Streaming、Tracing、测试与部署。
 
-## 14. 测试与可观测性
+## 16. 测试与可观测性
 
 建议分层测试：
 
@@ -390,19 +506,21 @@ Multi-Agent 不是越多越好。只有在工具太多、上下文隔离、并�
 
 LangSmith 可用于 Trace、调试和评估，但 LangGraph 本身并不强制绑定 LangSmith。
 
-## 15. 当前 ChatDemo 项目映射
+## 17. 当前 ChatDemo 项目映射
 
-当前项目属于“自定义 Workflow 包含一个 Agent 子图”：
+当前项目由三层图协作，但各层职责不能混淆：
 
 ```text
 React / Electron
   → Express + SSE
-  → 外层 StateGraph
-      validate_input
-      → prepare_role_workflow
-      → run_agent(createAgent 子图)
-      → finish
-  → SQLite Checkpointer
+  → 第一层：外层 Agent Workflow
+      validate_input → prepare_role_workflow → run_agent → finish
+  → 第二层：LangChain createAgent 子图
+      Model ↔ Tools
+  → 第三层：按需调用的单 Agent 动态并行图
+      validate_plan → prepare_wave → Send Workers
+      → ReducedValue → Reduce
+  → SQLite Checkpointer + 幂等执行账本
 ```
 
 | 项目文件 | LangGraph 职责 |
@@ -410,27 +528,33 @@ React / Electron
 | `src/agents/agentWorkflowGraph.ts` | 外层 StateGraph、Node、Edge |
 | `src/agents/langChainToolAgent.ts` | createAgent 子图、Streaming、Interrupt 恢复 |
 | `src/agents/toolMemoryState.ts` | State |
-| `src/workflows-agents/` | 角色规则和 Workflow 配置 |
+| `src/agents/parallelReadGraph.ts` | Send、Parallel Nodes、ReducedValue、Map-Reduce、动态 DAG |
+| `src/agents/parallelReadTypes.ts` | 动态任务与结果 State Schema |
+| `src/agents/durableTaskExecution.ts` | 幂等键、执行领取、结果复用 |
+| `src/agents/roleSubAgentTools.ts` | Supervisor 调用内部角色子 Agent |
+| `src/workflows-agents/` | 各角色 Workflow 与子 Agent 定义 |
 | `src/tools/langchain/` | Tools |
 | `src/db/sqlite.ts` | SQLite Checkpointer |
 | `src/server.ts` | Agent Harness、SSE、停止信号 |
 | `client/main.tsx` | UI、进度、审批 |
 
-当前角色共享同一套外层图结构，但拥有不同 Prompt、Workflow ID 和执行规则。未来可以把不同角色扩展成真正不同的 Subgraph。
+当前角色共享外层图结构，但拥有不同 Prompt、Workflow ID 和子 Agent。单 Agent 并行负责“同时获取多份数据”，Multi-Agent 负责“引入不同专业推理视角”，两者可以在同一任务中按需组合。
 
-## 16. 学习顺序
+## 18. 学习顺序
 
 1. State、Node、Edge。
 2. Graph API 与 Conditional Edge。
-3. Command、Send 和循环。
-4. Checkpointer、Thread 和持久化。
-5. Streaming。
-6. Interrupt 与 HITL。
-7. Subgraph。
-8. Workflow 常见模式。
-9. createAgent 与 Agent Loop。
-10. Multi-Agent。
-11. Durable Execution、Time Travel 和部署。
+3. Parallel Nodes、Send、Reducer 与 Map-Reduce。
+4. Command、循环与动态 DAG。
+5. Checkpointer、Thread 和持久化。
+6. Durable Execution 与幂等。
+7. Streaming。
+8. Interrupt 与 HITL。
+9. Subgraph。
+10. Workflow 常见模式。
+11. createAgent 与 Agent Loop。
+12. Supervisor 与 Multi-Agent。
+13. Time Travel、可观测性和部署。
 
 ## 官方资料
 
