@@ -127,8 +127,10 @@ type StreamEvent =
         | "subagent"
         | "editing_file"
         | "running_command"
-        | "finalizing";
+        | "finalizing"
+        | "task_plan";
       message: string;
+      taskPlan?: Omit<TaskPlan, "turnId">;
       subAgent?: {
         agentId: string;
         agentLabel: string;
@@ -156,6 +158,25 @@ function formatElapsedTime(elapsedMs: number): string {
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   return `${minutes} 分 ${seconds} 秒`;
+}
+
+function getTaskPlanStepIcon(status: TaskPlanStepStatus): string {
+  return {
+    pending: "○",
+    in_progress: "◌",
+    completed: "✓",
+    failed: "!",
+    cancelled: "−"
+  }[status];
+}
+
+function getTaskPlanStatusText(status: TaskPlan["status"]): string {
+  return {
+    running: "执行中",
+    completed: "已完成",
+    failed: "执行失败",
+    cancelled: "已停止"
+  }[status];
 }
 
 function formatSubAgentToolName(toolName: string): string {
@@ -209,6 +230,26 @@ type SubAgentRun = {
   startedAt: string;
   completedAt?: string;
   errorText?: string;
+};
+
+type TaskPlanStepStatus =
+  | "pending"
+  | "in_progress"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+type TaskPlan = {
+  threadId?: string;
+  turnId: string;
+  title: string;
+  status: "running" | "completed" | "failed" | "cancelled";
+  steps: Array<{
+    id: string;
+    title: string;
+    status: TaskPlanStepStatus;
+  }>;
+  updatedAt?: string;
 };
 
 declare global {
@@ -559,6 +600,7 @@ function App() {
   const [isWorkspaceLoading, setIsWorkspaceLoading] = useState(false);
   const [workspaceActivities, setWorkspaceActivities] = useState<WorkspaceActivity[]>([]);
   const [subAgentRuns, setSubAgentRuns] = useState<SubAgentRun[]>([]);
+  const [taskPlans, setTaskPlans] = useState<TaskPlan[]>([]);
   const [expandedSubAgentRoots, setExpandedSubAgentRoots] = useState<Set<string>>(
     () => new Set()
   );
@@ -582,6 +624,7 @@ function App() {
   const shouldAutoScrollRef = useRef(true);
   const pendingInitialScrollRef = useRef(false);
   const lastScrollTopRef = useRef(0);
+  const skipNextWorkspaceRestoreRef = useRef(false);
 
   useEffect(() => {
     if (!isSubmitting) {
@@ -687,10 +730,15 @@ function App() {
   }, [userId]);
 
   useEffect(() => {
-    if (isLoading || !userId.trim() || !modelId || !roleId) {
+    if (
+      isLoading ||
+      !userId.trim() ||
+      !modelId ||
+      !roleId ||
+      (appMode === "work" && isWorkspaceLoading)
+    ) {
       return;
     }
-
     // Chat 与 Work 使用完全独立的 thread 列表和当前会话。
     void loadThreads(
       userId.trim(),
@@ -707,6 +755,37 @@ function App() {
   }, [appMode]);
 
   useEffect(() => {
+    // 桌面端首次解析默认目录，或用户主动切换目录后，再恢复本机 Work 任务。
+    if (
+      appMode !== "work" ||
+      isLoading ||
+      isWorkspaceLoading ||
+      !workspace ||
+      !userId.trim() ||
+      !modelId ||
+      !roleId
+    ) {
+      return;
+    }
+    if (skipNextWorkspaceRestoreRef.current) {
+      skipNextWorkspaceRestoreRef.current = false;
+      return;
+    }
+    void loadThreads(
+      userId.trim(),
+      modelId,
+      roleId,
+      reasoningEffort,
+      "work",
+      workspace
+    ).catch((modeError) => {
+      setError(
+        modeError instanceof Error ? modeError.message : "切换工作目录失败。"
+      );
+    });
+  }, [workspace?.path, isWorkspaceLoading]);
+
+  useEffect(() => {
     if (appMode !== "work" || !activeThreadId || !userId.trim()) {
       setWorkspaceActivities([]);
       return;
@@ -721,6 +800,14 @@ function App() {
     }
     void loadSubAgentRuns();
   }, [activeThreadId, userId]);
+
+  useEffect(() => {
+    if (appMode !== "work" || !activeThreadId || !userId.trim()) {
+      setTaskPlans([]);
+      return;
+    }
+    void loadTaskPlans();
+  }, [appMode, activeThreadId, userId]);
 
   const approvalItems = useMemo(
     () => (approvalRequest ? parseApprovalItems(approvalRequest) : []),
@@ -928,19 +1015,8 @@ function App() {
     mode: "chat" | "work" = appMode,
     selectedWorkspace: DesktopWorkspace | null = workspace
   ) {
-    if (mode === "work" && !selectedWorkspace) {
-      setThreads([]);
-      setActiveThreadId("");
-      setEntries([]);
-      return;
-    }
-
     const response = await fetch(
-      `/api/threads?userId=${encodeURIComponent(nextUserId)}&mode=${mode}${
-        mode === "work" && selectedWorkspace
-          ? `&workspacePath=${encodeURIComponent(selectedWorkspace.path)}`
-          : ""
-      }`
+      `/api/threads?userId=${encodeURIComponent(nextUserId)}&mode=${mode}`
     );
     const data = await readJsonResponse(response, "/api/threads");
 
@@ -984,8 +1060,7 @@ function App() {
     if (
       !nextUserId ||
       !nextModelId ||
-      !nextRoleId ||
-      (nextMode === "work" && !nextWorkspace)
+      !nextRoleId
     ) {
       return;
     }
@@ -1109,6 +1184,19 @@ function App() {
       setModelId(thread.modelId);
       setRoleId(thread.roleId);
       setReasoningEffort(thread.reasoningEffort || "low");
+      if (
+        thread.mode === "work" &&
+        thread.workspacePath &&
+        thread.workspacePath !== workspace?.path
+      ) {
+        // 打开旧任务时，输入框展示并继续使用该任务自己的工作目录。
+        skipNextWorkspaceRestoreRef.current = true;
+        setWorkspace({
+          name: thread.workspaceName || "工作目录",
+          path: thread.workspacePath,
+          branch: ""
+        });
+      }
       setThreads(
         sourceThreads.map((item) => (item.threadId === thread.threadId ? thread : item))
       );
@@ -1205,7 +1293,9 @@ function App() {
 
     const thread = threads.find((item) => item.threadId === threadId);
     const confirmed = window.confirm(
-      `确定删除「${thread?.title || "这个对话"}」吗？这会删除消息、短期记忆、上传文件和 RAG 索引。`
+      thread?.mode === "work"
+        ? `确定删除「${thread.title || "这个任务"}」吗？这会删除本机任务记录、记忆、上传文件和索引，但不会删除你选择的工作目录及其中的源码。`
+        : `确定删除「${thread?.title || "这个对话"}」吗？这会删除消息、短期记忆、上传文件和 RAG 索引。`
     );
 
     if (!confirmed) {
@@ -1342,6 +1432,8 @@ function App() {
         userId.trim() || "guest"
       );
       if (selectedWorkspace) {
+        // 本次目录切换会立刻创建一个新任务，避免恢复 effect 再重复创建。
+        skipNextWorkspaceRestoreRef.current = true;
         setWorkspace(selectedWorkspace);
         if (appMode === "work" && modelId && roleId) {
           await handleCreateThread({
@@ -1365,7 +1457,10 @@ function App() {
     }
 
     await window.desktopAPI.clearWorkspace(userId.trim() || "guest");
-    setWorkspace(null);
+    const defaultWorkspace = await window.desktopAPI.getWorkspace(
+      userId.trim() || "guest"
+    );
+    setWorkspace(defaultWorkspace);
     setWorkspaceError("");
   }
 
@@ -1399,6 +1494,17 @@ function App() {
       }
       return next;
     });
+  }
+
+  async function loadTaskPlans() {
+    const response = await fetch(
+      `/api/task-plans?threadId=${encodeURIComponent(activeThreadId)}&userId=${encodeURIComponent(userId.trim())}`
+    );
+    const data = await readJsonResponse(response, "/api/task-plans");
+    if (!response.ok) {
+      throw new Error(data.error || "读取任务计划失败。");
+    }
+    setTaskPlans((data.plans || []) as TaskPlan[]);
   }
 
   async function uploadDocumentForThread(file: File): Promise<DocumentUploadResult> {
@@ -1742,6 +1848,16 @@ function App() {
               void loadSubAgentRuns();
             }, 60);
           }
+          if (streamEvent.stage === "task_plan" && streamEvent.taskPlan) {
+            const nextPlan: TaskPlan = {
+              ...streamEvent.taskPlan,
+              turnId
+            };
+            setTaskPlans((current) => [
+              ...current.filter((plan) => plan.turnId !== turnId),
+              nextPlan
+            ]);
+          }
           return;
         }
 
@@ -1811,7 +1927,7 @@ function App() {
       await refreshThreads(activeThreadId);
       await loadSubAgentRuns();
       if (appMode === "work") {
-        await loadWorkspaceActivities();
+        await Promise.all([loadWorkspaceActivities(), loadTaskPlans()]);
       }
     } catch (submitError) {
       const wasStopped =
@@ -2317,6 +2433,12 @@ function App() {
                       (run) => run.turnId === entry.turnId && run.depth === 1
                     )
                   : [];
+              const turnPlan =
+                entry.role === "assistant" &&
+                entry.turnId &&
+                isLastAssistantForTurn
+                  ? taskPlans.find((plan) => plan.turnId === entry.turnId)
+                  : undefined;
               return (
               <div
                 key={entry.id}
@@ -2392,6 +2514,50 @@ function App() {
                     ) : null}
                     {entry.role === "assistant" ? (
                       <>
+                        {turnPlan ? (
+                          <details
+                            className={`task-plan-card status-${turnPlan.status}`}
+                            open={turnPlan.status === "running"}
+                          >
+                            <summary className="task-plan-summary">
+                              <span className="task-plan-summary-copy">
+                                <strong>{turnPlan.title}</strong>
+                                <span>
+                                  {getTaskPlanStatusText(turnPlan.status)}
+                                </span>
+                              </span>
+                              <span className="task-plan-count">
+                                {
+                                  turnPlan.steps.filter(
+                                    (step) => step.status === "completed"
+                                  ).length
+                                }
+                                /{turnPlan.steps.length}
+                              </span>
+                            </summary>
+                            <ol className="task-plan-steps">
+                              {turnPlan.steps.map((step, stepIndex) => (
+                                <li
+                                  className={`task-plan-step status-${step.status}`}
+                                  key={step.id}
+                                >
+                                  <span
+                                    className="task-plan-step-icon"
+                                    aria-hidden="true"
+                                  >
+                                    {getTaskPlanStepIcon(step.status)}
+                                  </span>
+                                  <span className="task-plan-step-title">
+                                    {step.title}
+                                  </span>
+                                  <span className="task-plan-step-number">
+                                    {stepIndex + 1}
+                                  </span>
+                                </li>
+                              ))}
+                            </ol>
+                          </details>
+                        ) : null}
                         {entry.completed === false ? (
                           <div className="agent-progress" role="status" aria-live="polite">
                             <span className="agent-progress-dot" aria-hidden="true" />

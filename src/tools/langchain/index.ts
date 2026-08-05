@@ -12,6 +12,7 @@ import { rememberPreferenceTool } from "./rememberPreferenceTool";
 import { uploadedDocumentTool } from "./uploadedDocumentTool";
 import { parallelReadTool } from "./parallelReadTool";
 import { weatherTool } from "./weatherTool";
+import { taskPlanTool } from "./taskPlanTool";
 import {
   listWorkspaceFilesTool,
   readWorkspaceFileTool,
@@ -27,6 +28,7 @@ export { rememberPreferenceTool } from "./rememberPreferenceTool";
 export { uploadedDocumentTool } from "./uploadedDocumentTool";
 export { parallelReadTool } from "./parallelReadTool";
 export { weatherTool } from "./weatherTool";
+export { taskPlanTool } from "./taskPlanTool";
 export {
   listWorkspaceFilesTool,
   readWorkspaceFileTool,
@@ -48,6 +50,8 @@ export const langChainTools = [
   uploadedDocumentTool,
   // 单 Agent 公共并行工具：多个独立只读任务由 LangGraph 同时执行并统一汇总。
   parallelReadTool,
+  // Work 复杂任务的结构化计划，只记录执行状态，不把内部推理暴露给用户。
+  taskPlanTool,
   // Coding Agent 工具：只在绑定了工作区的 work thread 中可成功执行。
   listWorkspaceFilesTool,
   readWorkspaceFileTool,

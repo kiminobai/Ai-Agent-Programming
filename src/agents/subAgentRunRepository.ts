@@ -1,5 +1,9 @@
 import { createHash, randomUUID } from "crypto";
-import { sqliteDb } from "../db/sqlite";
+import {
+  getDatabaseForThread,
+  sqliteDb,
+  workSqliteDb
+} from "../db/sqlite";
 
 export type SubAgentRunStatus = "running" | "succeeded" | "failed";
 
@@ -41,9 +45,10 @@ export function startSubAgentRun(input: {
 }): SubAgentRun {
   const parentRunId = supervisorRunId(input.threadId, input.turnId);
   const now = new Date().toISOString();
+  const database = getDatabaseForThread(input.threadId);
 
   // 一级目录每轮只有一个主管任务；多个二级子代理共享这个 parent_run_id。
-  sqliteDb.prepare(`
+  database.prepare(`
     INSERT OR IGNORE INTO subagent_runs (
       run_id, parent_run_id, thread_id, user_id, turn_id, role_id,
       agent_id, agent_label, task_summary, depth, status,
@@ -60,7 +65,7 @@ export function startSubAgentRun(input: {
     now
   );
   // 同一轮可能先后调用多个子代理。后续子代理开始时需要把一级目录重新标记为运行中。
-  sqliteDb.prepare(`
+  database.prepare(`
     UPDATE subagent_runs
     SET status = 'running', completed_at = NULL, error_text = NULL
     WHERE run_id = ?
@@ -83,7 +88,7 @@ export function startSubAgentRun(input: {
     startedAt: now
   };
 
-  sqliteDb.prepare(`
+  database.prepare(`
     INSERT INTO subagent_runs (
       run_id, parent_run_id, thread_id, user_id, turn_id, role_id,
       agent_id, agent_label, task_summary, depth, status,
@@ -110,11 +115,17 @@ export function finishSubAgentRun(
   status: Exclude<SubAgentRunStatus, "running">,
   options: { replayed?: boolean; errorText?: string } = {}
 ): void {
-  const row = sqliteDb.prepare(`
+  // run_id 只在一个 Thread 内创建，先从两个数据库定位所属记录。
+  const database = workSqliteDb
+    .prepare("SELECT 1 FROM subagent_runs WHERE run_id = ?")
+    .get(runId)
+    ? workSqliteDb
+    : sqliteDb;
+  const row = database.prepare(`
     SELECT parent_run_id AS parentRunId FROM subagent_runs WHERE run_id = ?
   `).get(runId) as { parentRunId?: string } | undefined;
   const completedAt = new Date().toISOString();
-  sqliteDb.prepare(`
+  database.prepare(`
     UPDATE subagent_runs
     SET status = ?, replayed = ?, completed_at = ?, error_text = ?
     WHERE run_id = ?
@@ -129,18 +140,18 @@ export function finishSubAgentRun(
   if (!row?.parentRunId) {
     return;
   }
-  const pending = sqliteDb.prepare(`
+  const pending = database.prepare(`
     SELECT COUNT(*) AS count
     FROM subagent_runs
     WHERE parent_run_id = ? AND status = 'running'
   `).get(row.parentRunId) as { count: number };
   if (pending.count === 0) {
-    const failed = sqliteDb.prepare(`
+    const failed = database.prepare(`
       SELECT COUNT(*) AS count
       FROM subagent_runs
       WHERE parent_run_id = ? AND status = 'failed'
     `).get(row.parentRunId) as { count: number };
-    sqliteDb.prepare(`
+    database.prepare(`
       UPDATE subagent_runs
       SET status = ?, completed_at = ?
       WHERE run_id = ?
@@ -149,7 +160,7 @@ export function finishSubAgentRun(
 }
 
 export function listSubAgentRuns(threadId: string, userId: string): SubAgentRun[] {
-  const rows = sqliteDb.prepare(`
+  const rows = getDatabaseForThread(threadId).prepare(`
     SELECT
       run_id AS runId,
       parent_run_id AS parentRunId,

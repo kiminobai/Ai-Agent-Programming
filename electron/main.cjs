@@ -13,6 +13,19 @@ function getWorkspaceStatePath() {
   return path.join(app.getPath("userData"), "workspaces.json");
 }
 
+function getKimiBaiDocumentsRoot() {
+  return path.join(app.getPath("documents"), "KimiBai");
+}
+
+function ensureDefaultWorkspace() {
+  const workspacePath = path.join(
+    getKimiBaiDocumentsRoot(),
+    "default-workspace"
+  );
+  fs.mkdirSync(workspacePath, { recursive: true });
+  return toWorkspace(workspacePath);
+}
+
 function readWorkspaceState() {
   try {
     return JSON.parse(fs.readFileSync(getWorkspaceStatePath(), "utf8"));
@@ -78,21 +91,25 @@ function registerWorkspaceHandlers() {
     const state = readWorkspaceState();
     const workspace = state[String(userId || "guest")];
     if (!workspace) {
-      return null;
+      const defaultWorkspace = ensureDefaultWorkspace();
+      state[String(userId || "guest")] = defaultWorkspace;
+      writeWorkspaceState(state);
+      return defaultWorkspace;
     }
 
     try {
       return toWorkspace(workspace.path);
     } catch {
-      delete state[String(userId || "guest")];
+      const defaultWorkspace = ensureDefaultWorkspace();
+      state[String(userId || "guest")] = defaultWorkspace;
       writeWorkspaceState(state);
-      return null;
+      return defaultWorkspace;
     }
   });
 
   ipcMain.handle("workspace:clear", (_event, userId) => {
     const state = readWorkspaceState();
-    delete state[String(userId || "guest")];
+    state[String(userId || "guest")] = ensureDefaultWorkspace();
     writeWorkspaceState(state);
   });
 
@@ -168,7 +185,12 @@ async function ensureLocalServer() {
   const nodeExecutable = findSystemNodeExecutable();
   serverProcess = spawn(nodeExecutable, [serverEntry], {
     cwd: app.getAppPath(),
-    env: process.env,
+    env: {
+      ...process.env,
+      // Work 数据只保存在当前电脑的系统 Documents 目录。
+      // Chat 数据仍使用服务端原有 DATA 目录。
+      KIMIBAI_WORK_DATA_ROOT: getKimiBaiDocumentsRoot()
+    },
     stdio: "inherit",
     windowsHide: true
   });

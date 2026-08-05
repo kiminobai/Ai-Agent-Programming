@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto";
-import { sqliteDb } from "../db/sqlite";
+import { getDatabaseForThread } from "../db/sqlite";
 
 export type WorkspaceActivity = {
   activityId: string;
@@ -26,7 +26,7 @@ export function saveWorkspaceActivity(
     activityId: randomUUID(),
     createdAt: new Date().toISOString()
   };
-  sqliteDb.prepare(`
+  getDatabaseForThread(record.threadId).prepare(`
     INSERT INTO workspace_activity (
       activity_id, thread_id, user_id, turn_id, idempotency_key, activity_type, file_path, additions, deletions,
       command_text, exit_code, stdout, stderr, created_at
@@ -54,7 +54,7 @@ export function listWorkspaceActivity(
   threadId: string,
   userId: string
 ): WorkspaceActivity[] {
-  const rows = sqliteDb.prepare(`
+  const rows = getDatabaseForThread(threadId).prepare(`
     SELECT
       activity_id AS activityId,
       thread_id AS threadId,

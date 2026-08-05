@@ -43,7 +43,8 @@ export const dynamicMemoryPromptMiddleware = createMiddleware({
     // 换 thread_id 仍可读取，换 userId 就读不到。
     const storedThemePreference = getUserPreference(
       request.runtime.context.userId,
-      THEME_PREFERENCE_KEY as "theme"
+      THEME_PREFERENCE_KEY as "theme",
+      request.runtime.context.threadId
     );
     const uploadedDocument = getUploadedDocument(request.runtime.context.threadId);
     const thread = getThreadById(

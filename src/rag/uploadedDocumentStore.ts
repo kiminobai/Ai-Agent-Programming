@@ -1,4 +1,8 @@
-import { sqliteDb } from "../db/sqlite";
+import {
+  getDatabaseForThread,
+  sqliteDb,
+  workSqliteDb
+} from "../db/sqlite";
 import { clearVectorDocumentIndex } from "./vectorDocumentIndex";
 import type { StoredLangChainDocument } from "./langChainDocumentLoader";
 
@@ -48,7 +52,7 @@ type UploadedDocumentRow = {
 export function saveUploadedDocument(record: UploadedDocumentRecord): void {
   // 学习点：uploaded_documents 保存“当前 thread 绑定了哪份文档”。
   // 文件本体不进数据库，只保存 storageKey；可检索文本会保存，方便后续切分和重建索引。
-  sqliteDb
+  getDatabaseForThread(record.threadId)
     .prepare(
       `
         INSERT INTO uploaded_documents (
@@ -109,7 +113,7 @@ export function getUploadedDocument(
 ): UploadedDocumentRecord | undefined {
   // 学习点：普通上传文件问答按 threadId 查文档。
   // 当前对话上传的文件，只影响当前对话。
-  const row = sqliteDb
+  const row = getDatabaseForThread(threadId)
     .prepare(
       `
         SELECT
@@ -145,8 +149,8 @@ export function getUploadedDocumentByFileId(
   userId: string
 ): UploadedDocumentRecord | undefined {
   // 学习点：文件预览/下载按 fileId 查，同时校验 userId，避免跨用户读取。
-  const row = sqliteDb
-    .prepare(
+  const readFrom = (database: typeof sqliteDb) =>
+    database.prepare(
       `
         SELECT
           thread_id,
@@ -166,8 +170,8 @@ export function getUploadedDocumentByFileId(
         FROM uploaded_documents
         WHERE file_id = ? AND user_id = ?
       `
-    )
-    .get(fileId, userId) as UploadedDocumentRow | undefined;
+    ).get(fileId, userId) as UploadedDocumentRow | undefined;
+  const row = readFrom(workSqliteDb) ?? readFrom(sqliteDb);
 
   if (!row) {
     return undefined;

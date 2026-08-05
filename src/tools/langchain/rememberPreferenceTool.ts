@@ -29,7 +29,7 @@ export const rememberPreferenceTool = tool(
       "remember_preference",
       { preferenceType, value },
       () => {
-        saveUserPreference(context.userId, memory);
+        saveUserPreference(context.userId, memory, context.threadId);
         return {
           saved: true,
           key: THEME_PREFERENCE_KEY,

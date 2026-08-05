@@ -21466,6 +21466,23 @@
     const seconds = totalSeconds % 60;
     return `${minutes} \u5206 ${seconds} \u79D2`;
   }
+  function getTaskPlanStepIcon(status) {
+    return {
+      pending: "\u25CB",
+      in_progress: "\u25CC",
+      completed: "\u2713",
+      failed: "!",
+      cancelled: "\u2212"
+    }[status];
+  }
+  function getTaskPlanStatusText(status) {
+    return {
+      running: "\u6267\u884C\u4E2D",
+      completed: "\u5DF2\u5B8C\u6210",
+      failed: "\u6267\u884C\u5931\u8D25",
+      cancelled: "\u5DF2\u505C\u6B62"
+    }[status];
+  }
   function formatSubAgentToolName(toolName) {
     return {
       calculator: "\u8BA1\u7B97\u5668",
@@ -21711,6 +21728,7 @@
     const [isWorkspaceLoading, setIsWorkspaceLoading] = (0, import_react.useState)(false);
     const [workspaceActivities, setWorkspaceActivities] = (0, import_react.useState)([]);
     const [subAgentRuns, setSubAgentRuns] = (0, import_react.useState)([]);
+    const [taskPlans, setTaskPlans] = (0, import_react.useState)([]);
     const [expandedSubAgentRoots, setExpandedSubAgentRoots] = (0, import_react.useState)(
       () => /* @__PURE__ */ new Set()
     );
@@ -21732,6 +21750,7 @@
     const shouldAutoScrollRef = (0, import_react.useRef)(true);
     const pendingInitialScrollRef = (0, import_react.useRef)(false);
     const lastScrollTopRef = (0, import_react.useRef)(0);
+    const skipNextWorkspaceRestoreRef = (0, import_react.useRef)(false);
     (0, import_react.useEffect)(() => {
       if (!isSubmitting) {
         return;
@@ -21810,7 +21829,7 @@
       };
     }, [userId]);
     (0, import_react.useEffect)(() => {
-      if (isLoading || !userId.trim() || !modelId || !roleId) {
+      if (isLoading || !userId.trim() || !modelId || !roleId || appMode === "work" && isWorkspaceLoading) {
         return;
       }
       void loadThreads(
@@ -21827,6 +21846,27 @@
       });
     }, [appMode]);
     (0, import_react.useEffect)(() => {
+      if (appMode !== "work" || isLoading || isWorkspaceLoading || !workspace || !userId.trim() || !modelId || !roleId) {
+        return;
+      }
+      if (skipNextWorkspaceRestoreRef.current) {
+        skipNextWorkspaceRestoreRef.current = false;
+        return;
+      }
+      void loadThreads(
+        userId.trim(),
+        modelId,
+        roleId,
+        reasoningEffort,
+        "work",
+        workspace
+      ).catch((modeError) => {
+        setError(
+          modeError instanceof Error ? modeError.message : "\u5207\u6362\u5DE5\u4F5C\u76EE\u5F55\u5931\u8D25\u3002"
+        );
+      });
+    }, [workspace?.path, isWorkspaceLoading]);
+    (0, import_react.useEffect)(() => {
       if (appMode !== "work" || !activeThreadId || !userId.trim()) {
         setWorkspaceActivities([]);
         return;
@@ -21840,6 +21880,13 @@
       }
       void loadSubAgentRuns();
     }, [activeThreadId, userId]);
+    (0, import_react.useEffect)(() => {
+      if (appMode !== "work" || !activeThreadId || !userId.trim()) {
+        setTaskPlans([]);
+        return;
+      }
+      void loadTaskPlans();
+    }, [appMode, activeThreadId, userId]);
     const approvalItems = (0, import_react.useMemo)(
       () => approvalRequest ? parseApprovalItems(approvalRequest) : [],
       [approvalRequest]
@@ -21987,14 +22034,8 @@
       void bootstrap();
     }, [userId]);
     async function loadThreads(nextUserId, fallbackModelId, fallbackRoleId, fallbackReasoningEffort, mode = appMode, selectedWorkspace = workspace) {
-      if (mode === "work" && !selectedWorkspace) {
-        setThreads([]);
-        setActiveThreadId("");
-        setEntries([]);
-        return;
-      }
       const response = await fetch(
-        `/api/threads?userId=${encodeURIComponent(nextUserId)}&mode=${mode}${mode === "work" && selectedWorkspace ? `&workspacePath=${encodeURIComponent(selectedWorkspace.path)}` : ""}`
+        `/api/threads?userId=${encodeURIComponent(nextUserId)}&mode=${mode}`
       );
       const data = await readJsonResponse(response, "/api/threads");
       if (!response.ok) {
@@ -22022,7 +22063,7 @@
       const nextReasoningEffort = options?.nextReasoningEffort ?? reasoningEffort;
       const nextMode = options?.nextMode ?? appMode;
       const nextWorkspace = options?.nextWorkspace ?? workspace;
-      if (!nextUserId || !nextModelId || !nextRoleId || nextMode === "work" && !nextWorkspace) {
+      if (!nextUserId || !nextModelId || !nextRoleId) {
         return;
       }
       setError("");
@@ -22119,6 +22160,14 @@
         setModelId(thread.modelId);
         setRoleId(thread.roleId);
         setReasoningEffort(thread.reasoningEffort || "low");
+        if (thread.mode === "work" && thread.workspacePath && thread.workspacePath !== workspace?.path) {
+          skipNextWorkspaceRestoreRef.current = true;
+          setWorkspace({
+            name: thread.workspaceName || "\u5DE5\u4F5C\u76EE\u5F55",
+            path: thread.workspacePath,
+            branch: ""
+          });
+        }
         setThreads(
           sourceThreads.map((item) => item.threadId === thread.threadId ? thread : item)
         );
@@ -22204,7 +22253,7 @@
       }
       const thread = threads.find((item) => item.threadId === threadId);
       const confirmed = window.confirm(
-        `\u786E\u5B9A\u5220\u9664\u300C${thread?.title || "\u8FD9\u4E2A\u5BF9\u8BDD"}\u300D\u5417\uFF1F\u8FD9\u4F1A\u5220\u9664\u6D88\u606F\u3001\u77ED\u671F\u8BB0\u5FC6\u3001\u4E0A\u4F20\u6587\u4EF6\u548C RAG \u7D22\u5F15\u3002`
+        thread?.mode === "work" ? `\u786E\u5B9A\u5220\u9664\u300C${thread.title || "\u8FD9\u4E2A\u4EFB\u52A1"}\u300D\u5417\uFF1F\u8FD9\u4F1A\u5220\u9664\u672C\u673A\u4EFB\u52A1\u8BB0\u5F55\u3001\u8BB0\u5FC6\u3001\u4E0A\u4F20\u6587\u4EF6\u548C\u7D22\u5F15\uFF0C\u4F46\u4E0D\u4F1A\u5220\u9664\u4F60\u9009\u62E9\u7684\u5DE5\u4F5C\u76EE\u5F55\u53CA\u5176\u4E2D\u7684\u6E90\u7801\u3002` : `\u786E\u5B9A\u5220\u9664\u300C${thread?.title || "\u8FD9\u4E2A\u5BF9\u8BDD"}\u300D\u5417\uFF1F\u8FD9\u4F1A\u5220\u9664\u6D88\u606F\u3001\u77ED\u671F\u8BB0\u5FC6\u3001\u4E0A\u4F20\u6587\u4EF6\u548C RAG \u7D22\u5F15\u3002`
       );
       if (!confirmed) {
         return;
@@ -22322,6 +22371,7 @@
           userId.trim() || "guest"
         );
         if (selectedWorkspace) {
+          skipNextWorkspaceRestoreRef.current = true;
           setWorkspace(selectedWorkspace);
           if (appMode === "work" && modelId && roleId) {
             await handleCreateThread({
@@ -22343,7 +22393,10 @@
         return;
       }
       await window.desktopAPI.clearWorkspace(userId.trim() || "guest");
-      setWorkspace(null);
+      const defaultWorkspace = await window.desktopAPI.getWorkspace(
+        userId.trim() || "guest"
+      );
+      setWorkspace(defaultWorkspace);
       setWorkspaceError("");
     }
     async function loadWorkspaceActivities() {
@@ -22375,6 +22428,16 @@
         }
         return next;
       });
+    }
+    async function loadTaskPlans() {
+      const response = await fetch(
+        `/api/task-plans?threadId=${encodeURIComponent(activeThreadId)}&userId=${encodeURIComponent(userId.trim())}`
+      );
+      const data = await readJsonResponse(response, "/api/task-plans");
+      if (!response.ok) {
+        throw new Error(data.error || "\u8BFB\u53D6\u4EFB\u52A1\u8BA1\u5212\u5931\u8D25\u3002");
+      }
+      setTaskPlans(data.plans || []);
     }
     async function uploadDocumentForThread(file) {
       if (!activeThreadId || !userId.trim()) {
@@ -22637,6 +22700,16 @@
                 void loadSubAgentRuns();
               }, 60);
             }
+            if (streamEvent.stage === "task_plan" && streamEvent.taskPlan) {
+              const nextPlan = {
+                ...streamEvent.taskPlan,
+                turnId
+              };
+              setTaskPlans((current) => [
+                ...current.filter((plan) => plan.turnId !== turnId),
+                nextPlan
+              ]);
+            }
             return;
           }
           if (streamEvent.type === "delta") {
@@ -22695,7 +22768,7 @@
         await refreshThreads(activeThreadId);
         await loadSubAgentRuns();
         if (appMode === "work") {
-          await loadWorkspaceActivities();
+          await Promise.all([loadWorkspaceActivities(), loadTaskPlans()]);
         }
       } catch (submitError) {
         const wasStopped = requestController.signal.aborted || submitError instanceof DOMException && submitError.name === "AbortError";
@@ -23010,6 +23083,7 @@
         const turnSubAgentRoots = entry.role === "assistant" && entry.turnId ? subAgentRuns.filter(
           (run) => run.turnId === entry.turnId && run.depth === 1
         ) : [];
+        const turnPlan = entry.role === "assistant" && entry.turnId && isLastAssistantForTurn ? taskPlans.find((plan) => plan.turnId === entry.turnId) : void 0;
         return /* @__PURE__ */ import_react.default.createElement(
           "div",
           {
@@ -23055,7 +23129,33 @@
                 }
               ) : /* @__PURE__ */ import_react.default.createElement(import_react.default.Fragment, null, /* @__PURE__ */ import_react.default.createElement("div", { className: "message-attachment-icon" }, getAttachmentKind(entry.attachmentName)), /* @__PURE__ */ import_react.default.createElement("div", { className: "message-attachment-info" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "message-attachment-name" }, entry.attachmentName), /* @__PURE__ */ import_react.default.createElement("div", { className: "message-attachment-copy" }, getAttachmentKind(entry.attachmentName))))
             ) : null,
-            entry.role === "assistant" ? /* @__PURE__ */ import_react.default.createElement(import_react.default.Fragment, null, entry.completed === false ? /* @__PURE__ */ import_react.default.createElement("div", { className: "agent-progress", role: "status", "aria-live": "polite" }, /* @__PURE__ */ import_react.default.createElement("span", { className: "agent-progress-dot", "aria-hidden": "true" }), /* @__PURE__ */ import_react.default.createElement("span", null, entry.statusMessage || "\u6B63\u5728\u751F\u6210\u56DE\u7B54\u2026", entry.startedAt ? ` \u5DF2\u5904\u7406 ${formatElapsedTime(progressClock - entry.startedAt)}` : "")) : entry.elapsedMs !== void 0 && !entry.stopped ? /* @__PURE__ */ import_react.default.createElement("div", { className: "agent-elapsed" }, "\u5DF2\u5904\u7406 ", formatElapsedTime(entry.elapsedMs)) : null, turnSubAgentRoots.map((rootRun) => {
+            entry.role === "assistant" ? /* @__PURE__ */ import_react.default.createElement(import_react.default.Fragment, null, turnPlan ? /* @__PURE__ */ import_react.default.createElement(
+              "details",
+              {
+                className: `task-plan-card status-${turnPlan.status}`,
+                open: turnPlan.status === "running"
+              },
+              /* @__PURE__ */ import_react.default.createElement("summary", { className: "task-plan-summary" }, /* @__PURE__ */ import_react.default.createElement("span", { className: "task-plan-summary-copy" }, /* @__PURE__ */ import_react.default.createElement("strong", null, turnPlan.title), /* @__PURE__ */ import_react.default.createElement("span", null, getTaskPlanStatusText(turnPlan.status))), /* @__PURE__ */ import_react.default.createElement("span", { className: "task-plan-count" }, turnPlan.steps.filter(
+                (step) => step.status === "completed"
+              ).length, "/", turnPlan.steps.length)),
+              /* @__PURE__ */ import_react.default.createElement("ol", { className: "task-plan-steps" }, turnPlan.steps.map((step, stepIndex) => /* @__PURE__ */ import_react.default.createElement(
+                "li",
+                {
+                  className: `task-plan-step status-${step.status}`,
+                  key: step.id
+                },
+                /* @__PURE__ */ import_react.default.createElement(
+                  "span",
+                  {
+                    className: "task-plan-step-icon",
+                    "aria-hidden": "true"
+                  },
+                  getTaskPlanStepIcon(step.status)
+                ),
+                /* @__PURE__ */ import_react.default.createElement("span", { className: "task-plan-step-title" }, step.title),
+                /* @__PURE__ */ import_react.default.createElement("span", { className: "task-plan-step-number" }, stepIndex + 1)
+              )))
+            ) : null, entry.completed === false ? /* @__PURE__ */ import_react.default.createElement("div", { className: "agent-progress", role: "status", "aria-live": "polite" }, /* @__PURE__ */ import_react.default.createElement("span", { className: "agent-progress-dot", "aria-hidden": "true" }), /* @__PURE__ */ import_react.default.createElement("span", null, entry.statusMessage || "\u6B63\u5728\u751F\u6210\u56DE\u7B54\u2026", entry.startedAt ? ` \u5DF2\u5904\u7406 ${formatElapsedTime(progressClock - entry.startedAt)}` : "")) : entry.elapsedMs !== void 0 && !entry.stopped ? /* @__PURE__ */ import_react.default.createElement("div", { className: "agent-elapsed" }, "\u5DF2\u5904\u7406 ", formatElapsedTime(entry.elapsedMs)) : null, turnSubAgentRoots.map((rootRun) => {
               const children = subAgentRuns.filter(
                 (run) => run.parentRunId === rootRun.runId
               );

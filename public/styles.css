@@ -1222,6 +1222,134 @@ input {
   font-size: 12px;
 }
 
+.task-plan-card {
+  width: min(100%, 680px);
+  margin: 8px 0 18px;
+  overflow: hidden;
+  border: 1px solid #e2e4e8;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 10px 30px rgba(20, 24, 32, 0.05);
+}
+
+.task-plan-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 58px;
+  padding: 12px 16px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.task-plan-summary::-webkit-details-marker {
+  display: none;
+}
+
+.task-plan-summary-copy {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+
+.task-plan-summary-copy strong {
+  overflow: hidden;
+  color: #17191d;
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-plan-summary-copy span {
+  color: #747983;
+  font-size: 12px;
+}
+
+.task-plan-count {
+  flex: none;
+  border-radius: 999px;
+  background: #f1f3f5;
+  padding: 4px 9px;
+  color: #686e78;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.task-plan-card.status-running .task-plan-count {
+  background: #e9f8f3;
+  color: #08795d;
+}
+
+.task-plan-steps {
+  display: grid;
+  margin: 0;
+  padding: 0 16px 14px;
+  list-style: none;
+}
+
+.task-plan-step {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) 24px;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  border-top: 1px solid #eef0f2;
+  color: #60656e;
+}
+
+.task-plan-step-icon {
+  display: grid;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  border: 1px solid #d8dce1;
+  border-radius: 50%;
+  color: #8b919a;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.task-plan-step.status-in_progress {
+  color: #17191d;
+  font-weight: 600;
+}
+
+.task-plan-step.status-in_progress .task-plan-step-icon {
+  border-color: #16a47d;
+  color: #08795d;
+  animation: task-plan-pulse 1.4s ease-in-out infinite;
+}
+
+.task-plan-step.status-completed .task-plan-step-icon {
+  border-color: #16a47d;
+  background: #16a47d;
+  color: #fff;
+}
+
+.task-plan-step.status-failed .task-plan-step-icon {
+  border-color: #e5484d;
+  background: #fff0f0;
+  color: #c62f35;
+}
+
+.task-plan-step.status-cancelled .task-plan-step-title {
+  color: #9297a0;
+  text-decoration: line-through;
+}
+
+.task-plan-step-number {
+  color: #a0a5ad;
+  font-size: 11px;
+  text-align: right;
+}
+
+@keyframes task-plan-pulse {
+  50% {
+    box-shadow: 0 0 0 5px rgba(22, 164, 125, 0.12);
+  }
+}
+
 .composer-controls {
   display: flex;
   align-items: center;

@@ -52,6 +52,7 @@ import {
 import type { ThreadMode } from "./threads/threadRepository";
 import { listWorkspaceActivity } from "./workspace/workspaceActivityRepository";
 import { listSubAgentRuns } from "./agents/subAgentRunRepository";
+import { listTaskPlans } from "./agents/taskPlanRepository";
 import {
   listDocumentQaMessages,
   saveDocumentQaExchange
@@ -66,6 +67,10 @@ import type {
   PendingUploadFile,
   StoredUploadFile
 } from "./rag/uploadFileStorage";
+import {
+  DEFAULT_WORKSPACE_ROOT,
+  deleteWorkThreadStorage
+} from "./workspace/localWorkStorage";
 import type { UploadedDocumentRecord } from "./rag/uploadedDocumentStore";
 
 type MulterRequest = Request & {
@@ -115,6 +120,17 @@ app.get("/api/subagents/runs", (req, res) => {
     return;
   }
   res.json({ runs: listSubAgentRuns(threadId, userId) });
+});
+
+app.get("/api/task-plans", (req, res) => {
+  const threadId = String(req.query.threadId || "").trim();
+  const userId = String(req.query.userId || "").trim();
+  const thread = getThreadById(threadId, userId);
+  if (!thread || thread.mode !== "work") {
+    res.status(404).json({ error: "工作任务不存在。" });
+    return;
+  }
+  res.json({ plans: listTaskPlans(threadId, userId) });
 });
 
 /**
@@ -406,11 +422,8 @@ app.post(
     }
 
     if (mode === "work") {
-      const requestedWorkspacePath = req.body?.workspacePath?.trim();
-      if (!requestedWorkspacePath) {
-        res.status(400).json({ error: "工作对话必须选择项目目录。" });
-        return;
-      }
+      const requestedWorkspacePath =
+        req.body?.workspacePath?.trim() || DEFAULT_WORKSPACE_ROOT;
       try {
         workspacePath = fs.realpathSync.native(requestedWorkspacePath);
         if (!fs.statSync(workspacePath).isDirectory()) {
@@ -502,13 +515,19 @@ app.delete("/api/threads/:threadId", async (req: Request, res: Response) => {
   }
 
   try {
+    const thread = getThreadById(threadId, userId);
     const deleted = deleteThread(threadId, userId);
     if (!deleted) {
       res.status(404).json({ error: "Thread was not found." });
       return;
     }
 
-    await deleteUploadThreadDirectory({ userId, threadId });
+    if (thread?.mode === "work") {
+      // 这里只删除 KimiBai 为任务创建的数据，绝不删除用户选择的工作目录。
+      await deleteWorkThreadStorage(threadId);
+    } else {
+      await deleteUploadThreadDirectory({ userId, threadId });
+    }
     res.json({ ok: true });
   } catch (error) {
     const message =

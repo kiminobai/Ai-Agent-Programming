@@ -3,9 +3,9 @@ import {
   RAG_RETRIEVAL_CONFIG,
   splitUploadedDocument
 } from "./documentChunkLab";
-import { sqliteDb } from "../db/sqlite";
+import { getDatabaseForThread } from "../db/sqlite";
 import { embeddingProvider } from "./embeddingProvider";
-import { vectorStore } from "./vectorStoreProvider";
+import { getVectorStoreForThread } from "./vectorStoreProvider";
 import type { UploadedDocumentRecord } from "./uploadedDocumentStore";
 import type { VectorDocumentIndex, VectorIndexedChunk } from "./vectorStore";
 
@@ -79,7 +79,7 @@ export async function buildVectorDocumentIndex(
 
   indexByThread.set(document.threadId, index);
   // vectorStore 可能是 Chroma，也可能是 SQLite fallback，由 vectorStoreProvider 统一选择。
-  await vectorStore.saveIndex(index);
+  await getVectorStoreForThread(document.threadId).saveIndex(index);
   markVectorIndexPersisted(document.threadId);
   return index;
 }
@@ -88,9 +88,10 @@ export function clearVectorDocumentIndex(threadId: string): void {
   // 删除对话或文件时，要同时清理内存缓存、向量索引和 GraphRAG 图谱。
   // 否则旧 chunk 可能继续参与检索，污染当前对话环境。
   indexByThread.delete(threadId);
-  vectorStore.clearIndex(threadId);
-  sqliteDb.prepare("DELETE FROM document_graph_edges WHERE thread_id = ?").run(threadId);
-  sqliteDb.prepare("DELETE FROM document_graph_nodes WHERE thread_id = ?").run(threadId);
+  getVectorStoreForThread(threadId).clearIndex(threadId);
+  const database = getDatabaseForThread(threadId);
+  database.prepare("DELETE FROM document_graph_edges WHERE thread_id = ?").run(threadId);
+  database.prepare("DELETE FROM document_graph_nodes WHERE thread_id = ?").run(threadId);
 }
 
 export async function getOrBuildVectorDocumentIndex(
@@ -111,7 +112,9 @@ export async function getOrBuildVectorDocumentIndex(
     return existingIndex;
   }
 
-  const persistedIndex = vectorStore.loadIndex(document.threadId);
+  const persistedIndex = getVectorStoreForThread(document.threadId).loadIndex(
+    document.threadId
+  );
   const usesCurrentChunking =
     persistedIndex?.chunks.every(
       (chunk) => chunk.chunkingVersion === RAG_CHUNKING_VERSION
@@ -154,7 +157,9 @@ export async function searchVectorDocumentIndex(
   // 2-step RAG 只把问题转成向量，然后做一次 TopK 语义检索。
   // 它不跑关键词检索和重排，所以适合简单问答。
   const queryEmbedding = await embeddingProvider.embedText(query);
-  const vectorScores = await vectorStore.searchVectorScores(
+  const vectorScores = await getVectorStoreForThread(
+    document.threadId
+  ).searchVectorScores(
     index,
     queryEmbedding,
     RAG_RETRIEVAL_CONFIG.topK
@@ -204,7 +209,9 @@ export async function searchHybridDocumentIndex(
 
   // 步骤 1：同时拿“向量检索结果”和“关键词检索结果”。
   // 向量检索擅长语义相似，BM25/FTS5 擅长精确词、编号、代码、术语。
-  const vectorScores = await vectorStore.searchVectorScores(
+  const vectorScores = await getVectorStoreForThread(
+    document.threadId
+  ).searchVectorScores(
     index,
     queryEmbedding,
     RAG_RETRIEVAL_CONFIG.hybridCandidateK
@@ -463,7 +470,7 @@ function searchFtsBm25Scores(threadId: string, query: string): Map<number, numbe
     return new Map();
   }
 
-  return vectorStore.searchKeywordScores(
+  return getVectorStoreForThread(threadId).searchKeywordScores(
     threadId,
     ftsQuery,
     RAG_RETRIEVAL_CONFIG.hybridCandidateK
@@ -483,7 +490,7 @@ function buildFtsQuery(query: string): string {
 
 function markVectorIndexPersisted(threadId: string): void {
   // uploaded_documents.index_status 记录索引是否已完成，方便刷新页面或重启后恢复状态。
-  sqliteDb
+  getDatabaseForThread(threadId)
     .prepare(
       `
         UPDATE uploaded_documents

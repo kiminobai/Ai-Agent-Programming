@@ -1,4 +1,5 @@
-import { sqliteDb } from "../db/sqlite";
+import { getDatabaseForThread, sqliteDb } from "../db/sqlite";
+import type Database from "better-sqlite3";
 import type {
   VectorDocumentIndex,
   VectorStore,
@@ -32,7 +33,8 @@ type FtsSearchRow = {
 // 2. 使用 FTS5/BM25 做关键词检索，给 Hybrid RAG 提供非向量信号。
 export class SQLiteVectorStore implements VectorStore {
   saveIndex(index: VectorDocumentIndex): void {
-    const insertChunk = sqliteDb.prepare(
+    const database = getDatabaseForThread(index.threadId);
+    const insertChunk = database.prepare(
       `
         INSERT INTO document_chunks (
           thread_id,
@@ -65,7 +67,7 @@ export class SQLiteVectorStore implements VectorStore {
           built_at = excluded.built_at
       `
     );
-    const insertFtsChunk = sqliteDb.prepare(
+    const insertFtsChunk = database.prepare(
       `
         INSERT INTO document_chunks_fts (
           thread_id,
@@ -75,9 +77,9 @@ export class SQLiteVectorStore implements VectorStore {
       `
     );
 
-    const saveChunks = sqliteDb.transaction(() => {
+    const saveChunks = database.transaction(() => {
       // 学习点：重建索引前先清掉旧 chunk，避免同一个 thread 新旧文件混在一起。
-      this.clearIndex(index.threadId);
+      this.clearIndex(index.threadId, database);
 
       for (const chunk of index.chunks) {
         insertChunk.run(
@@ -114,7 +116,7 @@ export class SQLiteVectorStore implements VectorStore {
 
   loadIndex(threadId: string): VectorDocumentIndex | null {
     // 学习点：项目重启后，内存 Map 没了，但可以从 SQLite 把索引读回来。
-    const rows = sqliteDb
+    const rows = getDatabaseForThread(threadId)
       .prepare(
         `
           SELECT
@@ -198,9 +200,12 @@ export class SQLiteVectorStore implements VectorStore {
     };
   }
 
-  clearIndex(threadId: string): void {
-    sqliteDb.prepare("DELETE FROM document_chunks_fts WHERE thread_id = ?").run(threadId);
-    sqliteDb.prepare("DELETE FROM document_chunks WHERE thread_id = ?").run(threadId);
+  clearIndex(
+    threadId: string,
+    database: Database.Database = getDatabaseForThread(threadId)
+  ): void {
+    database.prepare("DELETE FROM document_chunks_fts WHERE thread_id = ?").run(threadId);
+    database.prepare("DELETE FROM document_chunks WHERE thread_id = ?").run(threadId);
   }
 
   async searchVectorScores(
@@ -236,7 +241,7 @@ export class SQLiteVectorStore implements VectorStore {
     }
 
     try {
-      const rows = sqliteDb
+      const rows = getDatabaseForThread(threadId)
         .prepare(
           `
             SELECT

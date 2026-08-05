@@ -1,5 +1,5 @@
 import { appConfig, getProviderConfig } from "../config";
-import { sqliteDb } from "../db/sqlite";
+import { getDatabaseForThread } from "../db/sqlite";
 import { LangChainProvider } from "../providers/langChainProvider";
 import { RAG_RETRIEVAL_CONFIG } from "./documentChunkLab";
 import { searchHybridDocumentIndex, type HybridDocumentRetrievalResult } from "./vectorDocumentIndex";
@@ -142,8 +142,9 @@ export async function searchGraphDocumentIndex(
 
 export function clearDocumentGraphIndex(threadId: string): void {
   // 删除对话或重新索引文件时，要同步清理图谱缓存，避免旧关系污染新文件。
-  sqliteDb.prepare("DELETE FROM document_graph_edges WHERE thread_id = ?").run(threadId);
-  sqliteDb.prepare("DELETE FROM document_graph_nodes WHERE thread_id = ?").run(threadId);
+  const database = getDatabaseForThread(threadId);
+  database.prepare("DELETE FROM document_graph_edges WHERE thread_id = ?").run(threadId);
+  database.prepare("DELETE FROM document_graph_nodes WHERE thread_id = ?").run(threadId);
 }
 
 async function getOrBuildGraphIndex(index: VectorDocumentIndex): Promise<GraphIndex> {
@@ -216,9 +217,10 @@ async function buildGraphIndex(index: VectorDocumentIndex): Promise<GraphIndex> 
 
 function saveGraphIndex(graph: GraphIndex): void {
   clearDocumentGraphIndex(graph.threadId);
+  const database = getDatabaseForThread(graph.threadId);
 
   // 节点表保存：实体出现在哪些 chunk、出现次数是多少。
-  const insertNode = sqliteDb.prepare(`
+  const insertNode = database.prepare(`
     INSERT INTO document_graph_nodes (
       thread_id,
       entity,
@@ -229,7 +231,7 @@ function saveGraphIndex(graph: GraphIndex): void {
     ) VALUES (?, ?, ?, ?, ?, ?)
   `);
   // 边表保存：两个实体在哪些 chunk 里共同出现、共现权重是多少。
-  const insertEdge = sqliteDb.prepare(`
+  const insertEdge = database.prepare(`
     INSERT INTO document_graph_edges (
       thread_id,
       source_entity,
@@ -241,7 +243,7 @@ function saveGraphIndex(graph: GraphIndex): void {
     ) VALUES (?, ?, ?, ?, ?, ?, ?)
   `);
 
-  const transaction = sqliteDb.transaction(() => {
+  const transaction = database.transaction(() => {
     for (const node of graph.nodes) {
       insertNode.run(
         graph.threadId,
@@ -270,7 +272,8 @@ function saveGraphIndex(graph: GraphIndex): void {
 }
 
 function loadGraphIndex(threadId: string): GraphIndex | null {
-  const nodeRows = sqliteDb
+  const database = getDatabaseForThread(threadId);
+  const nodeRows = database
     .prepare(
       `SELECT entity, entity_type, chunk_indexes_json, mention_count
        FROM document_graph_nodes
@@ -282,7 +285,7 @@ function loadGraphIndex(threadId: string): GraphIndex | null {
     return null;
   }
 
-  const edgeRows = sqliteDb
+  const edgeRows = database
     .prepare(
       `SELECT source_entity, target_entity, relation, weight, chunk_indexes_json
        FROM document_graph_edges

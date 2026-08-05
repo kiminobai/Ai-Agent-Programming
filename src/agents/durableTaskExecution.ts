@@ -5,7 +5,7 @@
  * 两者组合后，恢复或重试可以复用成功结果，而不是再次写文件、运行命令或调用模型。
  */
 import crypto from "crypto";
-import { sqliteDb } from "../db/sqlite";
+import { getDatabaseForThread } from "../db/sqlite";
 import type { AgentContext } from "./agentContext";
 import type { ToolMemoryRuntime } from "./toolMemoryState";
 
@@ -97,9 +97,10 @@ export async function executeDurableTask<T>(
     operationName,
     inputHash
   );
+  const database = getDatabaseForThread(context.threadId);
 
   const readExecution = () =>
-    sqliteDb
+    database
     .prepare(
       `SELECT idempotency_key, input_hash, status, result_json, error_text
        FROM agent_task_executions
@@ -137,7 +138,7 @@ export async function executeDurableTask<T>(
   }
 
   const now = new Date().toISOString();
-  const claim = sqliteDb
+  const claim = database
     .prepare(
       `INSERT OR IGNORE INTO agent_task_executions (
         idempotency_key, thread_id, user_id, turn_id, operation_name,
@@ -167,7 +168,7 @@ export async function executeDurableTask<T>(
   try {
     const result = await execute({ idempotencyKey: key, replayed: false });
     runtime.signal?.throwIfAborted();
-    sqliteDb
+    database
       .prepare(
         `UPDATE agent_task_executions
          SET status = 'succeeded', result_json = ?, completed_at = ?
@@ -177,7 +178,7 @@ export async function executeDurableTask<T>(
     return { result, idempotencyKey: key, replayed: false };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    sqliteDb
+    database
       .prepare(
         `UPDATE agent_task_executions
          SET status = 'failed', error_text = ?, completed_at = ?

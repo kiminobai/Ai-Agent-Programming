@@ -1,9 +1,14 @@
 import crypto from "crypto";
 import fs from "fs";
 import path from "path";
+import { getDatabaseForThread, sqliteDb } from "../db/sqlite";
+import {
+  getWorkTaskDirectory,
+  WORK_TASKS_ROOT
+} from "../workspace/localWorkStorage";
 
-const uploadRoot = path.join(process.cwd(), "data", "uploads");
-const pendingUploadRoot = path.join(uploadRoot, ".pending");
+const chatUploadRoot = path.join(process.cwd(), "data", "uploads");
+const chatPendingUploadRoot = path.join(chatUploadRoot, ".pending");
 const DEFAULT_PENDING_TTL_MS = 24 * 60 * 60 * 1000;
 
 export interface StoredUploadFile {
@@ -25,11 +30,11 @@ export async function saveUploadFile(input: {
 }): Promise<StoredUploadFile> {
   const fileId = crypto.randomUUID();
   const safeName = sanitizeFileName(input.originalName);
-  // 学习点：真实文件放在 data/uploads 目录，不直接塞进数据库。
-  // 数据库只保存 storageKey 这种相对路径，部署换域名/端口时不会被写死。
-  const storageKey = path
-    .join(input.userId, input.threadId, `${fileId}-${safeName}`)
-    .replace(/\\/g, "/");
+  const storageKey = createStorageKey(
+    input.userId,
+    input.threadId,
+    `${fileId}-${safeName}`
+  );
   const absolutePath = resolveUploadStorageKey(storageKey);
 
   await fs.promises.mkdir(path.dirname(absolutePath), { recursive: true });
@@ -50,17 +55,24 @@ export async function savePendingUploadFile(input: {
 }): Promise<PendingUploadFile> {
   const fileId = crypto.randomUUID();
   const safeName = sanitizeFileName(input.originalName);
-  const storageKey = path
-    .join(input.userId, input.threadId, `${fileId}-${safeName}`)
-    .replace(/\\/g, "/");
+  const fileName = `${fileId}-${safeName}`;
+  const isWorkThread = getDatabaseForThread(input.threadId) !== sqliteDb;
+  const storageKey = createStorageKey(
+    input.userId,
+    input.threadId,
+    fileName
+  );
   const pendingStorageKey = `${fileId}-${safeName}`;
-  const pendingAbsolutePath = path.resolve(pendingUploadRoot, pendingStorageKey);
+  const pendingRoot = isWorkThread
+    ? getWorkTaskDirectory(input.threadId, "temp")
+    : chatPendingUploadRoot;
+  const pendingAbsolutePath = path.resolve(pendingRoot, pendingStorageKey);
   const absolutePath = resolveUploadStorageKey(storageKey);
 
   // 学习点：pending 文件只表示“后端已收到字节”，还没有进入当前对话上下文。
   // 为什么这样：如果解析失败、用户中断或服务异常，最多留下临时文件，不会覆盖旧文档记录。
-  assertInsideUploadRoot(pendingAbsolutePath);
-  await fs.promises.mkdir(pendingUploadRoot, { recursive: true });
+  assertInsideRoot(pendingAbsolutePath, pendingRoot);
+  await fs.promises.mkdir(pendingRoot, { recursive: true });
   await fs.promises.writeFile(pendingAbsolutePath, input.buffer);
 
   return {
@@ -113,28 +125,35 @@ export async function cleanupStalePendingUploads(
   let deletedCount = 0;
 
   try {
-    const entries = await fs.promises.readdir(pendingUploadRoot, {
-      withFileTypes: true
-    });
+    const roots = [chatPendingUploadRoot];
+    const taskEntries = await fs.promises
+      .readdir(WORK_TASKS_ROOT, { withFileTypes: true })
+      .catch(() => []);
+    for (const taskEntry of taskEntries) {
+      if (taskEntry.isDirectory()) {
+        roots.push(getWorkTaskDirectory(taskEntry.name, "temp"));
+      }
+    }
 
-    await Promise.all(
-      entries.map(async (entry) => {
-        if (!entry.isFile()) {
-          return;
-        }
-
-        const absolutePath = path.resolve(pendingUploadRoot, entry.name);
-        assertInsideUploadRoot(absolutePath);
-        const stat = await fs.promises.stat(absolutePath);
-
-        if (now - stat.mtimeMs < ttlMs) {
-          return;
-        }
-
-        await fs.promises.rm(absolutePath, { force: true });
-        deletedCount += 1;
-      })
-    );
+    for (const pendingRoot of roots) {
+      const entries = await fs.promises
+        .readdir(pendingRoot, { withFileTypes: true })
+        .catch(() => []);
+      await Promise.all(
+        entries.map(async (entry) => {
+          if (!entry.isFile()) {
+            return;
+          }
+          const absolutePath = path.resolve(pendingRoot, entry.name);
+          assertInsideRoot(absolutePath, pendingRoot);
+          const stat = await fs.promises.stat(absolutePath);
+          if (now - stat.mtimeMs >= ttlMs) {
+            await fs.promises.rm(absolutePath, { force: true });
+            deletedCount += 1;
+          }
+        })
+      );
+    }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
       throw error;
@@ -145,9 +164,25 @@ export async function cleanupStalePendingUploads(
 }
 
 export function resolveUploadStorageKey(storageKey: string): string {
-  // 学习点：读取文件时，再把相对 storageKey 解析回项目内的绝对路径。
-  const absolutePath = path.resolve(uploadRoot, storageKey);
-  assertInsideUploadRoot(absolutePath);
+  const normalized = storageKey.replace(/\\/g, "/");
+  const [scope, ...parts] = normalized.split("/");
+  let root = chatUploadRoot;
+  let relativeParts = [scope, ...parts];
+
+  if (scope === "work") {
+    const [threadId, ...fileParts] = parts;
+    if (!threadId || fileParts.length !== 1) {
+      throw new Error("Invalid Work upload storage key.");
+    }
+    root = getWorkTaskDirectory(threadId, "uploads");
+    relativeParts = fileParts;
+  } else if (scope === "chat") {
+    relativeParts = parts;
+  }
+
+  // storageKey 保持相对形式，部署地址变化不会影响磁盘定位。
+  const absolutePath = path.resolve(root, ...relativeParts);
+  assertInsideRoot(absolutePath, root);
   return absolutePath;
 }
 
@@ -156,8 +191,12 @@ export async function deleteUploadThreadDirectory(input: {
   threadId: string;
 }): Promise<void> {
   // 学习点：删除对话时，也要删除这个对话对应的上传文件目录。
-  const absolutePath = path.resolve(uploadRoot, input.userId, input.threadId);
-  assertInsideUploadRoot(absolutePath);
+  const absolutePath = path.resolve(
+    chatUploadRoot,
+    input.userId,
+    input.threadId
+  );
+  assertInsideRoot(absolutePath, chatUploadRoot);
   await fs.promises.rm(absolutePath, { recursive: true, force: true });
 }
 
@@ -182,9 +221,20 @@ function sanitizeFileName(fileName: string): string {
   return `${baseName || "upload"}${extension.toLowerCase()}`;
 }
 
-function assertInsideUploadRoot(absolutePath: string): void {
-  // 学习点：路径边界检查，防止 storageKey 被构造成项目目录外的路径。
-  const root = path.resolve(uploadRoot) + path.sep;
+function createStorageKey(
+  userId: string,
+  threadId: string,
+  fileName: string
+): string {
+  const scope = getDatabaseForThread(threadId) === sqliteDb ? "chat" : "work";
+  return scope === "work"
+    ? `work/${threadId}/${fileName}`
+    : path.join("chat", userId, threadId, fileName).replace(/\\/g, "/");
+}
+
+function assertInsideRoot(absolutePath: string, allowedRoot: string): void {
+  // 路径边界检查保证附件无法逃逸到当前模式的存储根目录之外。
+  const root = path.resolve(allowedRoot) + path.sep;
   const target = path.resolve(absolutePath);
 
   if (!target.startsWith(root)) {

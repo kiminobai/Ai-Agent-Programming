@@ -1,5 +1,9 @@
 import crypto from "crypto";
-import { sqliteDb } from "../db/sqlite";
+import {
+  getDatabaseForThread,
+  sqliteDb,
+  workSqliteDb
+} from "../db/sqlite";
 import { sqliteVectorStore } from "../rag/sqliteVectorStore";
 import { ProviderId, ReasoningEffort } from "../types";
 
@@ -19,6 +23,14 @@ export interface ChatThreadRecord {
   lastMessagePreview?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+function databaseForMode(mode: ThreadMode) {
+  return mode === "work" ? workSqliteDb : sqliteDb;
+}
+
+export function databaseForThread(threadId: string) {
+  return getDatabaseForThread(threadId);
 }
 
 // 学习点：SQLite 字段是 snake_case，前端/后端 TS 代码更习惯 camelCase。
@@ -78,7 +90,7 @@ export function createThread(params: {
   const now = new Date().toISOString();
   const threadId = crypto.randomUUID();
 
-  sqliteDb
+  databaseForMode(params.mode ?? "chat")
     .prepare(
       `
         INSERT INTO chat_threads (
@@ -138,7 +150,7 @@ export function listThreadsByUser(
   // 学习点：左侧会话列表按 userId 查询，避免不同用户看到彼此对话。
   const workspaceFilter =
     mode === "work" && workspacePath ? "AND workspace_path = ?" : "";
-  const statement = sqliteDb.prepare(
+  const statement = databaseForMode(mode).prepare(
     `
         SELECT
           thread_id,
@@ -187,8 +199,8 @@ export function getThreadById(
   userId: string
 ): ChatThreadRecord | null {
   // 学习点：查单个 thread 时同时带 userId，是为了做最基础的用户隔离。
-  const row = sqliteDb
-    .prepare(
+  const readFrom = (database: typeof sqliteDb) =>
+    database.prepare(
       `
         SELECT
           thread_id,
@@ -207,8 +219,7 @@ export function getThreadById(
         FROM chat_threads
         WHERE thread_id = ? AND user_id = ?
       `
-    )
-    .get(threadId, userId) as
+    ).get(threadId, userId) as
     | {
         thread_id: string;
         user_id: string;
@@ -226,7 +237,7 @@ export function getThreadById(
       }
     | undefined;
 
-  return mapThreadRow(row);
+  return mapThreadRow(readFrom(workSqliteDb) ?? readFrom(sqliteDb));
 }
 
 export function updateThreadAfterMessage(params: {
@@ -243,7 +254,7 @@ export function updateThreadAfterMessage(params: {
   const now = new Date().toISOString();
   const preview = params.userMessage.trim().slice(0, 120);
 
-  sqliteDb
+  databaseForThread(params.threadId)
     .prepare(
       `
         UPDATE chat_threads
@@ -285,7 +296,7 @@ export function renameThread(
     return null;
   }
 
-  sqliteDb
+  databaseForThread(threadId)
     .prepare(
       `
         UPDATE chat_threads
@@ -308,10 +319,11 @@ export function deleteThread(threadId: string, userId: string): boolean {
     return false;
   }
 
+  const database = databaseForMode(thread.mode);
   const deleteRowsWithThreadId = (tableName: string) => {
     // 学习点：LangGraph 的 checkpoint 表可能由库创建。
     // 删除前先看表里有没有 thread_id 字段，避免误删不相关表。
-    const columns = sqliteDb.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{
+    const columns = database.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{
       name: string;
     }>;
 
@@ -319,19 +331,20 @@ export function deleteThread(threadId: string, userId: string): boolean {
       return;
     }
 
-    sqliteDb.prepare(`DELETE FROM ${tableName} WHERE thread_id = ?`).run(threadId);
+    database.prepare(`DELETE FROM ${tableName} WHERE thread_id = ?`).run(threadId);
   };
 
-  const deleteTransaction = sqliteDb.transaction(() => {
-    sqliteDb.prepare("DELETE FROM workspace_activity WHERE thread_id = ?").run(threadId);
-    sqliteDb.prepare("DELETE FROM subagent_runs WHERE thread_id = ?").run(threadId);
-    sqliteDb.prepare("DELETE FROM agent_task_executions WHERE thread_id = ?").run(threadId);
-    sqliteDb.prepare("DELETE FROM document_qa_messages WHERE thread_id = ?").run(threadId);
-    sqliteVectorStore.clearIndex(threadId);
-    sqliteDb.prepare("DELETE FROM uploaded_documents WHERE thread_id = ?").run(threadId);
+  const deleteTransaction = database.transaction(() => {
+    database.prepare("DELETE FROM workspace_activity WHERE thread_id = ?").run(threadId);
+    database.prepare("DELETE FROM subagent_runs WHERE thread_id = ?").run(threadId);
+    database.prepare("DELETE FROM agent_task_plans WHERE thread_id = ?").run(threadId);
+    database.prepare("DELETE FROM agent_task_executions WHERE thread_id = ?").run(threadId);
+    database.prepare("DELETE FROM document_qa_messages WHERE thread_id = ?").run(threadId);
+    sqliteVectorStore.clearIndex(threadId, database);
+    database.prepare("DELETE FROM uploaded_documents WHERE thread_id = ?").run(threadId);
 
     for (const tableName of ["checkpoint_writes", "checkpoint_blobs", "checkpoints"]) {
-      const exists = sqliteDb
+      const exists = database
         .prepare(
           `
             SELECT name
@@ -346,7 +359,7 @@ export function deleteThread(threadId: string, userId: string): boolean {
       }
     }
 
-    sqliteDb
+    database
       .prepare("DELETE FROM chat_threads WHERE thread_id = ? AND user_id = ?")
       .run(threadId, userId);
   });

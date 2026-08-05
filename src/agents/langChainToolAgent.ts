@@ -25,6 +25,11 @@ import {
   createRoleSubAgentTools,
   isInternalSubAgentEvent
 } from "./roleSubAgentTools";
+import {
+  cancelRunningTaskPlan,
+  completeRunningTaskPlan,
+  failRunningTaskPlan
+} from "./taskPlanRepository";
 
 // 学习点：ToolAgentMessage 是项目自己的简单消息格式。
 // 进入 LangChain 前，会再转换成 HumanMessage / AIMessage。
@@ -52,6 +57,8 @@ export interface LangChainToolAgentOptions {
   systemPrompt: string;
   roleWorkflow?: RoleWorkflowAgent;
   reasoningEffort?: ReasoningEffort;
+  // Chat 与 Work 使用不同 SQLite，因此各自使用对应的 LangGraph checkpointer。
+  checkpointer?: typeof sqliteCheckpointer;
 }
 
 export class LangChainToolAgent {
@@ -60,11 +67,13 @@ export class LangChainToolAgent {
 
   private readonly agent;
   private readonly workflow;
+  private readonly checkpointer;
   private readonly roleWorkflow?: RoleWorkflowAgent;
   private readonly migratedThreads = new Set<string>();
 
   constructor(options: LangChainToolAgentOptions) {
     this.roleWorkflow = options.roleWorkflow;
+    this.checkpointer = options.checkpointer ?? sqliteCheckpointer;
     // 学习点：ChatOpenAI 也可以连接 DeepSeek/SiliconFlow 这类 OpenAI-compatible 接口。
     // 关键是 apiKey、model 和 baseURL。
     const model = new ChatOpenAI({
@@ -141,7 +150,7 @@ export class LangChainToolAgent {
     this.workflow = createAgentWorkflowGraph(this.agent, {
       roleId: options.roleWorkflow?.roleId ?? "base-agent",
       workflowId: options.roleWorkflow?.workflowId ?? "base-agent-workflow",
-      checkpointer: sqliteCheckpointer
+      checkpointer: this.checkpointer
     });
   }
 
@@ -271,9 +280,12 @@ export class LangChainToolAgent {
       }
     } catch (error) {
       if (signal?.aborted) {
+        cancelRunningTaskPlan(threadId, turnId);
         // 学习点：用户停止后也要把终止状态写入根图。
         // 为什么这样：否则前端暂时显示“已停止”，刷新后 SQLite 中却没有该状态。
         await this.persistStoppedState(threadId);
+      } else {
+        failRunningTaskPlan(threadId, turnId);
       }
       throw error;
     }
@@ -281,6 +293,7 @@ export class LangChainToolAgent {
     // 某些 Provider 会在收到 abort 后正常结束事件流而不是抛出异常。
     // 再检查一次 signal，保证这类情况同样记录为“已停止”，不会误当成完整回答。
     if (signal?.aborted) {
+      cancelRunningTaskPlan(threadId, turnId);
       await this.persistStoppedState(threadId);
       throw new DOMException("用户已停止任务。", "AbortError");
     }
@@ -304,6 +317,7 @@ export class LangChainToolAgent {
       throw new Error("模型本轮没有返回可展示的文本内容，请重新发送。");
     }
 
+    completeRunningTaskPlan(threadId, turnId);
     return fullText;
   }
 
@@ -393,7 +407,7 @@ export class LangChainToolAgent {
       { timestamp: string; messages: BaseMessage[] }
     >();
 
-    for await (const item of sqliteCheckpointer.list(
+    for await (const item of this.checkpointer.list(
       { configurable: { thread_id: threadId } },
       { limit: 1_000 }
     )) {
@@ -826,6 +840,62 @@ export class LangChainToolAgent {
             ? "并行查询已完成，正在汇总结果…"
             : "正在动态调度多个只读任务…"
       };
+    }
+    if (toolName === "update_task_plan") {
+      const input = candidate.data?.input as
+        | {
+            title?: unknown;
+            status?: unknown;
+            steps?: unknown;
+          }
+        | undefined;
+      if (
+        typeof input?.title === "string" &&
+        ["running", "completed", "failed", "cancelled"].includes(
+          String(input.status)
+        ) &&
+        Array.isArray(input.steps)
+      ) {
+        const steps = input.steps.filter(
+          (step): step is {
+            id: string;
+            title: string;
+            status:
+              | "pending"
+              | "in_progress"
+              | "completed"
+              | "failed"
+              | "cancelled";
+          } =>
+            Boolean(step) &&
+            typeof step === "object" &&
+            typeof (step as { id?: unknown }).id === "string" &&
+            typeof (step as { title?: unknown }).title === "string" &&
+            [
+              "pending",
+              "in_progress",
+              "completed",
+              "failed",
+              "cancelled"
+            ].includes(String((step as { status?: unknown }).status))
+        );
+        return {
+          stage: "task_plan",
+          message:
+            input.status === "completed"
+              ? "任务计划已完成"
+              : "正在按计划执行…",
+          taskPlan: {
+            title: input.title,
+            status: input.status as
+              | "running"
+              | "completed"
+              | "failed"
+              | "cancelled",
+            steps
+          }
+        };
+      }
     }
     if (toolName.startsWith("consult_")) {
       const input = candidate.data?.input as

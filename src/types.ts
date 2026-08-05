@@ -71,8 +71,23 @@ export type AgentProgress = {
     | "subagent"
     | "editing_file"
     | "running_command"
-    | "finalizing";
+    | "finalizing"
+    | "task_plan";
   message: string;
+  taskPlan?: {
+    title: string;
+    status: "running" | "completed" | "failed" | "cancelled";
+    steps: Array<{
+      id: string;
+      title: string;
+      status:
+        | "pending"
+        | "in_progress"
+        | "completed"
+        | "failed"
+        | "cancelled";
+    }>;
+  };
   subAgent?: {
     agentId: string;
     agentLabel: string;

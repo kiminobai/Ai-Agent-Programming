@@ -20,6 +20,12 @@ import {
   findRoleWorkflowBySystemPrompt
 } from "../workflows-agents";
 import type { RoleWorkflowAgent } from "../workflows-agents";
+import {
+  getDatabaseForThread,
+  sqliteDb,
+  sqliteCheckpointer,
+  workSqliteCheckpointer
+} from "../db/sqlite";
 
 export class LangChainProvider implements ChatProvider {
   readonly id: ProviderId;
@@ -55,7 +61,8 @@ export class LangChainProvider implements ChatProvider {
       modelId,
       systemPrompt,
       fewShotExamples,
-      reasoningEffort
+      reasoningEffort,
+      threadId
     );
 
     return agent.invoke(
@@ -86,7 +93,8 @@ export class LangChainProvider implements ChatProvider {
       modelId,
       systemPrompt,
       fewShotExamples,
-      reasoningEffort
+      reasoningEffort,
+      threadId
     );
 
     return agent.stream(
@@ -112,7 +120,8 @@ export class LangChainProvider implements ChatProvider {
       modelId,
       systemPrompt,
       fewShotExamples,
-      reasoningEffort
+      reasoningEffort,
+      threadId
     );
     const messages = await agent.getThreadMessages(threadId);
     return this.stripFewShotMessages(messages, fewShotExamples);
@@ -122,7 +131,8 @@ export class LangChainProvider implements ChatProvider {
     modelId: string,
     systemPrompt: string,
     fewShotExamples: FewShotExample[] = [],
-    reasoningEffort?: ReasoningEffort
+    reasoningEffort?: ReasoningEffort,
+    threadId?: string
   ) {
     // 学习点：Agent 的缓存 key 必须包含 provider/model/prompt。
     // 因为不同角色 prompt 或不同模型，行为都可能不一样。
@@ -136,12 +146,16 @@ export class LangChainProvider implements ChatProvider {
       this.id === "openai"
         ? reasoningEffort ?? this.config.reasoningEffort
         : undefined;
+    const isWorkThread =
+      Boolean(threadId) && getDatabaseForThread(threadId!) !== sqliteDb;
+    const storageMode = isWorkThread ? "work" : "chat";
     const agentKey = [
       this.id,
       modelId,
       roleWorkflow?.workflowId ?? "base-agent-workflow",
       effectiveSystemPrompt,
-      effectiveReasoningEffort ?? ""
+      effectiveReasoningEffort ?? "",
+      storageMode
     ].join("\u0000");
     const existingAgent = this.agents.get(agentKey);
     if (existingAgent) {
@@ -155,7 +169,10 @@ export class LangChainProvider implements ChatProvider {
       modelId,
       systemPrompt: effectiveSystemPrompt,
       roleWorkflow,
-      reasoningEffort: effectiveReasoningEffort
+      reasoningEffort: effectiveReasoningEffort,
+      checkpointer: isWorkThread
+        ? workSqliteCheckpointer
+        : sqliteCheckpointer
     });
     this.agents.set(agentKey, agent);
     return agent;
@@ -229,6 +246,18 @@ export class LangChainProvider implements ChatProvider {
         "Use normal individual tools for a single lookup.",
         "Keep dependent steps sequential. Never put file writes, commands, memory writes, approvals, or any side effect into parallel_read.",
         "This rule applies to the current single Agent and does not require delegation to sub-agents."
+      ].join("\n")
+    );
+
+    promptParts.push(
+      [
+        "[Work task plan]",
+        "For a substantial Work task with multiple implementation or verification steps, call update_task_plan before acting.",
+        "Keep 2-8 concise user-readable steps and send the complete list on every update.",
+        "Exactly one step should be in_progress while work is running; mark finished steps completed before advancing.",
+        "After verification, update the plan to completed. On unrecoverable failure or cancellation, use failed or cancelled.",
+        "Do not create a plan for simple questions, one-step lookups, or ordinary Chat conversation.",
+        "The plan contains execution status only. Never include hidden reasoning or chain-of-thought."
       ].join("\n")
     );
 

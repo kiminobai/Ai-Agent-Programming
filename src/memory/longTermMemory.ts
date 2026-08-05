@@ -1,4 +1,4 @@
-import { sqliteDb } from "../db/sqlite";
+import { getDatabaseForThread, sqliteDb } from "../db/sqlite";
 
 export const USER_PREFERENCES_NAMESPACE = "user_preferences";
 export const THEME_PREFERENCE_KEY = "theme";
@@ -14,11 +14,12 @@ export interface UserPreferenceMemory {
 
 export function saveUserPreference(
   userId: string,
-  memory: UserPreferenceMemory
+  memory: UserPreferenceMemory,
+  threadId?: string
 ): void {
   // 学习点：长期记忆按 userId 隔离。
   // 换 thread_id 还能读到；换 userId 就读不到。
-  sqliteDb
+  (threadId ? getDatabaseForThread(threadId) : sqliteDb)
     .prepare(
       `
         INSERT INTO user_preferences (
@@ -45,10 +46,11 @@ export function saveUserPreference(
 
 export function getUserPreference(
   userId: string,
-  preferenceType: UserPreferenceMemory["preferenceType"]
+  preferenceType: UserPreferenceMemory["preferenceType"],
+  threadId?: string
 ): UserPreferenceMemory | null {
   // 学习点：读取长期记忆时，只按当前 userId 和偏好类型查。
-  const row = sqliteDb
+  const row = (threadId ? getDatabaseForThread(threadId) : sqliteDb)
     .prepare(
       `
         SELECT preference_type, value, updated_at, source

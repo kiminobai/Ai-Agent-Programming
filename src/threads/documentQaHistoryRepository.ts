@@ -1,5 +1,5 @@
 import crypto from "crypto";
-import { sqliteDb } from "../db/sqlite";
+import { getDatabaseForThread } from "../db/sqlite";
 
 export interface DocumentQaHistoryMessage {
   messageId: string;
@@ -39,7 +39,8 @@ export function saveDocumentQaExchange(input: {
   // 学习点：一次文档问答会保存两条消息：用户问题和助手回答。
   // 附件信息挂在用户消息上，sources 只保存给后端需要时使用。
   const now = new Date().toISOString();
-  const insert = sqliteDb.prepare(
+  const database = getDatabaseForThread(input.threadId);
+  const insert = database.prepare(
     `
       INSERT INTO document_qa_messages (
         message_id,
@@ -55,7 +56,7 @@ export function saveDocumentQaExchange(input: {
     `
   );
 
-  const saveExchange = sqliteDb.transaction(() => {
+  const saveExchange = database.transaction(() => {
     insert.run(
       crypto.randomUUID(),
       input.threadId,
@@ -88,7 +89,7 @@ export function listDocumentQaMessages(
   userId: string
 ): DocumentQaHistoryMessage[] {
   // 学习点：恢复对话时按 threadId + userId 查询，保证不同用户隔离。
-  const rows = sqliteDb
+  const rows = getDatabaseForThread(threadId)
     .prepare(
       `
         SELECT

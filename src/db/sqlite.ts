@@ -3,6 +3,7 @@ import path from "path";
 import Database from "better-sqlite3";
 import { SqliteSaver } from "@langchain/langgraph-checkpoint-sqlite";
 import { hashPassword } from "../auth";
+import { WORK_SQLITE_DB_PATH } from "../workspace/localWorkStorage";
 
 const dataDir = path.join(process.cwd(), "data");
 fs.mkdirSync(dataDir, { recursive: true });
@@ -120,6 +121,34 @@ sqliteDb.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_subagent_runs_thread_turn
   ON subagent_runs(thread_id, turn_id, started_at ASC);
+
+  -- Work Agent 的结构化任务计划。计划与聊天文本分离，刷新后仍能恢复。
+  CREATE TABLE IF NOT EXISTS agent_task_plans (
+    thread_id TEXT NOT NULL,
+    turn_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (thread_id, turn_id)
+  );
+
+  CREATE TABLE IF NOT EXISTS agent_task_plan_steps (
+    thread_id TEXT NOT NULL,
+    turn_id TEXT NOT NULL,
+    step_id TEXT NOT NULL,
+    step_index INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    status TEXT NOT NULL,
+    PRIMARY KEY (thread_id, turn_id, step_id),
+    FOREIGN KEY (thread_id, turn_id)
+      REFERENCES agent_task_plans(thread_id, turn_id)
+      ON DELETE CASCADE
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_agent_task_plans_thread_updated
+  ON agent_task_plans(thread_id, updated_at ASC);
 
   -- Uploaded document metadata. Raw files live on disk; SQLite stores paths and parse/index status.
   CREATE TABLE IF NOT EXISTS uploaded_documents (
@@ -310,8 +339,63 @@ sqliteDb.exec(`
   WHERE file_id IS NOT NULL;
 `);
 
+function createEmptyWorkDatabase(): Database.Database {
+  const database = new Database(WORK_SQLITE_DB_PATH);
+  database.pragma("journal_mode = WAL");
+  database.pragma("foreign_keys = ON");
+
+  // 主库迁移完成后，从 sqlite_master 复制“空表结构”，不复制任何 Chat 数据。
+  // 这样 Work 与 Chat 使用相同 Schema，但落在两个完全独立的文件中。
+  const schemaRows = sqliteDb
+    .prepare(`
+      SELECT type, name, sql
+      FROM sqlite_master
+      WHERE sql IS NOT NULL
+        AND type IN ('table', 'index')
+      ORDER BY CASE type WHEN 'table' THEN 0 ELSE 1 END, name
+    `)
+    .all() as Array<{ type: "table" | "index"; name: string; sql: string }>;
+
+  for (const row of schemaRows) {
+    if (
+      row.name.startsWith("sqlite_") ||
+      /^document_chunks_fts_(data|idx|content|docsize|config)$/.test(row.name)
+    ) {
+      continue;
+    }
+
+    // LangGraph 等第三方库创建的表，其 sqlite_master SQL 不一定带
+    // IF NOT EXISTS。Work 数据库第二次启动时必须先检查对象是否已存在，
+    // 否则会因重复创建 agent_control_messages 等表而启动失败。
+    const alreadyExists = database
+      .prepare(
+        `SELECT 1
+         FROM sqlite_master
+         WHERE type = ? AND name = ?`
+      )
+      .get(row.type, row.name);
+    if (alreadyExists) {
+      continue;
+    }
+
+    database.exec(row.sql);
+  }
+  return database;
+}
+
+export const workSqliteDb = createEmptyWorkDatabase();
+
+export function getDatabaseForThread(threadId: string): Database.Database {
+  const isWorkThread = workSqliteDb
+    .prepare("SELECT 1 FROM chat_threads WHERE thread_id = ?")
+    .get(threadId);
+  return isWorkThread ? workSqliteDb : sqliteDb;
+}
+
 // LangGraph 短期记忆使用 SQLite Checkpointer，项目重启后仍可恢复 thread state。
 export const sqliteCheckpointer = SqliteSaver.fromConnString(SQLITE_DB_PATH);
+export const workSqliteCheckpointer =
+  SqliteSaver.fromConnString(WORK_SQLITE_DB_PATH);
 
 export type DbUser = {
   id: string;
