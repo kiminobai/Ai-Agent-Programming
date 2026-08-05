@@ -10,6 +10,7 @@ import {
   THEME_PREFERENCE_KEY,
   UserPreferenceMemory
 } from "../../memory/longTermMemory";
+import { executeDurableTask } from "../../agents/durableTaskExecution";
 
 export const rememberPreferenceTool = tool(
   async ({ preferenceType, value }, runtime: ToolMemoryRuntime) => {
@@ -23,7 +24,19 @@ export const rememberPreferenceTool = tool(
       source: "tool"
     };
 
-    saveUserPreference(context.userId, memory);
+    const durable = await executeDurableTask(
+      runtime,
+      "remember_preference",
+      { preferenceType, value },
+      () => {
+        saveUserPreference(context.userId, memory);
+        return {
+          saved: true,
+          key: THEME_PREFERENCE_KEY,
+          memory
+        };
+      }
+    );
 
     // 学习点：writeToolContext 会把本次工具调用结果写回短期状态。
     // 这样 Agent 下一步回答时能知道“偏好已经保存成功”。
@@ -31,11 +44,7 @@ export const rememberPreferenceTool = tool(
       runtime,
       "remember_preference",
       { preferenceType, value, userId: context.userId },
-      {
-        saved: true,
-        key: THEME_PREFERENCE_KEY,
-        memory
-      }
+      { ...durable.result, replayed: durable.replayed }
     );
   },
   {

@@ -81,14 +81,8 @@ export function createAgentWorkflowGraph(
     .addNode("run_agent", async (state, config) => {
       // Node 3：复用现有 createAgent 子图。
       // 子图继续负责 Model -> Tool -> Model 循环、短期记忆和 SQLite checkpoint。
+      // 不在包含副作用的整节点上自动重试；恢复由 Checkpointer 和任务账本负责。
       return agent.invoke(state, config);
-    }, {
-      // 节点遇到网络抖动等异常时最多再试一次，避免无限重试和重复消耗 token。
-      retryPolicy: {
-        maxAttempts: 2,
-        initialInterval: 300,
-        backoffFactor: 2
-      }
     })
     .addNode("finish", async () => {
       // Node 4：当前只表示一次工作流正常结束。

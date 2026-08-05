@@ -14,6 +14,7 @@ import {
   resolveWorkspacePath
 } from "../../workspace/workspaceSecurity";
 import { saveWorkspaceActivity } from "../../workspace/workspaceActivityRepository";
+import { executeDurableTask } from "../../agents/durableTaskExecution";
 
 function getWorkspace(runtime: ToolMemoryRuntime) {
   const context = (runtime.context ?? {}) as AgentContext;
@@ -91,27 +92,42 @@ export const readWorkspaceFileTool = tool(
 
 export const writeWorkspaceFileTool = tool(
   async ({ filePath, content }, runtime: ToolMemoryRuntime) => {
-    runtime.signal?.throwIfAborted();
-    const workspace = getWorkspace(runtime);
-    const absolutePath = resolveWorkspacePath(workspace.rootPath, filePath);
-    const previousContent = await fs.readFile(absolutePath, "utf8").catch(() => "");
-    await fs.mkdir(path.dirname(absolutePath), { recursive: true });
-    await fs.writeFile(absolutePath, content, "utf8");
-    const previousLines = previousContent ? previousContent.split(/\r?\n/).length : 0;
-    const nextLines = content ? content.split(/\r?\n/).length : 0;
-    const context = (runtime.context ?? {}) as AgentContext;
-    saveWorkspaceActivity({
-      threadId: context.threadId,
-      userId: context.userId,
-      turnId: context.turnId,
-      activityType: "file_write",
-      filePath,
-      additions: Math.max(0, nextLines - previousLines),
-      deletions: Math.max(0, previousLines - nextLines)
-    });
+    const durable = await executeDurableTask(
+      runtime,
+      "write_workspace_file",
+      { filePath, content },
+      async ({ idempotencyKey }) => {
+        const workspace = getWorkspace(runtime);
+        const absolutePath = resolveWorkspacePath(workspace.rootPath, filePath);
+        const previousContent = await fs
+          .readFile(absolutePath, "utf8")
+          .catch(() => "");
+        await fs.mkdir(path.dirname(absolutePath), { recursive: true });
+        await fs.writeFile(absolutePath, content, "utf8");
+        const previousLines = previousContent
+          ? previousContent.split(/\r?\n/).length
+          : 0;
+        const nextLines = content ? content.split(/\r?\n/).length : 0;
+        const context = (runtime.context ?? {}) as AgentContext;
+        saveWorkspaceActivity({
+          threadId: context.threadId,
+          userId: context.userId,
+          turnId: context.turnId,
+          idempotencyKey,
+          activityType: "file_write",
+          filePath,
+          additions: Math.max(0, nextLines - previousLines),
+          deletions: Math.max(0, previousLines - nextLines)
+        });
+        return {
+          filePath,
+          bytesWritten: Buffer.byteLength(content, "utf8")
+        };
+      }
+    );
     return writeToolContext(runtime, "write_workspace_file", { filePath }, {
-      filePath,
-      bytesWritten: Buffer.byteLength(content, "utf8")
+      ...durable.result,
+      replayed: durable.replayed
     });
   },
   {
@@ -127,17 +143,28 @@ export const writeWorkspaceFileTool = tool(
 
 export const runWorkspaceCommandTool = tool(
   async ({ executable, args }, runtime: ToolMemoryRuntime) => {
-    runtime.signal?.throwIfAborted();
     const context = (runtime.context ?? {}) as AgentContext;
-    const result = await executeWorkspaceCommand({
-      threadId: context.threadId,
-      userId: context.userId,
-      turnId: context.turnId,
-      executable,
-      args,
-      signal: runtime.signal
-    });
-    return writeToolContext(runtime, "run_workspace_command", { executable, args }, result);
+    const durable = await executeDurableTask(
+      runtime,
+      "run_workspace_command",
+      { executable, args },
+      ({ idempotencyKey }) =>
+        executeWorkspaceCommand({
+          threadId: context.threadId,
+          userId: context.userId,
+          turnId: context.turnId,
+          idempotencyKey,
+          executable,
+          args,
+          signal: runtime.signal
+        })
+    );
+    return writeToolContext(
+      runtime,
+      "run_workspace_command",
+      { executable, args },
+      { ...durable.result, replayed: durable.replayed }
+    );
   },
   {
     name: "run_workspace_command",
@@ -158,6 +185,7 @@ export async function executeWorkspaceCommand(input: {
   threadId: string;
   userId: string;
   turnId?: string;
+  idempotencyKey?: string;
   executable: string;
   args: string[];
   signal?: AbortSignal;
@@ -197,6 +225,7 @@ export async function executeWorkspaceCommand(input: {
     threadId: input.threadId,
     userId: input.userId,
     turnId: input.turnId,
+    idempotencyKey: input.idempotencyKey,
     activityType: "command",
     commandText: [input.executable, ...input.args].join(" "),
     exitCode: result.exitCode,

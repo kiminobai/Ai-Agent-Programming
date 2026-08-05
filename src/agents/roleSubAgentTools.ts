@@ -15,6 +15,8 @@ import type {
   RoleSubAgentDefinition,
   RoleWorkflowAgent
 } from "../workflows-agents/types";
+import type { ToolMemoryRuntime } from "./toolMemoryState";
+import { executeDurableTask } from "./durableTaskExecution";
 
 const INTERNAL_SUB_AGENT_TAG = "internal-role-sub-agent";
 
@@ -80,32 +82,47 @@ function createRoleSubAgentTool(
   });
 
   return tool(
-    async ({ task, context, expectedOutput }) => {
-      const result = await subAgent.invoke(
-        {
-          messages: [
-            new HumanMessage(
-              [
-                `主管角色：${roleWorkflow.label}`,
-                `委派任务：${task}`,
-                context ? `已知上下文：${context}` : "",
-                expectedOutput ? `期望产出：${expectedOutput}` : ""
+    async (
+      { task, context, expectedOutput },
+      runtime: ToolMemoryRuntime
+    ) => {
+      const durable = await executeDurableTask(
+        runtime,
+        `consult_${definition.id}`,
+        { task, context, expectedOutput },
+        async () => {
+          const result = await subAgent.invoke(
+            {
+              messages: [
+                new HumanMessage(
+                  [
+                    `主管角色：${roleWorkflow.label}`,
+                    `委派任务：${task}`,
+                    context ? `已知上下文：${context}` : "",
+                    expectedOutput ? `期望产出：${expectedOutput}` : ""
+                  ]
+                    .filter(Boolean)
+                    .join("\n")
+                )
               ]
-                .filter(Boolean)
-                .join("\n")
-            )
-          ]
-        },
-        {
-          // 外层事件流据此过滤子 Agent token，内部分析不会直接显示给用户。
-          tags: [INTERNAL_SUB_AGENT_TAG],
-          configurable: {
-            subAgentId: definition.id
-          }
+            },
+            {
+              // 外层事件流据此过滤子 Agent token，内部分析不会直接显示给用户。
+              tags: [INTERNAL_SUB_AGENT_TAG],
+              configurable: {
+                subAgentId: definition.id
+              }
+            }
+          );
+
+          return getLatestAgentText(result);
         }
       );
 
-      return getLatestAgentText(result);
+      return JSON.stringify({
+        analysis: durable.result,
+        replayed: durable.replayed
+      });
     },
     {
       name: `consult_${definition.id}`,

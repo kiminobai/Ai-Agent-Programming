@@ -78,6 +78,25 @@ sqliteDb.exec(`
   CREATE INDEX IF NOT EXISTS idx_workspace_activity_thread_created
   ON workspace_activity(thread_id, created_at ASC);
 
+  -- Durable task ledger. A stable idempotency key prevents retries or resumes
+  -- from executing the same side effect or expensive sub-agent task twice.
+  CREATE TABLE IF NOT EXISTS agent_task_executions (
+    idempotency_key TEXT PRIMARY KEY,
+    thread_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    turn_id TEXT,
+    operation_name TEXT NOT NULL,
+    input_hash TEXT NOT NULL,
+    status TEXT NOT NULL,
+    result_json TEXT,
+    error_text TEXT,
+    started_at TEXT NOT NULL,
+    completed_at TEXT
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_agent_task_thread_started
+  ON agent_task_executions(thread_id, started_at ASC);
+
   -- Uploaded document metadata. Raw files live on disk; SQLite stores paths and parse/index status.
   CREATE TABLE IF NOT EXISTS uploaded_documents (
     thread_id TEXT PRIMARY KEY,
@@ -199,10 +218,17 @@ sqliteDb.exec(`
 for (const [columnName, definition] of [
   ["turn_id", "TEXT"],
   ["additions", "INTEGER"],
-  ["deletions", "INTEGER"]
+  ["deletions", "INTEGER"],
+  ["idempotency_key", "TEXT"]
 ] as const) {
   addColumnIfMissing("workspace_activity", columnName, definition);
 }
+
+sqliteDb.exec(`
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_workspace_activity_idempotency
+  ON workspace_activity(idempotency_key)
+  WHERE idempotency_key IS NOT NULL;
+`);
 
 for (const [columnName, definition] of [
   ["mode", "TEXT NOT NULL DEFAULT 'chat'"],

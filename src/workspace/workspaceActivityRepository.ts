@@ -6,6 +6,7 @@ export type WorkspaceActivity = {
   threadId: string;
   userId: string;
   turnId?: string;
+  idempotencyKey?: string;
   activityType: "file_write" | "command";
   filePath?: string;
   additions?: number;
@@ -27,14 +28,15 @@ export function saveWorkspaceActivity(
   };
   sqliteDb.prepare(`
     INSERT INTO workspace_activity (
-      activity_id, thread_id, user_id, turn_id, activity_type, file_path, additions, deletions,
+      activity_id, thread_id, user_id, turn_id, idempotency_key, activity_type, file_path, additions, deletions,
       command_text, exit_code, stdout, stderr, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     record.activityId,
     record.threadId,
     record.userId,
     record.turnId ?? null,
+    record.idempotencyKey ?? null,
     record.activityType,
     record.filePath ?? null,
     record.additions ?? null,
@@ -58,6 +60,7 @@ export function listWorkspaceActivity(
       thread_id AS threadId,
       user_id AS userId,
       turn_id AS turnId,
+      idempotency_key AS idempotencyKey,
       activity_type AS activityType,
       file_path AS filePath,
       additions,
