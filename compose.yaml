@@ -1,0 +1,33 @@
+name: chat-demo
+
+services:
+  chroma:
+    # Chroma 只负责向量检索；聊天、文件记录和 FTS5 仍保存在本机 SQLite。
+    image: chromadb/chroma:latest
+    container_name: chat-demo-chroma
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      IS_PERSISTENT: "TRUE"
+      PERSIST_DIRECTORY: /chroma/chroma
+      ANONYMIZED_TELEMETRY: "FALSE"
+    volumes:
+      # 使用项目相对目录，停止或重建容器后向量数据仍然存在。
+      - ./data/chroma:/chroma/chroma
+
+  docling:
+    # CPU 镜像不依赖本机 Python，也不要求 NVIDIA 显卡。
+    image: quay.io/docling-project/docling-serve-cpu:latest
+    container_name: chat-demo-docling
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5001:5001"
+    environment:
+      UVICORN_HOST: 0.0.0.0
+      UVICORN_PORT: "5001"
+      DOCLING_DEVICE: cpu
+      DOCLING_SERVE_ENABLE_UI: "0"
+    volumes:
+      # 缓存 Docling/Hugging Face 模型，避免重建容器后重复下载。
+      - ./data/docling-cache:/opt/app-root/src/.cache

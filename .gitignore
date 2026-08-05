@@ -1,5 +1,7 @@
 node_modules
 .venv
+chat-demo-venv
+docling-venv
 .env
 dist
 data/*.sqlite
@@ -7,6 +9,8 @@ data/*.sqlite-shm
 data/*.sqlite-wal
 data/chroma/*
 !data/chroma/.gitkeep
+data/docling-cache/*
+!data/docling-cache/.gitkeep
 data/knowledge-bases/**/*
 !data/knowledge-bases/**/
 !data/knowledge-bases/**/.gitkeep

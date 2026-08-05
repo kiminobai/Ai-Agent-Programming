@@ -46,6 +46,9 @@
 - `React`
 - `LangChain.js`
 - `LangGraph`
+- `Docker Compose`
+- `Chroma`
+- `Docling`
 - `Zod`
 - `dotenv`
 
@@ -233,24 +236,66 @@ DEEPSEEK_API_KEY=你的_deepseek_api_key
 OPENAI_API_KEY=你的_openai_api_key
 ```
 
-### 3. 编译 TypeScript
+### 3. 启动本地依赖服务
+
+先安装并启动 Docker Desktop，然后执行：
 
 ```bash
-npm run build
+npm run services:up
 ```
 
-这一步会把 `src/` 下的 TypeScript 编译到 `dist/` 目录。
+这个命令会启动：
 
-### 4. 启动服务
+- Chroma：`http://127.0.0.1:8000`
+- Docling：`http://127.0.0.1:5001`
+
+第一次启动需要下载镜像，Docling CPU 镜像体积较大，需要等待下载完成。
+Chroma 数据保存在 `data/chroma`，Docling 模型缓存保存在
+`data/docling-cache`，重建容器不会清空这些目录。
+
+检查服务状态：
+
+```bash
+npm run services:status
+```
+
+### 4. 启动桌面应用
+
+```bash
+npm run desktop
+```
+
+也可以用一个命令启动 Docker 服务并打开桌面应用：
+
+```bash
+npm run desktop:full
+```
+
+### 5. 只启动 Web 服务
+
+如果暂时不使用 Electron：
 
 ```bash
 npm start
 ```
 
-默认访问地址：
+浏览器访问：
 
 ```text
 http://127.0.0.1:3000
+```
+
+### Docker 服务管理
+
+```bash
+# 查看 Chroma 和 Docling 日志
+npm run services:logs
+
+# 停止容器，但保留 data 目录中的数据
+npm run services:down
+
+# 更新两个服务镜像
+npm run services:pull
 ```
 
 ## 开发模式

@@ -1,5 +1,6 @@
 import { sqliteDb } from "../db/sqlite";
 import { clearVectorDocumentIndex } from "./vectorDocumentIndex";
+import type { StoredLangChainDocument } from "./langChainDocumentLoader";
 
 export interface UploadedDocumentRecord {
   threadId: string;
@@ -21,6 +22,7 @@ export interface UploadedDocumentRecord {
     | "binary";
   fileSize: number;
   text: string;
+  loaderDocuments: StoredLangChainDocument[];
   uploadedAt: string;
   parseStatus: "parsed" | "unsupported" | "empty";
   indexStatus: "pending" | "indexed" | "unsupported";
@@ -37,6 +39,7 @@ type UploadedDocumentRow = {
   file_type: UploadedDocumentRecord["fileType"];
   file_size: number | null;
   text: string;
+  loader_documents_json: string | null;
   uploaded_at: string;
   parse_status: UploadedDocumentRecord["parseStatus"] | null;
   index_status: UploadedDocumentRecord["indexStatus"] | null;
@@ -59,10 +62,11 @@ export function saveUploadedDocument(record: UploadedDocumentRecord): void {
           file_type,
           file_size,
           text,
+          loader_documents_json,
           uploaded_at,
           parse_status,
           index_status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(thread_id) DO UPDATE SET
           user_id = excluded.user_id,
           file_id = excluded.file_id,
@@ -73,6 +77,7 @@ export function saveUploadedDocument(record: UploadedDocumentRecord): void {
           file_type = excluded.file_type,
           file_size = excluded.file_size,
           text = excluded.text,
+          loader_documents_json = excluded.loader_documents_json,
           uploaded_at = excluded.uploaded_at,
           parse_status = excluded.parse_status,
           index_status = excluded.index_status
@@ -89,6 +94,7 @@ export function saveUploadedDocument(record: UploadedDocumentRecord): void {
       record.fileType,
       record.fileSize,
       record.text,
+      JSON.stringify(record.loaderDocuments),
       record.uploadedAt,
       record.parseStatus,
       record.indexStatus
@@ -117,6 +123,7 @@ export function getUploadedDocument(
           file_type,
           file_size,
           text,
+          loader_documents_json,
           uploaded_at,
           parse_status,
           index_status
@@ -152,6 +159,7 @@ export function getUploadedDocumentByFileId(
           file_type,
           file_size,
           text,
+          loader_documents_json,
           uploaded_at,
           parse_status,
           index_status
@@ -181,8 +189,25 @@ function mapUploadedDocumentRow(row: UploadedDocumentRow): UploadedDocumentRecor
     fileType: row.file_type,
     fileSize: row.file_size || 0,
     text: row.text,
+    loaderDocuments: parseLoaderDocuments(row.loader_documents_json),
     uploadedAt: row.uploaded_at,
     parseStatus: row.parse_status || (row.text ? "parsed" : "unsupported"),
     indexStatus: row.index_status || "pending"
   };
+}
+
+function parseLoaderDocuments(
+  value: string | null
+): StoredLangChainDocument[] {
+  if (!value) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(value) as StoredLangChainDocument[];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    // 旧记录或损坏元数据不阻止文档问答，切分层会回退到 text 字段。
+    return [];
+  }
 }

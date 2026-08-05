@@ -1,13 +1,14 @@
-import { PDFParse } from "pdf-parse";
-import { RecursiveCharacterTextSplitter } from "@langchain/textsplitters";
-import { extractTextFromImage } from "./imageOcrExtractor";
+import { Document } from "@langchain/core/documents";
 import {
-  extractTextFromDocx,
-  extractTextFromHtml,
-  extractTextFromSpreadsheet
-} from "./officeTextExtractor";
-import { extractTextFromPptx } from "./pptxTextExtractor";
+  loadUploadedDocuments,
+  renderDocumentsAsStoredText,
+  restoreLangChainDocuments,
+  storeLangChainDocuments
+} from "./langChainDocumentLoader";
+import { splitDocumentsWithStructure } from "./structuredDocumentChunker";
 import type { UploadedDocumentRecord } from "./uploadedDocumentStore";
+
+export const RAG_CHUNKING_VERSION = "structured-v1";
 
 /**
  * 学习点：这是后端统一管理的 RAG 切分和检索配置。
@@ -16,10 +17,13 @@ import type { UploadedDocumentRecord } from "./uploadedDocumentStore";
  * 后端会先提取文本、切 chunk，等用户真正提问时再检索相关片段。
  */
 export const RAG_RETRIEVAL_CONFIG = {
-  // 学习点：chunkSize 是每个片段的大概长度，overlap 是相邻片段的重叠部分。
-  // 重叠是为了避免答案刚好被切断在两个 chunk 中间。
-  chunkSize: 800,
-  chunkOverlap: 120,
+  // 学习点：先按结构和语义组成目标块，再用 Token 上限保护模型上下文。
+  // overlap 只用于超长正文的最终字符递归切分，不跨表格、图片或章节边界。
+  targetChunkTokens: 420,
+  maxChunkTokens: 600,
+  chunkOverlapTokens: 60,
+  semanticSimilarityThreshold: 0.72,
+  semanticEmbeddingBatchSize: 32,
   // 学习点：topK 是最终送给 LLM 的片段数量。
   // candidateK 是中间候选池，先多找一些，再做 rerank。
   topK: 6,
@@ -29,7 +33,7 @@ export const RAG_RETRIEVAL_CONFIG = {
   wholeDocumentMaxContextCharacters: 14_000,
   wholeDocumentChunkPreviewCharacters: 520,
   minimumUsefulHybridScore: 0.08,
-  maxChunkCharacters: 1_000,
+  maxChunkCharacters: 2_400,
   maxQueryTerms: 32
 } as const;
 
@@ -43,6 +47,14 @@ export interface DocumentChunk {
   pageNumber: number | null;
   blockIndex: number;
   locator: string;
+  tokenCount: number;
+  splitStrategy: string;
+  parentBlockIndexes: number[];
+  chunkingVersion: string;
+  blockType?: string;
+  sectionPath?: string[];
+  boundingBox?: Record<string, unknown> | null;
+  links?: string[];
 }
 
 export type UploadedFileType =
@@ -77,9 +89,16 @@ export async function createUploadedDocumentRecord(input: {
   const extension = getExtension(input.fileName);
   const fileType = getFileType(extension);
   const canParseText = isTextExtractable(fileType, extension);
-  const text = canParseText
-    ? normalizeText(await extractTextFromUpload(input.fileBuffer, fileType, extension))
-    : "";
+  const loadedDocuments = canParseText
+    ? await loadUploadedDocuments({
+        fileId: input.fileId,
+        fileName: input.fileName,
+        mimeType: input.mimeType,
+        fileBuffer: input.fileBuffer,
+        fileType
+      })
+    : [];
+  const text = normalizeText(renderDocumentsAsStoredText(loadedDocuments));
   const parseStatus = canParseText ? (text ? "parsed" : "empty") : "unsupported";
 
   return {
@@ -93,6 +112,7 @@ export async function createUploadedDocumentRecord(input: {
     fileType,
     fileSize: input.fileSize,
     text,
+    loaderDocuments: storeLangChainDocuments(loadedDocuments),
     uploadedAt: new Date().toISOString(),
     parseStatus,
     indexStatus: text ? "pending" : "unsupported"
@@ -102,47 +122,134 @@ export async function createUploadedDocumentRecord(input: {
 export async function splitUploadedDocument(
   document: UploadedDocumentRecord
 ): Promise<DocumentChunk[]> {
-  // 学习点：LangChain splitter 会把长文档切成多个适合检索的小片段。
-  // 不同文件类型使用不同分隔符，是为了尽量保留标题、段落、句子结构。
-  const splitter = new RecursiveCharacterTextSplitter({
-    chunkSize: RAG_RETRIEVAL_CONFIG.chunkSize,
-    chunkOverlap: RAG_RETRIEVAL_CONFIG.chunkOverlap,
-    separators: getSeparators(document.fileType)
-  });
-
-  const splitTexts = await splitter.splitText(document.text);
+  const sourceDocuments = document.loaderDocuments.length
+    ? restoreLangChainDocuments(document.loaderDocuments)
+    : [
+        new Document({
+          pageContent: document.text,
+          metadata: {
+            source: document.fileName,
+            fileId: document.fileId,
+            fileType: document.fileType,
+            loader: "LegacyStoredTextLoader"
+          }
+        })
+      ];
+  // 四层切分顺序：结构 -> 语义 -> Token -> 超长块字符递归兜底。
+  const splitDocuments = await splitDocumentsWithStructure(
+    sourceDocuments,
+    document.fileType,
+    {
+      targetTokens: RAG_RETRIEVAL_CONFIG.targetChunkTokens,
+      maxTokens: RAG_RETRIEVAL_CONFIG.maxChunkTokens,
+      overlapTokens: RAG_RETRIEVAL_CONFIG.chunkOverlapTokens,
+      semanticSimilarityThreshold:
+        RAG_RETRIEVAL_CONFIG.semanticSimilarityThreshold,
+      semanticEmbeddingBatchSize:
+        RAG_RETRIEVAL_CONFIG.semanticEmbeddingBatchSize
+    }
+  );
   return annotateChunkOffsets(
-    splitTexts.map((content, index) => ({
+    splitDocuments.map((splitDocument, index) => ({
       index,
-      content,
-      charCount: content.length,
+      content: splitDocument.pageContent,
+      charCount: splitDocument.pageContent.length,
       startChar: 0,
       endChar: 0,
-      sourceType: getDefaultChunkSourceType(document.fileType),
-      pageNumber: null,
-      blockIndex: index,
-      locator: ""
+      sourceType:
+        getChunkSourceType(splitDocument.metadata, document.fileType),
+      pageNumber: getDocumentPageNumber(splitDocument.metadata),
+      blockIndex:
+        getOriginalBlockIndexes(splitDocument.metadata)[0] ?? index,
+      locator: "",
+      tokenCount: getNonNegativeNumber(splitDocument.metadata.tokenCount),
+      splitStrategy:
+        typeof splitDocument.metadata.splitStrategy === "string"
+          ? splitDocument.metadata.splitStrategy
+          : "character",
+      parentBlockIndexes: getOriginalBlockIndexes(splitDocument.metadata),
+      chunkingVersion: RAG_CHUNKING_VERSION,
+      blockType:
+        typeof splitDocument.metadata.blockType === "string"
+          ? splitDocument.metadata.blockType
+          : undefined,
+      sectionPath: Array.isArray(splitDocument.metadata.sectionPath)
+        ? splitDocument.metadata.sectionPath.map(String)
+        : undefined,
+      boundingBox:
+        splitDocument.metadata.bbox &&
+        typeof splitDocument.metadata.bbox === "object" &&
+        !Array.isArray(splitDocument.metadata.bbox)
+          ? (splitDocument.metadata.bbox as Record<string, unknown>)
+          : null,
+      links: Array.isArray(splitDocument.metadata.links)
+        ? splitDocument.metadata.links.map(String)
+        : undefined
     })),
     document.text,
-    document.fileType
+    document.fileType,
+    sourceDocuments
   );
+}
+
+function getChunkSourceType(
+  metadata: Record<string, unknown>,
+  fileType: UploadedFileType
+): DocumentChunk["sourceType"] {
+  const value = metadata.sourceType;
+  if (
+    value === "table" ||
+    value === "image_ocr" ||
+    value === "image_summary"
+  ) {
+    return value;
+  }
+  return getDefaultChunkSourceType(fileType);
+}
+
+function getDocumentPageNumber(metadata: Record<string, unknown>): number | null {
+  const loc = metadata.loc;
+  const value =
+    loc && typeof loc === "object"
+      ? (loc as { pageNumber?: unknown }).pageNumber
+      : metadata.pageNumber;
+  const pageNumber = Number(value);
+  return Number.isInteger(pageNumber) && pageNumber > 0 ? pageNumber : null;
 }
 
 function annotateChunkOffsets(
   chunks: DocumentChunk[],
   sourceText: string,
-  fileType: UploadedFileType
+  fileType: UploadedFileType,
+  sourceDocuments: Document[]
 ): DocumentChunk[] {
-  let searchFrom = 0;
   const pageRanges = buildPageRanges(sourceText);
+  const sourceBlockRanges = buildSourceBlockRanges(sourceDocuments, sourceText);
 
   // 学习点：记录 chunk 在原文里的位置，后续可以做来源定位和文件预览。
   return chunks.map((chunk) => {
-    const exactStart = sourceText.indexOf(chunk.content, searchFrom);
-    const startChar = exactStart >= 0 ? exactStart : searchFrom;
-    const endChar = startChar + chunk.content.length;
+    const parentRanges = chunk.parentBlockIndexes
+      .map((blockIndex) => sourceBlockRanges.get(blockIndex))
+      .filter(
+        (
+          range
+        ): range is { startChar: number; endChar: number } => Boolean(range)
+      );
+    const rangeStart = parentRanges.length
+      ? Math.min(...parentRanges.map((range) => range.startChar))
+      : 0;
+    const rangeEnd = parentRanges.length
+      ? Math.max(...parentRanges.map((range) => range.endChar))
+      : sourceText.length;
+    const exactStart = sourceText.indexOf(chunk.content, rangeStart);
+    const hasExactMatch =
+      exactStart >= rangeStart && exactStart + chunk.content.length <= rangeEnd;
+    // 表格分块会重复表头，因此无法总是逐字匹配；此时回退到原始结构块范围。
+    const startChar = hasExactMatch ? exactStart : rangeStart;
+    const endChar = hasExactMatch
+      ? exactStart + chunk.content.length
+      : rangeEnd;
     const pageNumber = chunk.pageNumber ?? findPageNumber(pageRanges, startChar);
-    searchFrom = Math.max(startChar + 1, endChar - 1);
 
     return {
       ...chunk,
@@ -154,11 +261,33 @@ function annotateChunkOffsets(
         sourceType: chunk.sourceType,
         pageNumber,
         blockIndex: chunk.blockIndex,
+        parentBlockIndexes: chunk.parentBlockIndexes,
         startChar,
         endChar
       })
     };
   });
+}
+
+function buildSourceBlockRanges(
+  sourceDocuments: Document[],
+  sourceText: string
+): Map<number, { startChar: number; endChar: number }> {
+  const ranges = new Map<number, { startChar: number; endChar: number }>();
+  let searchFrom = 0;
+
+  sourceDocuments.forEach((document, fallbackIndex) => {
+    const blockIndex =
+      getOriginalBlockIndexes(document.metadata)[0] ?? fallbackIndex;
+    const content = document.pageContent.trim();
+    const exactStart = sourceText.indexOf(content, searchFrom);
+    const startChar = exactStart >= 0 ? exactStart : searchFrom;
+    const endChar = Math.min(startChar + content.length, sourceText.length);
+    ranges.set(blockIndex, { startChar, endChar });
+    searchFrom = Math.max(endChar, searchFrom);
+  });
+
+  return ranges;
 }
 
 function getDefaultChunkSourceType(
@@ -174,6 +303,7 @@ function buildChunkLocator(input: {
   sourceType: DocumentChunk["sourceType"];
   pageNumber: number | null;
   blockIndex: number;
+  parentBlockIndexes: number[];
   startChar: number;
   endChar: number;
 }): string {
@@ -183,11 +313,31 @@ function buildChunkLocator(input: {
     `type=${input.sourceType}`,
     input.pageNumber ? `page=${input.pageNumber}` : `page=unknown`,
     `block=${input.blockIndex}`,
+    `parents=${input.parentBlockIndexes.join(",") || input.blockIndex}`,
+    `version=${RAG_CHUNKING_VERSION}`,
     `chars=${input.startChar}-${input.endChar}`,
     `fileType=${input.fileType}`
   ];
 
   return parts.join("; ");
+}
+
+function getOriginalBlockIndexes(metadata: Record<string, unknown>): number[] {
+  if (!Array.isArray(metadata.originalBlockIndexes)) {
+    const documentIndex = Number(metadata.documentIndex);
+    return Number.isInteger(documentIndex) && documentIndex >= 0
+      ? [documentIndex]
+      : [];
+  }
+
+  return metadata.originalBlockIndexes
+    .map(Number)
+    .filter((value) => Number.isInteger(value) && value >= 0);
+}
+
+function getNonNegativeNumber(value: unknown): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
 }
 
 function getExtension(fileName: string): string {
@@ -231,72 +381,6 @@ function getFileType(extension: string): UploadedFileType {
   return "binary";
 }
 
-async function extractTextFromUpload(
-  fileBuffer: Buffer,
-  fileType: UploadedFileType,
-  extension = ""
-): Promise<string> {
-  // 学习点：不同文件格式最后都会转成纯文本。
-  // 这样 PDF、Word、PPT、Excel 后面都能走同一套 chunk / embedding 流程。
-  if (fileType === "pdf") {
-    return extractPdfTextWithPageMarkers(fileBuffer);
-  }
-
-  if (fileType === "presentation" && extension === ".pptx") {
-    return extractTextFromPptx(fileBuffer);
-  }
-
-  if (fileType === "word" && extension === ".docx") {
-    return extractTextFromDocx(fileBuffer);
-  }
-
-  if (fileType === "spreadsheet") {
-    return extractTextFromSpreadsheet(fileBuffer);
-  }
-
-  if (fileType === "html") {
-    return extractTextFromHtml(fileBuffer);
-  }
-
-  if (fileType === "image") {
-    return extractTextFromImage(fileBuffer);
-  }
-
-  return fileBuffer.toString("utf8");
-}
-
-async function extractPdfTextWithPageMarkers(fileBuffer: Buffer): Promise<string> {
-  const parser = new PDFParse({ data: new Uint8Array(fileBuffer) });
-
-  try {
-    const info = await parser.getInfo().catch(() => undefined);
-    const totalPages = Number(info?.total || 0);
-
-    if (!totalPages) {
-      const parsed = await parser.getText();
-      return parsed.text || "";
-    }
-
-    const pageTexts: string[] = [];
-    for (let pageNumber = 1; pageNumber <= totalPages; pageNumber += 1) {
-      const parsed = await parser.getText({ partial: [pageNumber] });
-      const text = normalizeText(parsed.text || "");
-
-      if (!text) {
-        continue;
-      }
-
-      // 学习点：给 PDF 文本插入页标记，后续 chunk 可以反推出页码。
-      // 为什么这样：修改/引用 PDF 内容时，仅靠字符范围不够，页码能降低定位错误。
-      pageTexts.push(`[PDF_PAGE:${pageNumber}]\n${text}`);
-    }
-
-    return pageTexts.join("\n\n");
-  } finally {
-    await parser.destroy();
-  }
-}
-
 function buildPageRanges(
   sourceText: string
 ): Array<{ pageNumber: number; startChar: number; endChar: number }> {
@@ -331,22 +415,12 @@ function isTextExtractable(fileType: UploadedFileType, extension: string): boole
     fileType === "markdown" ||
     fileType === "pdf" ||
     fileType === "text" ||
-    (fileType === "presentation" && extension === ".pptx") ||
-    (fileType === "word" && extension === ".docx") ||
+    (fileType === "presentation" && [".ppt", ".pptx"].includes(extension)) ||
+    (fileType === "word" && [".doc", ".docx"].includes(extension)) ||
     fileType === "spreadsheet" ||
     fileType === "html" ||
     fileType === "image"
   );
-}
-
-function getSeparators(fileType: UploadedFileType): string[] {
-  if (fileType === "markdown") {
-    // 学习点：Markdown 优先按标题切，能更好保留章节结构。
-    return ["\n# ", "\n## ", "\n### ", "\n\n", "\n", "。", "，", "；", ". ", " ", ""];
-  }
-
-  // 学习点：普通文本优先按段落、换行、句子切。
-  return ["\n\n", "\n", "。", "，", "；", ". ", " ", ""];
 }
 
 function normalizeText(input: string): string {

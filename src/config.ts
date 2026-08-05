@@ -51,6 +51,17 @@ export const appConfig = {
       "https://api.openai.com/v1/embeddings",
     hashDimensions: Number(process.env.HASH_EMBEDDING_DIMENSIONS || 384)
   },
+  documentParser: {
+    // Docling 负责复杂 PDF 的版面理解；服务不可用时仍会回退 LangChain PDFLoader。
+    provider:
+      (process.env.DOCUMENT_PARSER_PROVIDER as "langchain" | "docling" | undefined) ||
+      "docling",
+    doclingUrl: process.env.DOCLING_URL || "http://127.0.0.1:5001",
+    doclingApiKey: process.env.DOCLING_API_KEY || "",
+    timeoutMs: Number(process.env.DOCLING_TIMEOUT_MS || 120_000),
+    describePictures:
+      (process.env.DOCLING_DESCRIBE_PICTURES || "true").toLowerCase() === "true"
+  },
   graphRag: {
     entityExtractor:
       (process.env.GRAPH_RAG_ENTITY_EXTRACTOR as

@@ -19,6 +19,10 @@ type ChunkMetadata = {
   pageNumber: number | null;
   blockIndex: number;
   locator: string;
+  tokenCount: number;
+  splitStrategy: string;
+  parentBlockIndexes: string;
+  chunkingVersion: string;
   builtAt: string;
   dimensions: number;
 };
@@ -131,6 +135,10 @@ export class ChromaVectorStore implements VectorStore {
           pageNumber: chunk.pageNumber,
           blockIndex: chunk.blockIndex,
           locator: chunk.locator,
+          tokenCount: chunk.tokenCount,
+          splitStrategy: chunk.splitStrategy,
+          parentBlockIndexes: JSON.stringify(chunk.parentBlockIndexes),
+          chunkingVersion: chunk.chunkingVersion,
           builtAt: index.builtAt,
           dimensions: index.dimensions
         }))

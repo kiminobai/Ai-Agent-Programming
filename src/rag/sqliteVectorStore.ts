@@ -16,6 +16,7 @@ type DocumentChunkRow = {
   page_number: number | null;
   block_index: number;
   locator: string;
+  metadata_json: string;
   embedding_json: string;
   dimensions: number;
   built_at: string;
@@ -44,10 +45,11 @@ export class SQLiteVectorStore implements VectorStore {
           page_number,
           block_index,
           locator,
+          metadata_json,
           embedding_json,
           dimensions,
           built_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(thread_id, chunk_index) DO UPDATE SET
           content = excluded.content,
           char_count = excluded.char_count,
@@ -57,6 +59,7 @@ export class SQLiteVectorStore implements VectorStore {
           page_number = excluded.page_number,
           block_index = excluded.block_index,
           locator = excluded.locator,
+          metadata_json = excluded.metadata_json,
           embedding_json = excluded.embedding_json,
           dimensions = excluded.dimensions,
           built_at = excluded.built_at
@@ -88,6 +91,16 @@ export class SQLiteVectorStore implements VectorStore {
           chunk.pageNumber,
           chunk.blockIndex,
           chunk.locator,
+          JSON.stringify({
+            tokenCount: chunk.tokenCount,
+            splitStrategy: chunk.splitStrategy,
+            parentBlockIndexes: chunk.parentBlockIndexes,
+            chunkingVersion: chunk.chunkingVersion,
+            blockType: chunk.blockType,
+            sectionPath: chunk.sectionPath,
+            boundingBox: chunk.boundingBox,
+            links: chunk.links
+          }),
           JSON.stringify(chunk.embedding),
           index.dimensions,
           index.builtAt
@@ -115,6 +128,7 @@ export class SQLiteVectorStore implements VectorStore {
             page_number,
             block_index,
             locator,
+            metadata_json,
             embedding_json,
             dimensions,
             built_at
@@ -137,22 +151,50 @@ export class SQLiteVectorStore implements VectorStore {
       builtAt: firstRow.built_at,
       dimensions: firstRow.dimensions,
       chunkCount: rows.length,
-      chunks: rows.map((row) => ({
-        index: row.chunk_index,
-        content: row.content,
-        charCount: row.char_count,
-        startChar: row.start_char,
-        endChar: row.end_char,
-        sourceType: row.source_type || "text",
-        pageNumber: row.page_number,
-        blockIndex: row.block_index ?? row.chunk_index,
-        locator:
-          row.locator ||
-          `type=${row.source_type || "text"}; page=unknown; block=${
+      chunks: rows.map((row) => {
+        const metadata = parseChunkMetadata(row.metadata_json);
+        return {
+          index: row.chunk_index,
+          content: row.content,
+          charCount: row.char_count,
+          startChar: row.start_char,
+          endChar: row.end_char,
+          sourceType: row.source_type || "text",
+          pageNumber: row.page_number,
+          blockIndex: row.block_index ?? row.chunk_index,
+          locator:
+            row.locator ||
+            `type=${row.source_type || "text"}; page=unknown; block=${
+              row.block_index ?? row.chunk_index
+            }; chars=${row.start_char}-${row.end_char}`,
+          tokenCount: getMetadataNumber(metadata.tokenCount),
+          splitStrategy:
+            typeof metadata.splitStrategy === "string"
+              ? metadata.splitStrategy
+              : "legacy",
+          parentBlockIndexes: getMetadataNumberArray(
+            metadata.parentBlockIndexes,
             row.block_index ?? row.chunk_index
-          }; chars=${row.start_char}-${row.end_char}`,
-        embedding: JSON.parse(row.embedding_json) as number[]
-      }))
+          ),
+          chunkingVersion:
+            typeof metadata.chunkingVersion === "string"
+              ? metadata.chunkingVersion
+              : "legacy",
+          blockType:
+            typeof metadata.blockType === "string"
+              ? metadata.blockType
+              : undefined,
+          sectionPath: getMetadataStringArray(metadata.sectionPath),
+          boundingBox:
+            metadata.boundingBox &&
+            typeof metadata.boundingBox === "object" &&
+            !Array.isArray(metadata.boundingBox)
+              ? (metadata.boundingBox as Record<string, unknown>)
+              : null,
+          links: getMetadataStringArray(metadata.links),
+          embedding: JSON.parse(row.embedding_json) as number[]
+        };
+      })
     };
   }
 
@@ -229,6 +271,33 @@ export class SQLiteVectorStore implements VectorStore {
       return new Map();
     }
   }
+}
+
+function parseChunkMetadata(value: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(value || "{}") as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function getMetadataNumber(value: unknown): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+}
+
+function getMetadataNumberArray(value: unknown, fallback: number): number[] {
+  const values = Array.isArray(value)
+    ? value.map(Number).filter((item) => Number.isInteger(item) && item >= 0)
+    : [];
+  return values.length ? values : [fallback];
+}
+
+function getMetadataStringArray(value: unknown): string[] | undefined {
+  return Array.isArray(value) ? value.map(String) : undefined;
 }
 
 function cosineSimilarity(left: number[], right: number[]): number {

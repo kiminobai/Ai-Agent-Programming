@@ -1,4 +1,5 @@
 import {
+  RAG_CHUNKING_VERSION,
   RAG_RETRIEVAL_CONFIG,
   splitUploadedDocument
 } from "./documentChunkLab";
@@ -102,13 +103,20 @@ export async function getOrBuildVectorDocumentIndex(
   if (
     existingIndex &&
     existingIndex.fileName === document.fileName &&
-    existingIndex.userId === document.userId
+    existingIndex.userId === document.userId &&
+    existingIndex.chunks.every(
+      (chunk) => chunk.chunkingVersion === RAG_CHUNKING_VERSION
+    )
   ) {
     return existingIndex;
   }
 
   const persistedIndex = vectorStore.loadIndex(document.threadId);
-  if (persistedIndex) {
+  const usesCurrentChunking =
+    persistedIndex?.chunks.every(
+      (chunk) => chunk.chunkingVersion === RAG_CHUNKING_VERSION
+    ) ?? false;
+  if (persistedIndex && usesCurrentChunking) {
     // 步骤 2：如果内存没有，就从持久化索引恢复。
     // 这就是为什么项目重启后仍然能继续使用已经建好的索引。
     const hydratedIndex = {
@@ -120,7 +128,8 @@ export async function getOrBuildVectorDocumentIndex(
     return hydratedIndex;
   }
 
-  // 步骤 3：如果数据库也没有，才重新切分和向量化。
+  // 步骤 3：数据库没有索引，或索引来自旧切分算法时，重新切分和向量化。
+  // 这样升级 Chunker 后，用户无需重新上传原文件。
   return buildVectorDocumentIndex(document);
 }
 

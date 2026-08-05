@@ -227,7 +227,354 @@ selectDocumentRagArchitecture()
 selectKnowledgeBaseRagArchitecture()
 ```
 
-## 7. Embedding
+## 7. 文档解析与四层 Chunk
+
+### 7.1 文件是怎么读取的
+
+文件读取发生在切分之前。它的任务是把不同格式统一转换成 LangChain `Document[]`：
+
+```text
+PDF、Word、Excel、PPT、HTML、图片等原始文件
+  -> 文件类型判断
+  -> LangChain 基础 Loader
+  -> 复杂度检测
+  -> 必要时使用 Docling 增强
+  -> 统一 LangChain Document[]
+  -> 四层切分
+```
+
+为什么统一成 `Document[]`：
+
+```text
+pageContent：保存可检索内容
+metadata：保存页码、章节、表格、图片、链接和坐标
+```
+
+后面的 Chunker、Embedding、Retriever 和向量数据库只依赖这两个字段，不需要继续判断原文件是 PDF 还是 Office。
+
+#### 基础 Loader
+
+当前项目优先使用 LangChain 标准 Loader：
+
+```text
+TXT / Markdown -> TextLoader
+CSV -> CSVLoader
+DOC / DOCX -> DocxLoader
+PDF -> PDFLoader（按页读取）
+PPTX -> PPTXLoader
+网页 URL -> HTMLWebBaseLoader
+```
+
+LangChain 没有直接覆盖或不能完整处理的本地格式，会通过符合 `DocumentLoader` 接口的项目适配器读取：
+
+```text
+XLS / XLSX -> SpreadsheetDocumentLoader
+用户上传的 HTML -> UploadedHtmlDocumentLoader
+图片 -> ImageTextDocumentLoader
+带图片的 PPTX 本地回退 -> EnhancedPptxDocumentLoader
+```
+
+“项目适配器”不代表脱离 LangChain。它们最终仍返回标准的 `Document[]`，后续处理链路完全相同。
+
+#### 为什么还需要 Docling
+
+基础 Loader 更轻、更快，适合普通文本文件；但复杂文件可能包含：
+
+```text
+多级标题和复杂排版
+表格和合并单元格
+图片、图表和流程图
+批注、脚注和嵌入对象
+超链接和外部引用
+扫描页面及文字坐标
+```
+
+Docling 负责把这些复杂内容转换成结构化文档块，并尽量保留：
+
+```text
+blockType
+sectionPath
+pageNumber
+bbox
+tableCells / tableHtml
+图片或图表说明
+links
+```
+
+Docling 不是只处理 PDF。当前项目会对以下格式执行复杂度检测：
+
+```text
+PDF：扫描页、图片、表格、低文本页面
+DOCX：表格、图片、图表、嵌入对象、批注、脚注、链接
+XLSX：图片、图表、绘图、结构化表、批注、外部链接
+PPTX：图片、图表、嵌入对象、表格、链接
+HTML：表格、图片、图形、链接
+```
+
+旧版二进制 Office：
+
+```text
+DOC / XLS / PPT
+```
+
+会直接尝试交给 Docling。处理这些旧格式时，Docling 容器还需要 LibreOffice 支持。
+
+#### 基础读取与复杂增强的顺序
+
+现代办公文件使用安全回退链路：
+
+```text
+1. 先运行 LangChain 基础 Loader
+2. 检测文件是否包含复杂结构
+3. 普通文件直接使用基础结果
+4. 复杂文件调用 Docling
+5. Docling 成功：使用结构化结果
+6. Docling 失败：保留基础 Loader 结果
+7. 两种方式都没有可用内容：拒绝绑定到当前对话
+```
+
+这样设计可以避免：
+
+```text
+所有普通文件都调用重型解析服务
+Docling/Docker 暂时不可用时整个上传功能失效
+错误文件或空文件污染当前对话和 RAG 索引
+```
+
+Docling 请求不会写死为 `pdf`，而是根据上传文件名和内容自动识别 PDF、DOCX、XLSX、PPTX、HTML 等格式。
+
+#### 图片内容的边界
+
+```text
+图片文字提取：读取图片中的文字
+图片语义理解：理解人物、物体、图形关系或流程含义
+```
+
+这两个能力不同。基础图片 Loader 主要提取文字；复杂文档中的图片可由 Docling 生成图片说明。聊天中直接分析原始图片，还需要用户当前选择的模型支持视觉能力。
+
+#### Docling 服务
+
+Docling 和 Chroma 由 Docker Compose 管理：
+
+```powershell
+docker compose up -d
+docker compose ps
+```
+
+默认地址：
+
+```text
+Docling：http://127.0.0.1:5001
+Chroma：http://127.0.0.1:8000
+```
+
+相关代码：
+
+```text
+src/rag/langChainDocumentLoader.ts
+src/rag/doclingDocumentLoader.ts
+src/rag/officeTextExtractor.ts
+src/rag/pptxTextExtractor.ts
+src/rag/imageOcrExtractor.ts
+```
+
+### 7.2 为什么要切分
+
+LLM 和 Embedding 模型都有上下文长度限制，不能把一整份长文档无限制地直接传入模型。
+
+RAG 会先把文件解析成统一的 LangChain `Document[]`，再切成多个 chunk：
+
+```text
+原始文件
+  -> LangChain 基础 Loader
+  -> 复杂文件由 Docling 增强解析
+  -> LangChain Document[]
+  -> 四层切分
+  -> chunk embedding
+  -> Chroma / SQLite 索引
+```
+
+切分的目标不是简单追求“每块一样长”，而是同时满足：
+
+```text
+结构尽量完整
+语义尽量连贯
+不超过模型 Token 上限
+检索结果能够定位回原文
+```
+
+### 7.3 四种切分不是四选一
+
+当前项目按照固定顺序组合使用四种切分：
+
+```text
+结构化切分
+  -> 语义切分
+  -> Token 上限控制
+  -> 超长块字符递归兜底
+```
+
+#### 结构化切分
+
+结构化切分先利用 Docling/LangChain Loader 提供的文档结构：
+
+```text
+标题：暂存并合并到后续正文，避免形成只有标题的短 chunk
+正文：按自然段落整理
+表格：按行切分，每个表格 chunk 重复表头
+图片/图表说明：保持独立，不和普通正文混合
+章节：保留 sectionPath
+位置：保留 pageNumber、bbox 和原始 block 编号
+链接：保留 links 元数据
+```
+
+为什么表格要重复表头：
+
+```text
+如果检索只命中表格中间几行，而 chunk 没有表头，
+模型就不知道每一列分别代表什么。
+```
+
+#### 语义切分
+
+语义切分会把相邻正文段落转换成 Embedding，然后计算余弦相似度：
+
+```text
+相邻段落属于同一章节和页面
+  + 相似度达到阈值
+  + 合并后没有超过目标 Token 数
+  -> 合并为一个语义 chunk
+```
+
+当前阈值：
+
+```text
+semanticSimilarityThreshold = 0.72
+```
+
+语义切分失败时不会导致文件上传失败。系统会关闭这一层，继续使用结构化、Token 和字符切分结果。
+
+#### Token 切分
+
+Token 是模型处理文本的基本计量单位，不等于字符数：
+
+```text
+英文单词可能由一个或多个 Token 组成
+中文字符与 Token 也不是固定的一比一关系
+```
+
+当前项目使用 `js-tiktoken` 的 `cl100k_base` 计算稳定的 Token 预算：
+
+```text
+目标大小：420 tokens
+硬上限：600 tokens
+超长正文重叠：60 tokens
+```
+
+`cl100k_base` 是统一预算工具，和实际厂商模型的 Tokenizer 可能存在少量差异，因此硬上限需要保留安全余量。
+
+#### 字符递归切分
+
+字符切分是最后的安全兜底，而不是第一步：
+
+```text
+超长正文/单元格
+  -> 先按段落
+  -> 再按换行
+  -> 再按中文句号、问号、感叹号、分号、逗号
+  -> 再按空格
+  -> 最后才按字符强制切开
+```
+
+虽然切分位置由字符分隔符决定，但块大小仍由 Token 数计算。
+
+### 7.4 当前项目参数
+
+参数统一位于：
+
+```text
+src/rag/documentChunkLab.ts
+RAG_RETRIEVAL_CONFIG
+```
+
+当前值：
+
+```text
+targetChunkTokens = 420
+maxChunkTokens = 600
+chunkOverlapTokens = 60
+semanticSimilarityThreshold = 0.72
+semanticEmbeddingBatchSize = 32
+```
+
+核心实现：
+
+```text
+src/rag/structuredDocumentChunker.ts
+splitDocumentsWithStructure()
+```
+
+### 7.5 Chunk 保存哪些信息
+
+每个 chunk 不只保存文本，还保存：
+
+```text
+content：chunk 文本
+tokenCount：Token 数量
+splitStrategy：结构/语义/表格/字符兜底等切分策略
+sourceType：text / table / image_ocr / image_summary
+pageNumber：页码
+sectionPath：章节路径
+parentBlockIndexes：对应的原始文档 block
+startChar / endChar：原文字符范围
+boundingBox：版面坐标
+links：块内链接
+chunkingVersion：切分算法版本
+```
+
+这些元数据会写入 SQLite 的 `document_chunks.metadata_json`，常用检索字段也会同步写入 Chroma。
+
+### 7.6 为什么需要切分版本
+
+当前切分版本：
+
+```text
+structured-v1
+```
+
+项目升级切分算法后，数据库里可能还保存着旧 chunk。
+
+系统读取索引时会比较 `chunkingVersion`：
+
+```text
+版本相同 -> 直接恢复索引
+版本不同或缺失 -> 自动重新切分、Embedding 并覆盖旧索引
+```
+
+因此已经上传的文件不需要重新上传，下次使用该文档时会自动升级索引。
+
+### 7.7 验证切分
+
+执行：
+
+```powershell
+npm run rag:verify-chunking
+```
+
+校验内容：
+
+```text
+标题是否并入正文
+长表格是否按行拆分
+每个表格 chunk 是否重复表头
+图片说明是否保持独立
+是否存在超过 Token 硬上限的 chunk
+语义合并是否正常执行
+```
+
+校验脚本固定使用本地 hash embedding，不会调用 SiliconFlow，也不会消耗 API Token。
+
+## 8. Embedding
 
 Embedding 是把文本变成数字向量：
 
@@ -246,11 +593,12 @@ Embedding 是把文本变成数字向量：
 
 这两句话字面不同，但语义接近。Embedding 会让它们在向量空间里距离更近。
 
-当前项目里 Embedding 用在两个地方：
+当前项目里 Embedding 用在三个地方：
 
 ```text
 1. 文档检索：比较用户问题和文档 chunk 是否相似
 2. 路由兜底：关键词不明确时，判断问题更像哪种 RAG 意图
+3. 语义切分：判断相邻正文段落是否属于同一语义主题
 ```
 
 当前项目对应：
@@ -266,7 +614,7 @@ EMBEDDING_PROVIDER=siliconflow
 EMBEDDING_MODEL=BAAI/bge-m3
 ```
 
-## 8. GraphRAG 实体抽取
+## 9. GraphRAG 实体抽取
 
 GraphRAG 需要先知道文档里的“实体 / 概念”是什么。
 
@@ -302,7 +650,7 @@ GRAPH_RAG_EXTRACTOR_MODEL=deepseek-v4-flash
 
 注意：`hybrid` 不是每个 chunk 都调用模型。它会先跑算法，只有算法结果不足时才调用模型。
 
-## 9. Chroma
+## 10. Chroma
 
 Chroma 是向量数据库。
 
@@ -325,7 +673,7 @@ src/rag/chromaVectorStore.ts
 src/rag/vectorStoreProvider.ts
 ```
 
-## 10. SQLite / FTS5 / BM25
+## 11. SQLite / FTS5 / BM25
 
 SQLite 负责保存：
 
@@ -334,6 +682,7 @@ SQLite 负责保存：
 上传文件元数据
 知识库文件元数据
 chunk fallback
+chunk 结构、Token、定位和切分版本元数据
 FTS5 / BM25 关键词检索索引
 GraphRAG 节点和边
 LangGraph checkpoint
@@ -351,7 +700,7 @@ BM25 是关键词相关性排序算法。
 BM25 擅长精确关键词命中
 ```
 
-## 11. Rerank
+## 12. Rerank
 
 Rerank 是重排。
 
@@ -373,7 +722,7 @@ src/rag/vectorDocumentIndex.ts
 rerankChunks()
 ```
 
-## 12. Retrieval Validation
+## 13. Retrieval Validation
 
 Retrieval Validation 是检索质量验证。
 
@@ -410,7 +759,7 @@ Retrieval Validation：回答前，验证检索结果够不够好。
 Answer Validation：回答后，验证模型答案是否被上下文支持。
 ```
 
-## 13. Answer Validation
+## 14. Answer Validation
 
 Answer Validation 是答案验证。
 
@@ -429,7 +778,7 @@ src/server.ts
 validateDocumentAnswer()
 ```
 
-## 14. 文件存储
+## 15. 文件存储
 
 用户上传文件：
 
@@ -445,7 +794,7 @@ data/knowledge-bases/{knowledgeBaseId}/
 
 数据库只保存相对路径 `storageKey`，不保存绝对路径，也不保存 `127.0.0.1` 这类 URL。
 
-## 15. 常用命令
+## 16. 常用命令
 
 启动 Chroma：
 
@@ -457,6 +806,12 @@ npm run chroma
 
 ```powershell
 npm run kb:index
+```
+
+验证四层切分：
+
+```powershell
+npm run rag:verify-chunking
 ```
 
 启动项目：
@@ -471,13 +826,14 @@ npm start
 npx.cmd tsc --noEmit
 ```
 
-## 16. 一句话记忆
+## 17. 一句话记忆
 
 ```text
 2-step RAG：固定检索一次，再回答。
 Agentic RAG：Agent 决定是否调用检索工具。
 Hybrid RAG：检索链路加入增强、融合、重排、Retrieval Validation。
 GraphRAG：在文本检索之外加入实体关系图谱扩展。
+四层 Chunk：先保结构，再看语义，再控 Token，超长内容最后按字符递归切分。
 Answer Validation：模型回答后检查答案是否被检索上下文支持。
 sourceScope：只表示资料从哪里来，不是 RAG 架构。
 ```

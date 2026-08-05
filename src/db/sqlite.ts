@@ -110,6 +110,7 @@ sqliteDb.exec(`
     page_number INTEGER,
     block_index INTEGER NOT NULL DEFAULT 0,
     locator TEXT NOT NULL DEFAULT '',
+    metadata_json TEXT NOT NULL DEFAULT '{}',
     embedding_json TEXT NOT NULL,
     dimensions INTEGER NOT NULL,
     built_at TEXT NOT NULL,
@@ -235,7 +236,8 @@ for (const [columnName, definition] of [
   ["mime_type", "TEXT"],
   ["file_size", "INTEGER"],
   ["parse_status", "TEXT"],
-  ["index_status", "TEXT"]
+  ["index_status", "TEXT"],
+  ["loader_documents_json", "TEXT"]
 ] as const) {
   addColumnIfMissing("uploaded_documents", columnName, definition);
 }
@@ -244,9 +246,12 @@ for (const [columnName, definition] of [
   ["source_type", "TEXT NOT NULL DEFAULT 'text'"],
   ["page_number", "INTEGER"],
   ["block_index", "INTEGER NOT NULL DEFAULT 0"],
-  ["locator", "TEXT NOT NULL DEFAULT ''"]
+  ["locator", "TEXT NOT NULL DEFAULT ''"],
+  ["metadata_json", "TEXT NOT NULL DEFAULT '{}'"]
 ] as const) {
-  // 瀛︿範鐐癸細杩欎簺鏄?chunk 鐨勪綅缃厓鏁版嵁銆?  // 涓轰粈涔堣繖鏍凤細鍚庣画 PDF 琛ㄦ牸/鍥剧墖銆侀〉鐮佸紩鐢ㄣ€佹钀藉畾浣嶉兘渚濊禆杩欎簺瀛楁銆?  addColumnIfMissing("document_chunks", columnName, definition);
+  // 学习点：这些字段保存 chunk 的位置和结构元数据。
+  // 页码、原始块、表格/图片类型及切分策略都依赖它们在重启后恢复。
+  addColumnIfMissing("document_chunks", columnName, definition);
 }
 
 sqliteDb.exec(`
