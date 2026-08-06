@@ -21736,6 +21736,9 @@
     const [workspaceError, setWorkspaceError] = (0, import_react.useState)("");
     const [isWorkspaceLoading, setIsWorkspaceLoading] = (0, import_react.useState)(false);
     const [workspaceActivities, setWorkspaceActivities] = (0, import_react.useState)([]);
+    const [workspaceDiffs, setWorkspaceDiffs] = (0, import_react.useState)({});
+    const [workProgressPanel, setWorkProgressPanel] = (0, import_react.useState)(null);
+    const [loadingDiffTurnId, setLoadingDiffTurnId] = (0, import_react.useState)("");
     const [subAgentRuns, setSubAgentRuns] = (0, import_react.useState)([]);
     const [taskPlans, setTaskPlans] = (0, import_react.useState)([]);
     const [generatedFiles, setGeneratedFiles] = (0, import_react.useState)([]);
@@ -21879,8 +21882,10 @@
     (0, import_react.useEffect)(() => {
       if (appMode !== "work" || !activeThreadId || !userId.trim()) {
         setWorkspaceActivities([]);
+        setWorkspaceDiffs({});
         return;
       }
+      setWorkspaceDiffs({});
       void loadWorkspaceActivities();
     }, [appMode, activeThreadId, userId]);
     (0, import_react.useEffect)(() => {
@@ -22426,6 +22431,54 @@
       }
       setWorkspaceActivities(data.activities || []);
     }
+    async function loadWorkspaceDiff(turnId) {
+      setLoadingDiffTurnId(turnId);
+      try {
+        const response = await fetch(
+          `/api/workspace/diff?threadId=${encodeURIComponent(activeThreadId)}&userId=${encodeURIComponent(userId.trim())}&turnId=${encodeURIComponent(turnId)}`
+        );
+        const data = await readJsonResponse(response, "/api/workspace/diff");
+        if (!response.ok) {
+          throw new Error(data.error || "\u8BFB\u53D6 Diff \u5931\u8D25\u3002");
+        }
+        setWorkspaceDiffs((current) => ({
+          ...current,
+          [turnId]: data.diffs || []
+        }));
+      } catch (diffError) {
+        setError(diffError instanceof Error ? diffError.message : "\u8BFB\u53D6 Diff \u5931\u8D25\u3002");
+      } finally {
+        setLoadingDiffTurnId("");
+      }
+    }
+    async function rollbackWorkspaceTurn(turnId) {
+      if (!window.confirm("\u786E\u5B9A\u56DE\u9000\u672C\u8F6E Agent \u7684\u5168\u90E8\u6587\u4EF6\u4FEE\u6539\u5417\uFF1F\u6B64\u64CD\u4F5C\u4E0D\u4F1A\u4FEE\u6539 Git \u5386\u53F2\u3002")) {
+        return;
+      }
+      try {
+        const response = await fetch("/api/workspace/rollback", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            threadId: activeThreadId,
+            userId: userId.trim(),
+            turnId
+          })
+        });
+        const data = await readJsonResponse(response, "/api/workspace/rollback");
+        if (!response.ok) {
+          throw new Error(data.error || "\u56DE\u9000\u672C\u8F6E\u5931\u8D25\u3002");
+        }
+        await Promise.all([
+          loadWorkspaceActivities(),
+          loadWorkspaceDiff(turnId)
+        ]);
+      } catch (rollbackError) {
+        setError(
+          rollbackError instanceof Error ? rollbackError.message : "\u56DE\u9000\u672C\u8F6E\u5931\u8D25\u3002"
+        );
+      }
+    }
     async function loadSubAgentRuns() {
       const response = await fetch(
         `/api/subagents/runs?threadId=${encodeURIComponent(activeThreadId)}&userId=${encodeURIComponent(userId.trim())}`
@@ -22578,6 +22631,7 @@
       setError("");
       setApprovalRequest(null);
       setIsSubmitting(true);
+      setWorkProgressPanel(null);
       shouldAutoScrollRef.current = true;
       const requestController = new AbortController();
       activeRequestControllerRef.current = requestController;
@@ -22742,6 +22796,11 @@
                 void loadGeneratedFiles();
               }, 60);
             }
+            if (streamEvent.stage === "editing_file" && streamEvent.message.startsWith("\u6587\u4EF6\u4FEE\u6539\u5B8C\u6210")) {
+              window.setTimeout(() => {
+                void loadWorkspaceActivities();
+              }, 60);
+            }
             return;
           }
           if (streamEvent.type === "delta") {
@@ -22874,6 +22933,40 @@
         shouldAutoScrollRef.current = false;
       }
     }
+    let submittingWorkTurnId = "";
+    if (isSubmitting) {
+      for (let index = entries.length - 1; index >= 0; index -= 1) {
+        const entry = entries[index];
+        if (entry.role === "assistant" && entry.completed === false && entry.turnId) {
+          submittingWorkTurnId = entry.turnId;
+          break;
+        }
+      }
+    }
+    const reversedTaskPlans = [...taskPlans].reverse();
+    const activeWorkPlan = reversedTaskPlans.find((plan) => plan.status === "running") || (submittingWorkTurnId ? reversedTaskPlans.find((plan) => plan.turnId === submittingWorkTurnId) : void 0);
+    const activeWorkTurnId = activeWorkPlan?.turnId || submittingWorkTurnId;
+    const activeWorkActivities = activeWorkTurnId ? workspaceActivities.filter(
+      (activity) => activity.turnId === activeWorkTurnId && activity.activityType === "file_write" && activity.filePath
+    ) : [];
+    const activeWorkFiles = [...new Set(
+      activeWorkActivities.map((activity) => activity.filePath).filter((filePath) => Boolean(filePath))
+    )];
+    const activeWorkAdditions = activeWorkActivities.reduce(
+      (total, activity) => total + (activity.additions || 0),
+      0
+    );
+    const activeWorkDeletions = activeWorkActivities.reduce(
+      (total, activity) => total + (activity.deletions || 0),
+      0
+    );
+    const activeWorkStepIndex = activeWorkPlan ? Math.max(
+      1,
+      activeWorkPlan.steps.findIndex(
+        (step) => step.status === "in_progress"
+      ) + 1 || activeWorkPlan.steps.filter((step) => step.status === "completed").length
+    ) : 0;
+    const showWorkProgress = appMode === "work" && !isEmptyThread && Boolean(isSubmitting || activeWorkPlan);
     return /* @__PURE__ */ import_react.default.createElement("div", { className: "chatgpt-shell" }, /* @__PURE__ */ import_react.default.createElement("aside", { className: `sidebar ${sidebarOpen ? "open" : ""}` }, /* @__PURE__ */ import_react.default.createElement("div", { className: "sidebar-header" }, /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("h1", null, "KimiBai")), /* @__PURE__ */ import_react.default.createElement(
       "button",
       {
@@ -23125,6 +23218,7 @@
         const turnGeneratedFiles = entry.role === "assistant" && entry.turnId && isLastAssistantForTurn ? generatedFiles.filter(
           (file) => file.turnId === entry.turnId
         ) : [];
+        const turnDiffs = entry.turnId ? workspaceDiffs[entry.turnId] : void 0;
         return /* @__PURE__ */ import_react.default.createElement(
           "div",
           {
@@ -23257,7 +23351,53 @@
                   "\u2193"
                 )
               ))
-            ) : null, changedFiles.length ? /* @__PURE__ */ import_react.default.createElement("section", { className: "work-activity-card work-activity-inline" }, /* @__PURE__ */ import_react.default.createElement("header", null, /* @__PURE__ */ import_react.default.createElement("strong", null, "\u5DF2\u7F16\u8F91 ", changedFiles.length, " \u4E2A\u6587\u4EF6"), /* @__PURE__ */ import_react.default.createElement("span", { className: "work-activity-caption" }, "Agent \u5DE5\u4F5C\u8BB0\u5F55")), changedFiles.map((filePath) => /* @__PURE__ */ import_react.default.createElement("div", { className: "work-file-row", key: filePath }, /* @__PURE__ */ import_react.default.createElement("span", null, filePath), /* @__PURE__ */ import_react.default.createElement("span", { className: "work-file-status" }, "+", turnActivities.filter((item) => item.filePath === filePath).reduce((total, item) => total + (item.additions || 0), 0), " ", "-", turnActivities.filter((item) => item.filePath === filePath).reduce((total, item) => total + (item.deletions || 0), 0))))) : null) : /* @__PURE__ */ import_react.default.createElement("div", { className: "message-text" }, entry.content)
+            ) : null, changedFiles.length ? /* @__PURE__ */ import_react.default.createElement("section", { className: "work-activity-card work-activity-inline" }, /* @__PURE__ */ import_react.default.createElement("header", null, /* @__PURE__ */ import_react.default.createElement("strong", null, "\u5DF2\u7F16\u8F91 ", changedFiles.length, " \u4E2A\u6587\u4EF6"), /* @__PURE__ */ import_react.default.createElement("span", { className: "flex items-center gap-2" }, /* @__PURE__ */ import_react.default.createElement(
+              "button",
+              {
+                className: "rounded-lg border border-zinc-200 px-2 py-1 text-xs hover:bg-zinc-50",
+                disabled: loadingDiffTurnId === entry.turnId,
+                onClick: () => {
+                  if (entry.turnId) {
+                    if (turnDiffs) {
+                      setWorkspaceDiffs((current) => {
+                        const next = { ...current };
+                        delete next[entry.turnId];
+                        return next;
+                      });
+                    } else {
+                      void loadWorkspaceDiff(entry.turnId);
+                    }
+                  }
+                },
+                type: "button"
+              },
+              loadingDiffTurnId === entry.turnId ? "\u8BFB\u53D6\u4E2D\u2026" : turnDiffs ? "\u6536\u8D77 Diff" : "\u67E5\u770B Diff"
+            ), /* @__PURE__ */ import_react.default.createElement(
+              "button",
+              {
+                className: "rounded-lg border border-red-200 px-2 py-1 text-xs text-red-600 hover:bg-red-50 disabled:opacity-40",
+                disabled: !entry.turnId || turnDiffs?.every(
+                  (diff) => diff.status === "rolled_back"
+                ),
+                onClick: () => {
+                  if (entry.turnId) {
+                    void rollbackWorkspaceTurn(entry.turnId);
+                  }
+                },
+                type: "button"
+              },
+              turnDiffs?.every(
+                (diff) => diff.status === "rolled_back"
+              ) ? "\u5DF2\u56DE\u9000" : "\u56DE\u9000\u672C\u8F6E"
+            ))), changedFiles.map((filePath) => /* @__PURE__ */ import_react.default.createElement("div", { className: "work-file-row", key: filePath }, /* @__PURE__ */ import_react.default.createElement("span", null, filePath), /* @__PURE__ */ import_react.default.createElement("span", { className: "work-file-status" }, "+", turnActivities.filter((item) => item.filePath === filePath).reduce((total, item) => total + (item.additions || 0), 0), " ", "-", turnActivities.filter((item) => item.filePath === filePath).reduce((total, item) => total + (item.deletions || 0), 0)))), turnDiffs ? /* @__PURE__ */ import_react.default.createElement("div", { className: "workspace-diff-list" }, turnDiffs.map((diff) => /* @__PURE__ */ import_react.default.createElement("section", { className: "workspace-diff", key: diff.snapshotId }, /* @__PURE__ */ import_react.default.createElement("div", { className: "workspace-diff-heading" }, /* @__PURE__ */ import_react.default.createElement("strong", null, diff.filePath), /* @__PURE__ */ import_react.default.createElement("span", null, /* @__PURE__ */ import_react.default.createElement("b", null, "+", diff.additions), " ", /* @__PURE__ */ import_react.default.createElement("i", null, "-", diff.deletions), diff.changedAfterSnapshot ? " \xB7 \u6587\u4EF6\u4E4B\u540E\u53C8\u6709\u53D8\u5316" : "")), /* @__PURE__ */ import_react.default.createElement("pre", null, diff.patch.split(/\r?\n/).map((line, index) => /* @__PURE__ */ import_react.default.createElement(
+              "code",
+              {
+                className: line.startsWith("+") && !line.startsWith("+++") ? "diff-added" : line.startsWith("-") && !line.startsWith("---") ? "diff-removed" : line.startsWith("@@") ? "diff-hunk" : "",
+                key: `${diff.snapshotId}-${index}`
+              },
+              line || " ",
+              "\n"
+            )))))) : null) : null) : /* @__PURE__ */ import_react.default.createElement("div", { className: "message-text" }, entry.content)
           )
         );
       })),
@@ -23267,6 +23407,56 @@
           ref: composerShellRef,
           className: `composer-shell ${isEmptyThread ? "home-composer" : ""}`
         },
+        showWorkProgress ? /* @__PURE__ */ import_react.default.createElement("div", { className: "work-progress-dock" }, workProgressPanel ? /* @__PURE__ */ import_react.default.createElement("section", { className: "work-progress-popover" }, /* @__PURE__ */ import_react.default.createElement("header", null, /* @__PURE__ */ import_react.default.createElement("strong", null, workProgressPanel === "plan" ? activeWorkPlan?.title || "\u6B63\u5728\u5904\u7406\u4EFB\u52A1" : `\u5DF2\u4FEE\u6539 ${activeWorkFiles.length} \u4E2A\u6587\u4EF6`), /* @__PURE__ */ import_react.default.createElement(
+          "button",
+          {
+            onClick: () => setWorkProgressPanel(null),
+            type: "button",
+            "aria-label": "\u5173\u95ED"
+          },
+          "\xD7"
+        )), workProgressPanel === "plan" ? activeWorkPlan ? /* @__PURE__ */ import_react.default.createElement("ol", { className: "work-progress-steps" }, activeWorkPlan.steps.map((step, index) => /* @__PURE__ */ import_react.default.createElement(
+          "li",
+          {
+            className: `status-${step.status}`,
+            key: step.id
+          },
+          /* @__PURE__ */ import_react.default.createElement("span", null, getTaskPlanStepIcon(step.status)),
+          /* @__PURE__ */ import_react.default.createElement("strong", null, step.title),
+          /* @__PURE__ */ import_react.default.createElement("small", null, index + 1)
+        ))) : /* @__PURE__ */ import_react.default.createElement("p", { className: "work-progress-empty" }, "Agent \u6B63\u5728\u5206\u6790\u5E76\u51C6\u5907\u4EFB\u52A1\u6B65\u9AA4\u2026") : activeWorkFiles.length ? /* @__PURE__ */ import_react.default.createElement("div", { className: "work-progress-files" }, activeWorkFiles.map((filePath) => {
+          const activities = activeWorkActivities.filter(
+            (activity) => activity.filePath === filePath
+          );
+          return /* @__PURE__ */ import_react.default.createElement("div", { key: filePath }, /* @__PURE__ */ import_react.default.createElement("span", null, filePath), /* @__PURE__ */ import_react.default.createElement("small", null, /* @__PURE__ */ import_react.default.createElement("b", null, "+", activities.reduce(
+            (total, activity) => total + (activity.additions || 0),
+            0
+          )), " ", /* @__PURE__ */ import_react.default.createElement("i", null, "-", activities.reduce(
+            (total, activity) => total + (activity.deletions || 0),
+            0
+          ))));
+        })) : /* @__PURE__ */ import_react.default.createElement("p", { className: "work-progress-empty" }, "\u5C1A\u672A\u4FEE\u6539\u6587\u4EF6")) : null, /* @__PURE__ */ import_react.default.createElement("div", { className: "work-progress-chip" }, /* @__PURE__ */ import_react.default.createElement(
+          "button",
+          {
+            onClick: () => setWorkProgressPanel(
+              (current) => current === "plan" ? null : "plan"
+            ),
+            type: "button"
+          },
+          /* @__PURE__ */ import_react.default.createElement("span", { className: "work-progress-spinner", "aria-hidden": "true" }),
+          activeWorkPlan ? `\u7B2C ${activeWorkStepIndex}/${activeWorkPlan.steps.length} \u6B65` : "\u6B63\u5728\u89C4\u5212"
+        ), /* @__PURE__ */ import_react.default.createElement("span", { className: "work-progress-divider" }), /* @__PURE__ */ import_react.default.createElement(
+          "button",
+          {
+            disabled: !activeWorkFiles.length,
+            onClick: () => setWorkProgressPanel(
+              (current) => current === "files" ? null : "files"
+            ),
+            type: "button"
+          },
+          activeWorkFiles.length ? `${activeWorkFiles.length} \u4E2A\u6587\u4EF6\u5DF2\u66F4\u6539` : "\u5C1A\u65E0\u6587\u4EF6\u4FEE\u6539",
+          activeWorkFiles.length ? /* @__PURE__ */ import_react.default.createElement("small", null, "+", activeWorkAdditions, " -", activeWorkDeletions) : null
+        ))) : null,
         /* @__PURE__ */ import_react.default.createElement("form", { className: "composer-card", onSubmit: handleSubmit }, appMode === "work" ? /* @__PURE__ */ import_react.default.createElement("div", { className: "mb-2 flex min-h-10 items-center gap-1 border-b border-zinc-100 pb-2 text-xs text-zinc-600" }, /* @__PURE__ */ import_react.default.createElement(
           "button",
           {

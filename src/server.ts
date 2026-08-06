@@ -51,6 +51,10 @@ import {
 } from "./threads/threadRepository";
 import type { ThreadMode } from "./threads/threadRepository";
 import { listWorkspaceActivity } from "./workspace/workspaceActivityRepository";
+import {
+  listWorkspaceTurnDiffs,
+  rollbackWorkspaceTurn
+} from "./workspace/workspaceTurnSnapshotRepository";
 import { listSubAgentRuns } from "./agents/subAgentRunRepository";
 import { listTaskPlans } from "./agents/taskPlanRepository";
 import {
@@ -116,6 +120,49 @@ app.get("/api/workspace/activity", (req, res) => {
     return;
   }
   res.json({ activities: listWorkspaceActivity(threadId, userId) });
+});
+
+app.get("/api/workspace/diff", async (req, res) => {
+  const threadId = String(req.query.threadId || "").trim();
+  const userId = String(req.query.userId || "").trim();
+  const turnId = String(req.query.turnId || "").trim();
+  const thread = getThreadById(threadId, userId);
+  if (!thread || thread.mode !== "work" || !turnId) {
+    res.status(404).json({ error: "工作任务或修改轮次不存在。" });
+    return;
+  }
+  try {
+    res.json({
+      diffs: await listWorkspaceTurnDiffs(threadId, userId, turnId)
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: error instanceof Error ? error.message : "读取 Diff 失败。"
+    });
+  }
+});
+
+app.post("/api/workspace/rollback", express.json(), async (req, res) => {
+  const threadId = String(req.body?.threadId || "").trim();
+  const userId = String(req.body?.userId || "").trim();
+  const turnId = String(req.body?.turnId || "").trim();
+  const thread = getThreadById(threadId, userId);
+  if (!thread || thread.mode !== "work" || !turnId) {
+    res.status(404).json({ error: "工作任务或修改轮次不存在。" });
+    return;
+  }
+  try {
+    const restoredFiles = await rollbackWorkspaceTurn({
+      threadId,
+      userId,
+      turnId
+    });
+    res.json({ restoredFiles });
+  } catch (error) {
+    res.status(409).json({
+      error: error instanceof Error ? error.message : "回退本轮失败。"
+    });
+  }
 });
 
 app.get("/api/subagents/runs", (req, res) => {

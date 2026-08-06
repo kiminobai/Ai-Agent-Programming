@@ -79,6 +79,26 @@ sqliteDb.exec(`
   CREATE INDEX IF NOT EXISTS idx_workspace_activity_thread_created
   ON workspace_activity(thread_id, created_at ASC);
 
+  -- Work 每轮修改前的独立文件快照。它不使用 .git，因此不会污染用户仓库。
+  CREATE TABLE IF NOT EXISTS workspace_turn_snapshots (
+    snapshot_id TEXT PRIMARY KEY,
+    thread_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    turn_id TEXT NOT NULL,
+    file_path TEXT NOT NULL,
+    snapshot_key TEXT,
+    existed_before INTEGER NOT NULL,
+    before_hash TEXT,
+    after_hash TEXT,
+    status TEXT NOT NULL DEFAULT 'active',
+    created_at TEXT NOT NULL,
+    rolled_back_at TEXT,
+    UNIQUE(thread_id, turn_id, file_path)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_workspace_turn_snapshots_thread_turn
+  ON workspace_turn_snapshots(thread_id, turn_id, created_at ASC);
+
   -- Durable task ledger. A stable idempotency key prevents retries or resumes
   -- from executing the same side effect or expensive sub-agent task twice.
   CREATE TABLE IF NOT EXISTS agent_task_executions (

@@ -336,6 +336,9 @@ export function deleteThread(threadId: string, userId: string): boolean {
 
   const deleteTransaction = database.transaction(() => {
     database.prepare("DELETE FROM workspace_activity WHERE thread_id = ?").run(threadId);
+    database
+      .prepare("DELETE FROM workspace_turn_snapshots WHERE thread_id = ?")
+      .run(threadId);
     database.prepare("DELETE FROM subagent_runs WHERE thread_id = ?").run(threadId);
     database.prepare("DELETE FROM agent_task_plans WHERE thread_id = ?").run(threadId);
     database.prepare("DELETE FROM generated_files WHERE thread_id = ?").run(threadId);

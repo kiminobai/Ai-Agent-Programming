@@ -226,6 +226,17 @@ type WorkspaceActivity = {
   createdAt: string;
 };
 
+type WorkspaceTurnDiff = {
+  snapshotId: string;
+  turnId: string;
+  filePath: string;
+  status: "active" | "rolled_back";
+  additions: number;
+  deletions: number;
+  patch: string;
+  changedAfterSnapshot: boolean;
+};
+
 type SubAgentRun = {
   runId: string;
   parentRunId?: string;
@@ -624,6 +635,13 @@ function App() {
   const [workspaceError, setWorkspaceError] = useState("");
   const [isWorkspaceLoading, setIsWorkspaceLoading] = useState(false);
   const [workspaceActivities, setWorkspaceActivities] = useState<WorkspaceActivity[]>([]);
+  const [workspaceDiffs, setWorkspaceDiffs] = useState<
+    Record<string, WorkspaceTurnDiff[]>
+  >({});
+  const [workProgressPanel, setWorkProgressPanel] = useState<
+    "plan" | "files" | null
+  >(null);
+  const [loadingDiffTurnId, setLoadingDiffTurnId] = useState("");
   const [subAgentRuns, setSubAgentRuns] = useState<SubAgentRun[]>([]);
   const [taskPlans, setTaskPlans] = useState<TaskPlan[]>([]);
   const [generatedFiles, setGeneratedFiles] = useState<GeneratedFile[]>([]);
@@ -814,8 +832,10 @@ function App() {
   useEffect(() => {
     if (appMode !== "work" || !activeThreadId || !userId.trim()) {
       setWorkspaceActivities([]);
+      setWorkspaceDiffs({});
       return;
     }
+    setWorkspaceDiffs({});
     void loadWorkspaceActivities();
   }, [appMode, activeThreadId, userId]);
 
@@ -1510,6 +1530,58 @@ function App() {
     setWorkspaceActivities((data.activities || []) as WorkspaceActivity[]);
   }
 
+  async function loadWorkspaceDiff(turnId: string) {
+    setLoadingDiffTurnId(turnId);
+    try {
+      const response = await fetch(
+        `/api/workspace/diff?threadId=${encodeURIComponent(activeThreadId)}&userId=${encodeURIComponent(userId.trim())}&turnId=${encodeURIComponent(turnId)}`
+      );
+      const data = await readJsonResponse(response, "/api/workspace/diff");
+      if (!response.ok) {
+        throw new Error(data.error || "读取 Diff 失败。");
+      }
+      setWorkspaceDiffs((current) => ({
+        ...current,
+        [turnId]: (data.diffs || []) as WorkspaceTurnDiff[]
+      }));
+    } catch (diffError) {
+      setError(diffError instanceof Error ? diffError.message : "读取 Diff 失败。");
+    } finally {
+      setLoadingDiffTurnId("");
+    }
+  }
+
+  async function rollbackWorkspaceTurn(turnId: string) {
+    if (!window.confirm("确定回退本轮 Agent 的全部文件修改吗？此操作不会修改 Git 历史。")) {
+      return;
+    }
+    try {
+      const response = await fetch("/api/workspace/rollback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          threadId: activeThreadId,
+          userId: userId.trim(),
+          turnId
+        })
+      });
+      const data = await readJsonResponse(response, "/api/workspace/rollback");
+      if (!response.ok) {
+        throw new Error(data.error || "回退本轮失败。");
+      }
+      await Promise.all([
+        loadWorkspaceActivities(),
+        loadWorkspaceDiff(turnId)
+      ]);
+    } catch (rollbackError) {
+      setError(
+        rollbackError instanceof Error
+          ? rollbackError.message
+          : "回退本轮失败。"
+      );
+    }
+  }
+
   async function loadSubAgentRuns() {
     const response = await fetch(
       `/api/subagents/runs?threadId=${encodeURIComponent(activeThreadId)}&userId=${encodeURIComponent(userId.trim())}`
@@ -1697,6 +1769,7 @@ function App() {
     setError("");
     setApprovalRequest(null);
     setIsSubmitting(true);
+    setWorkProgressPanel(null);
     shouldAutoScrollRef.current = true;
     const requestController = new AbortController();
     activeRequestControllerRef.current = requestController;
@@ -1914,6 +1987,14 @@ function App() {
               void loadGeneratedFiles();
             }, 60);
           }
+          if (
+            streamEvent.stage === "editing_file" &&
+            streamEvent.message.startsWith("文件修改完成")
+          ) {
+            window.setTimeout(() => {
+              void loadWorkspaceActivities();
+            }, 60);
+          }
           return;
         }
 
@@ -2083,6 +2164,59 @@ function App() {
       shouldAutoScrollRef.current = false;
     }
   }
+
+  let submittingWorkTurnId = "";
+  if (isSubmitting) {
+    for (let index = entries.length - 1; index >= 0; index -= 1) {
+      const entry = entries[index];
+      if (entry.role === "assistant" && entry.completed === false && entry.turnId) {
+        submittingWorkTurnId = entry.turnId;
+        break;
+      }
+    }
+  }
+  const reversedTaskPlans = [...taskPlans].reverse();
+  const activeWorkPlan =
+    reversedTaskPlans.find((plan) => plan.status === "running") ||
+    (submittingWorkTurnId
+      ? reversedTaskPlans.find((plan) => plan.turnId === submittingWorkTurnId)
+      : undefined);
+  const activeWorkTurnId = activeWorkPlan?.turnId || submittingWorkTurnId;
+  const activeWorkActivities = activeWorkTurnId
+    ? workspaceActivities.filter(
+        (activity) =>
+          activity.turnId === activeWorkTurnId &&
+          activity.activityType === "file_write" &&
+          activity.filePath
+      )
+    : [];
+  const activeWorkFiles = [...new Set(
+    activeWorkActivities
+      .map((activity) => activity.filePath)
+      .filter((filePath): filePath is string => Boolean(filePath))
+  )];
+  const activeWorkAdditions = activeWorkActivities.reduce(
+    (total, activity) => total + (activity.additions || 0),
+    0
+  );
+  const activeWorkDeletions = activeWorkActivities.reduce(
+    (total, activity) => total + (activity.deletions || 0),
+    0
+  );
+  const activeWorkStepIndex = activeWorkPlan
+    ? Math.max(
+        1,
+        activeWorkPlan.steps.findIndex(
+          (step) => step.status === "in_progress"
+        ) + 1 ||
+          activeWorkPlan.steps.filter((step) => step.status === "completed")
+            .length
+      )
+    : 0;
+  const showWorkProgress =
+    appMode === "work" &&
+    !isEmptyThread &&
+    Boolean(isSubmitting || activeWorkPlan);
 
   return (
     <div className="chatgpt-shell">
@@ -2509,6 +2643,9 @@ function App() {
                       (file) => file.turnId === entry.turnId
                     )
                   : [];
+              const turnDiffs = entry.turnId
+                ? workspaceDiffs[entry.turnId]
+                : undefined;
               return (
               <div
                 key={entry.id}
@@ -2778,7 +2915,53 @@ function App() {
                           <section className="work-activity-card work-activity-inline">
                             <header>
                               <strong>已编辑 {changedFiles.length} 个文件</strong>
-                              <span className="work-activity-caption">Agent 工作记录</span>
+                              <span className="flex items-center gap-2">
+                                <button
+                                  className="rounded-lg border border-zinc-200 px-2 py-1 text-xs hover:bg-zinc-50"
+                                  disabled={loadingDiffTurnId === entry.turnId}
+                                  onClick={() => {
+                                    if (entry.turnId) {
+                                      if (turnDiffs) {
+                                        setWorkspaceDiffs((current) => {
+                                          const next = { ...current };
+                                          delete next[entry.turnId!];
+                                          return next;
+                                        });
+                                      } else {
+                                        void loadWorkspaceDiff(entry.turnId);
+                                      }
+                                    }
+                                  }}
+                                  type="button"
+                                >
+                                  {loadingDiffTurnId === entry.turnId
+                                    ? "读取中…"
+                                    : turnDiffs
+                                      ? "收起 Diff"
+                                      : "查看 Diff"}
+                                </button>
+                                <button
+                                  className="rounded-lg border border-red-200 px-2 py-1 text-xs text-red-600 hover:bg-red-50 disabled:opacity-40"
+                                  disabled={
+                                    !entry.turnId ||
+                                    turnDiffs?.every(
+                                      (diff) => diff.status === "rolled_back"
+                                    )
+                                  }
+                                  onClick={() => {
+                                    if (entry.turnId) {
+                                      void rollbackWorkspaceTurn(entry.turnId);
+                                    }
+                                  }}
+                                  type="button"
+                                >
+                                  {turnDiffs?.every(
+                                    (diff) => diff.status === "rolled_back"
+                                  )
+                                    ? "已回退"
+                                    : "回退本轮"}
+                                </button>
+                              </span>
                             </header>
                             {changedFiles.map((filePath) => (
                               <div className="work-file-row" key={filePath}>
@@ -2794,6 +2977,44 @@ function App() {
                                 </span>
                               </div>
                             ))}
+                            {turnDiffs ? (
+                              <div className="workspace-diff-list">
+                                {turnDiffs.map((diff) => (
+                                  <section className="workspace-diff" key={diff.snapshotId}>
+                                    <div className="workspace-diff-heading">
+                                      <strong>{diff.filePath}</strong>
+                                      <span>
+                                        <b>+{diff.additions}</b>
+                                        {" "}
+                                        <i>-{diff.deletions}</i>
+                                        {diff.changedAfterSnapshot
+                                          ? " · 文件之后又有变化"
+                                          : ""}
+                                      </span>
+                                    </div>
+                                    <pre>
+                                      {diff.patch.split(/\r?\n/).map((line, index) => (
+                                        <code
+                                          className={
+                                            line.startsWith("+") && !line.startsWith("+++")
+                                              ? "diff-added"
+                                              : line.startsWith("-") && !line.startsWith("---")
+                                                ? "diff-removed"
+                                                : line.startsWith("@@")
+                                                  ? "diff-hunk"
+                                                  : ""
+                                          }
+                                          key={`${diff.snapshotId}-${index}`}
+                                        >
+                                          {line || " "}
+                                          {"\n"}
+                                        </code>
+                                      ))}
+                                    </pre>
+                                  </section>
+                                ))}
+                              </div>
+                            ) : null}
                           </section>
                         ) : null}
                       </>
@@ -2814,6 +3035,114 @@ function App() {
               : ""
           }`}
         >
+          {showWorkProgress ? (
+            <div className="work-progress-dock">
+              {workProgressPanel ? (
+                <section className="work-progress-popover">
+                  <header>
+                    <strong>
+                      {workProgressPanel === "plan"
+                        ? activeWorkPlan?.title || "正在处理任务"
+                        : `已修改 ${activeWorkFiles.length} 个文件`}
+                    </strong>
+                    <button
+                      onClick={() => setWorkProgressPanel(null)}
+                      type="button"
+                      aria-label="关闭"
+                    >
+                      ×
+                    </button>
+                  </header>
+                  {workProgressPanel === "plan" ? (
+                    activeWorkPlan ? (
+                      <ol className="work-progress-steps">
+                        {activeWorkPlan.steps.map((step, index) => (
+                          <li
+                            className={`status-${step.status}`}
+                            key={step.id}
+                          >
+                            <span>{getTaskPlanStepIcon(step.status)}</span>
+                            <strong>{step.title}</strong>
+                            <small>{index + 1}</small>
+                          </li>
+                        ))}
+                      </ol>
+                    ) : (
+                      <p className="work-progress-empty">Agent 正在分析并准备任务步骤…</p>
+                    )
+                  ) : activeWorkFiles.length ? (
+                    <div className="work-progress-files">
+                      {activeWorkFiles.map((filePath) => {
+                        const activities = activeWorkActivities.filter(
+                          (activity) => activity.filePath === filePath
+                        );
+                        return (
+                          <div key={filePath}>
+                            <span>{filePath}</span>
+                            <small>
+                              <b>
+                                +
+                                {activities.reduce(
+                                  (total, activity) =>
+                                    total + (activity.additions || 0),
+                                  0
+                                )}
+                              </b>
+                              {" "}
+                              <i>
+                                -
+                                {activities.reduce(
+                                  (total, activity) =>
+                                    total + (activity.deletions || 0),
+                                  0
+                                )}
+                              </i>
+                            </small>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <p className="work-progress-empty">尚未修改文件</p>
+                  )}
+                </section>
+              ) : null}
+              <div className="work-progress-chip">
+                <button
+                  onClick={() =>
+                    setWorkProgressPanel((current) =>
+                      current === "plan" ? null : "plan"
+                    )
+                  }
+                  type="button"
+                >
+                  <span className="work-progress-spinner" aria-hidden="true" />
+                  {activeWorkPlan
+                    ? `第 ${activeWorkStepIndex}/${activeWorkPlan.steps.length} 步`
+                    : "正在规划"}
+                </button>
+                <span className="work-progress-divider" />
+                <button
+                  disabled={!activeWorkFiles.length}
+                  onClick={() =>
+                    setWorkProgressPanel((current) =>
+                      current === "files" ? null : "files"
+                    )
+                  }
+                  type="button"
+                >
+                  {activeWorkFiles.length
+                    ? `${activeWorkFiles.length} 个文件已更改`
+                    : "尚无文件修改"}
+                  {activeWorkFiles.length ? (
+                    <small>
+                      +{activeWorkAdditions} -{activeWorkDeletions}
+                    </small>
+                  ) : null}
+                </button>
+              </div>
+            </div>
+          ) : null}
           <form className="composer-card" onSubmit={handleSubmit}>
             {appMode === "work" ? (
               <div className="mb-2 flex min-h-10 items-center gap-1 border-b border-zinc-100 pb-2 text-xs text-zinc-600">

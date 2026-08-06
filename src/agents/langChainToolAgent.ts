@@ -940,7 +940,13 @@ export class LangChainToolAgent {
       toolName === "write_workspace_file" ||
       toolName === "replace_workspace_text"
     ) {
-      return { stage: "editing_file", message: "正在修改文件…" };
+      return {
+        stage: "editing_file",
+        message:
+          candidate.event === "on_tool_end"
+            ? "文件修改完成，正在继续处理…"
+            : "正在修改文件…"
+      };
     }
     if (toolName === "edit_uploaded_file") {
       return {

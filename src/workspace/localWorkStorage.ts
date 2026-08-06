@@ -39,7 +39,13 @@ for (const directory of [
 
 export function getWorkTaskDirectory(
   threadId: string,
-  kind: "uploads" | "generated" | "downloads" | "extracted" | "temp"
+  kind:
+    | "uploads"
+    | "generated"
+    | "downloads"
+    | "extracted"
+    | "snapshots"
+    | "temp"
 ): string {
   return path.join(WORK_TASKS_ROOT, threadId, kind);
 }

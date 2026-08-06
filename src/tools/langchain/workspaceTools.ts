@@ -15,6 +15,10 @@ import {
 } from "../../workspace/workspaceSecurity";
 import { saveWorkspaceActivity } from "../../workspace/workspaceActivityRepository";
 import { executeDurableTask } from "../../agents/durableTaskExecution";
+import {
+  ensureWorkspaceTurnSnapshot,
+  finalizeWorkspaceTurnSnapshot
+} from "../../workspace/workspaceTurnSnapshotRepository";
 
 function getWorkspace(runtime: ToolMemoryRuntime) {
   const context = (runtime.context ?? {}) as AgentContext;
@@ -102,13 +106,26 @@ export const writeWorkspaceFileTool = tool(
         const previousContent = await fs
           .readFile(absolutePath, "utf8")
           .catch(() => "");
+        const context = (runtime.context ?? {}) as AgentContext;
+        await ensureWorkspaceTurnSnapshot({
+          threadId: context.threadId,
+          userId: context.userId,
+          turnId: context.turnId,
+          filePath,
+          absolutePath
+        });
         await fs.mkdir(path.dirname(absolutePath), { recursive: true });
         await fs.writeFile(absolutePath, content, "utf8");
+        await finalizeWorkspaceTurnSnapshot({
+          threadId: context.threadId,
+          turnId: context.turnId,
+          filePath,
+          absolutePath
+        });
         const previousLines = previousContent
           ? previousContent.split(/\r?\n/).length
           : 0;
         const nextLines = content ? content.split(/\r?\n/).length : 0;
-        const context = (runtime.context ?? {}) as AgentContext;
         saveWorkspaceActivity({
           threadId: context.threadId,
           userId: context.userId,
@@ -151,6 +168,7 @@ export const replaceWorkspaceTextTool = tool(
         const workspace = getWorkspace(runtime);
         const absolutePath = resolveWorkspacePath(workspace.rootPath, filePath);
         const previousContent = await fs.readFile(absolutePath, "utf8");
+        const context = (runtime.context ?? {}) as AgentContext;
         let nextContent = previousContent;
         let replacementCount = 0;
 
@@ -171,8 +189,20 @@ export const replaceWorkspaceTextTool = tool(
           }
         }
 
+        await ensureWorkspaceTurnSnapshot({
+          threadId: context.threadId,
+          userId: context.userId,
+          turnId: context.turnId,
+          filePath,
+          absolutePath
+        });
         await fs.writeFile(absolutePath, nextContent, "utf8");
-        const context = (runtime.context ?? {}) as AgentContext;
+        await finalizeWorkspaceTurnSnapshot({
+          threadId: context.threadId,
+          turnId: context.turnId,
+          filePath,
+          absolutePath
+        });
         saveWorkspaceActivity({
           threadId: context.threadId,
           userId: context.userId,
@@ -276,6 +306,9 @@ export async function executeWorkspaceCommand(input: {
     throw new Error("控制台只允许 npm、npx、node 和 git 命令。");
   }
   assertSafeCommandArguments(input.args);
+  if (input.executable === "git") {
+    assertReadOnlyGitCommand(input.args);
+  }
   const workspace = getThreadWorkspace(input.threadId, input.userId);
   const executable =
     process.platform === "win32" && ["npm", "npx"].includes(input.executable)
@@ -315,4 +348,22 @@ export async function executeWorkspaceCommand(input: {
     stderr: result.stderr
   });
   return result;
+}
+
+function assertReadOnlyGitCommand(args: string[]): void {
+  const subcommand = args.find((argument) => !argument.startsWith("-")) || "";
+  const allowed = new Set([
+    "status",
+    "diff",
+    "log",
+    "show",
+    "rev-parse",
+    "ls-files",
+    "describe"
+  ]);
+  if (!allowed.has(subcommand)) {
+    throw new Error(
+      "Agent 控制台只允许只读 Git 命令。暂存、提交、切换和回退必须由用户通过独立 Git 界面操作。"
+    );
+  }
 }

@@ -688,6 +688,70 @@ input {
   margin-top: 14px;
 }
 
+.workspace-diff-list {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.workspace-diff {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid #e4e4e7;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.workspace-diff-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border-bottom: 1px solid #e4e4e7;
+  font-size: 12px;
+}
+
+.workspace-diff-heading b {
+  color: #15803d;
+}
+
+.workspace-diff-heading i {
+  color: #dc2626;
+  font-style: normal;
+}
+
+.workspace-diff pre {
+  max-height: 420px;
+  margin: 0;
+  overflow: auto;
+  padding: 8px 0;
+  background: #fafafa;
+  font: 12px/1.55 "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+}
+
+.workspace-diff code {
+  display: block;
+  min-width: max-content;
+  padding: 0 10px;
+  white-space: pre;
+}
+
+.workspace-diff .diff-added {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.workspace-diff .diff-removed {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.workspace-diff .diff-hunk {
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
 .generated-file-card {
   display: grid;
   grid-template-columns: 44px minmax(0, 1fr) 32px;
@@ -1053,6 +1117,195 @@ input {
   box-shadow: var(--shadow);
   padding: 14px 14px 12px;
   pointer-events: auto;
+}
+
+.work-progress-dock {
+  position: relative;
+  width: min(620px, calc(100% - 40px));
+  margin: 0 auto 10px;
+  pointer-events: auto;
+}
+
+.work-progress-chip {
+  display: flex;
+  width: fit-content;
+  max-width: 100%;
+  margin: 0 auto;
+  overflow: hidden;
+  border: 1px solid #e1e4e8;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 8px 24px rgba(20, 24, 32, 0.12);
+  backdrop-filter: blur(14px);
+}
+
+.work-progress-chip button {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  padding: 8px 11px;
+  color: #5d626b;
+  cursor: pointer;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.work-progress-chip button:hover:not(:disabled) {
+  background: #f5f6f7;
+  color: #17191d;
+}
+
+.work-progress-chip button:disabled {
+  cursor: default;
+  opacity: 0.65;
+}
+
+.work-progress-chip small {
+  color: #15966f;
+  font-size: 11px;
+}
+
+.work-progress-divider {
+  width: 1px;
+  margin: 7px 0;
+  background: #e8eaed;
+}
+
+.work-progress-spinner {
+  width: 11px;
+  height: 11px;
+  flex: none;
+  border: 2px solid #cfd4da;
+  border-top-color: #16a47d;
+  border-radius: 50%;
+  animation: work-progress-spin 0.9s linear infinite;
+}
+
+.work-progress-popover {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 9px);
+  left: 0;
+  overflow: hidden;
+  border: 1px solid #e1e4e8;
+  border-radius: 17px;
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 16px 44px rgba(20, 24, 32, 0.16);
+  backdrop-filter: blur(18px);
+}
+
+.work-progress-popover header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 14px;
+  border-bottom: 1px solid #eceef0;
+}
+
+.work-progress-popover header button {
+  width: 25px;
+  height: 25px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: #777d86;
+  cursor: pointer;
+  font-size: 17px;
+}
+
+.work-progress-popover header button:hover {
+  background: #f1f3f5;
+}
+
+.work-progress-steps {
+  max-height: 300px;
+  margin: 0;
+  overflow-y: auto;
+  padding: 5px 14px 10px;
+  list-style: none;
+}
+
+.work-progress-steps li {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) 20px;
+  align-items: center;
+  gap: 8px;
+  min-height: 39px;
+  border-bottom: 1px solid #f0f1f2;
+  color: #626872;
+  font-size: 12px;
+}
+
+.work-progress-steps li:last-child {
+  border-bottom: 0;
+}
+
+.work-progress-steps li.status-in_progress {
+  color: #17191d;
+}
+
+.work-progress-steps li.status-completed > span {
+  color: #0b9470;
+}
+
+.work-progress-steps li small {
+  color: #a0a5ad;
+  text-align: right;
+}
+
+.work-progress-files {
+  max-height: 300px;
+  overflow-y: auto;
+  padding: 5px 0;
+}
+
+.work-progress-files > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 9px 14px;
+  font-size: 12px;
+}
+
+.work-progress-files > div:hover {
+  background: #f7f8f9;
+}
+
+.work-progress-files > div > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.work-progress-files small {
+  flex: none;
+}
+
+.work-progress-files b {
+  color: #15966f;
+}
+
+.work-progress-files i {
+  color: #d34242;
+  font-style: normal;
+}
+
+.work-progress-empty {
+  margin: 0;
+  padding: 22px 14px;
+  color: #777d86;
+  font-size: 13px;
+  text-align: center;
+}
+
+@keyframes work-progress-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .work-activity-card {
