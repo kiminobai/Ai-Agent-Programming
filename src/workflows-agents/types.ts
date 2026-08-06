@@ -39,4 +39,24 @@ export interface RoleSubAgentDefinition {
   toolPolicy?: {
     allowedTools: string[];
   };
+  /**
+   * 子代理可接收的 Skill 白名单。
+   *
+   * Skill 还必须已由主管在当前轮激活；白名单本身不会自动加载 Skill，
+   * 也不会扩大该子代理的 Tool 权限。
+   */
+  skillPolicy?: {
+    allowedSkills: string[];
+  };
+  /**
+   * 执行型子代理批准后可使用的副作用工具。
+   * 运行层还会应用全局安全白名单和用户批准的写入路径。
+   */
+  executionPolicy?: {
+    allowedTools: Array<
+      | "write_workspace_file"
+      | "replace_workspace_text"
+      | "run_workspace_command"
+    >;
+  };
 }

@@ -9,7 +9,8 @@ import { ChatOpenAI } from "@langchain/openai";
 import {
   createAgent,
   humanInTheLoopMiddleware,
-  summarizationMiddleware
+  summarizationMiddleware,
+  type DescriptionFactory
 } from "langchain";
 import { Command } from "@langchain/langgraph";
 import { sqliteCheckpointer } from "../db/sqlite";
@@ -30,6 +31,7 @@ import {
   completeRunningTaskPlan,
   failRunningTaskPlan
 } from "./taskPlanRepository";
+import { createSkillPromptMiddleware } from "../skills/skillPromptMiddleware";
 
 // 学习点：ToolAgentMessage 是项目自己的简单消息格式。
 // 进入 LangChain 前，会再转换成 HumanMessage / AIMessage。
@@ -103,6 +105,36 @@ export class LangChainToolAgent {
       }
     });
 
+    const executionSubAgentInterrupts = Object.fromEntries(
+      (options.roleWorkflow?.subAgents ?? []).map((definition) => {
+        const description: DescriptionFactory = (toolCall) => {
+          const task =
+            typeof toolCall.args?.task === "string"
+              ? toolCall.args.task.slice(0, 300)
+              : "未提供任务摘要";
+          const paths = Array.isArray(toolCall.args?.allowedPaths)
+            ? toolCall.args.allowedPaths
+                .filter((item): item is string => typeof item === "string")
+                .slice(0, 20)
+                .join("、")
+            : "未提供";
+          return [
+            `准备委派：${definition.label}`,
+            `任务：${task}`,
+            `允许写入：${paths}`,
+            "批准后，子 Agent 可在上述范围内修改文件，并运行受控开发命令。"
+          ].join("\n");
+        };
+        return [
+          `execute_${definition.id}`,
+          {
+            allowedDecisions: ["approve", "reject"],
+            description
+          }
+        ];
+      })
+    );
+
     // 学习点：只对会修改长期数据的工具启用人工审批。
     // 天气、计算、时间和文档检索都是只读操作，仍然自动执行。
     const approvalMiddleware = humanInTheLoopMiddleware({
@@ -126,7 +158,8 @@ export class LangChainToolAgent {
         run_workspace_command: {
           allowedDecisions: ["approve", "reject"],
           description: "Agent 准备在工作区运行开发命令。"
-        }
+        },
+        ...executionSubAgentInterrupts
       },
       descriptionPrefix: "此操作需要用户确认"
     });
@@ -137,6 +170,11 @@ export class LangChainToolAgent {
       model,
       options.roleWorkflow,
       langChainTools
+    );
+    // Skill 只在本轮命中时加载操作规范，不会作为普通消息写进对话历史。
+    // 它位于审批中间件之前，但不拥有工具权限，因此不能绕过人工确认。
+    const skillPromptMiddleware = createSkillPromptMiddleware(
+      options.roleWorkflow?.roleId
     );
 
     this.agent = createAgent({
@@ -149,6 +187,7 @@ export class LangChainToolAgent {
       middleware: [
         memorySummarizer,
         dynamicMemoryPromptMiddleware,
+        skillPromptMiddleware,
         approvalMiddleware
       ]
     });
@@ -910,11 +949,17 @@ export class LangChainToolAgent {
         };
       }
     }
-    if (toolName.startsWith("consult_")) {
+    if (
+      toolName.startsWith("consult_") ||
+      toolName.startsWith("execute_")
+    ) {
       const input = candidate.data?.input as
         | { task?: unknown }
         | undefined;
-      const agentId = toolName.slice("consult_".length);
+      const executionMode = toolName.startsWith("execute_");
+      const agentId = toolName.slice(
+        executionMode ? "execute_".length : "consult_".length
+      );
       const definition = this.roleWorkflow?.subAgents.find(
         (item) => item.id === agentId
       );
@@ -922,8 +967,12 @@ export class LangChainToolAgent {
         stage: "subagent",
         message:
           candidate.event === "on_tool_end"
-            ? "专业子 Agent 已完成分析，正在整理结果…"
-            : `正在调用${definition?.label || "专业子代理"}…`,
+            ? executionMode
+              ? "执行型子 Agent 已完成工作，正在汇总修改与验证结果…"
+              : "专业子 Agent 已完成分析，正在整理结果…"
+            : executionMode
+              ? `${definition?.label || "执行型子代理"}正在修改与验证…`
+              : `正在调用${definition?.label || "专业子代理"}…`,
         subAgent: {
           agentId,
           agentLabel: definition?.label || agentId,

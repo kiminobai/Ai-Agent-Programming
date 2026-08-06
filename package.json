@@ -19,6 +19,7 @@
     "chroma": "docker compose up -d chroma",
     "docling": "docker compose up -d docling",
     "rag:verify-chunking": "tsx scripts/verifyStructuredChunker.ts",
+    "skills:verify": "tsx scripts/verifySkills.ts",
     "kb:index": "tsx scripts/indexKnowledgeBase.ts ai-agent-learning-manual",
     "start": "tsx src/server.ts",
     "dev": "tsc --watch",

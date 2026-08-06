@@ -26,10 +26,37 @@ export type SubAgentRun = {
   errorText?: string;
 };
 
+const MAX_SUB_AGENT_RUNS_PER_TURN = 3;
+
 function supervisorRunId(threadId: string, turnId: string): string {
   return createHash("sha256")
     .update(`${threadId}\u0000${turnId}\u0000supervisor`)
     .digest("hex");
+}
+
+export function assertSubAgentRunAllowed(input: {
+  threadId: string;
+  userId: string;
+  turnId: string;
+  agentId: string;
+}): void {
+  const database = getDatabaseForThread(input.threadId);
+  const rows = database.prepare(`
+    SELECT agent_id AS agentId
+    FROM subagent_runs
+    WHERE thread_id = ? AND user_id = ? AND turn_id = ? AND depth = 2
+  `).all(input.threadId, input.userId, input.turnId) as Array<{
+    agentId: string;
+  }>;
+
+  if (rows.some((row) => row.agentId === input.agentId)) {
+    throw new Error("同一轮不能重复调用同一个子代理。");
+  }
+  if (rows.length >= MAX_SUB_AGENT_RUNS_PER_TURN) {
+    throw new Error(
+      `同一轮最多调用 ${MAX_SUB_AGENT_RUNS_PER_TURN} 个子代理，请由主管汇总现有结果。`
+    );
+  }
 }
 
 export function startSubAgentRun(input: {

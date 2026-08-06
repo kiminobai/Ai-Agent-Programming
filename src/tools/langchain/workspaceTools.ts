@@ -19,10 +19,26 @@ import {
   ensureWorkspaceTurnSnapshot,
   finalizeWorkspaceTurnSnapshot
 } from "../../workspace/workspaceTurnSnapshotRepository";
+import { isWorkspaceWritePathAllowed } from "../../workspace/workspaceDelegationPolicy";
 
 function getWorkspace(runtime: ToolMemoryRuntime) {
   const context = (runtime.context ?? {}) as AgentContext;
   return getThreadWorkspace(context.threadId, context.userId);
+}
+
+function assertWritePathAllowed(
+  runtime: ToolMemoryRuntime,
+  relativePath: string
+): void {
+  const context = (runtime.context ?? {}) as AgentContext;
+  const prefixes = context.workspaceWritePathPrefixes;
+  if (!prefixes) {
+    return;
+  }
+
+  if (!isWorkspaceWritePathAllowed(relativePath, prefixes)) {
+    throw new Error(`子 Agent 未获准写入该路径：${relativePath}`);
+  }
 }
 
 async function collectFiles(
@@ -96,6 +112,7 @@ export const readWorkspaceFileTool = tool(
 
 export const writeWorkspaceFileTool = tool(
   async ({ filePath, content }, runtime: ToolMemoryRuntime) => {
+    assertWritePathAllowed(runtime, filePath);
     const durable = await executeDurableTask(
       runtime,
       "write_workspace_file",
@@ -160,6 +177,7 @@ export const writeWorkspaceFileTool = tool(
 
 export const replaceWorkspaceTextTool = tool(
   async ({ filePath, operations }, runtime: ToolMemoryRuntime) => {
+    assertWritePathAllowed(runtime, filePath);
     const durable = await executeDurableTask(
       runtime,
       "replace_workspace_text",

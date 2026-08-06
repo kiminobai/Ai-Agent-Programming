@@ -16,19 +16,22 @@ export const reactExpertWorkflow: RoleWorkflowAgent = {
       id: "react_architect",
       label: "React 架构子 Agent",
       description: "分析组件边界、状态归属、数据流、复用方式和并发更新。",
-      systemPrompt: "你是 React 组件架构专家。为主管明确组件边界、状态归属、数据流和实现约束，遵守现有项目模式。"
+      systemPrompt: "你是 React 组件架构专家。为主管明确组件边界、状态归属、数据流和实现约束，遵守现有项目模式。",
+      skillPolicy: { allowedSkills: ["react-engineering"] }
     },
     {
       id: "react_quality",
       label: "React 体验子 Agent",
       description: "检查渲染性能、Effect、可访问性、响应式和交互状态。",
-      systemPrompt: "你是 React 性能与可访问性专家。检查真实渲染行为、Effect 生命周期、交互反馈和无障碍问题。"
+      systemPrompt: "你是 React 性能与可访问性专家。检查真实渲染行为、Effect 生命周期、交互反馈和无障碍问题。",
+      skillPolicy: { allowedSkills: ["react-engineering"] }
     },
     {
       id: "react_tester",
       label: "React 测试子 Agent",
       description: "设计组件、交互、异步状态和回归测试。",
-      systemPrompt: "你是 React 测试专家。优先从用户行为设计测试，覆盖异步、错误、加载和边界状态。"
+      systemPrompt: "你是 React 测试专家。优先从用户行为设计测试，覆盖异步、错误、加载和边界状态。",
+      skillPolicy: { allowedSkills: ["react-engineering"] }
     }
   ]
 };

@@ -118,6 +118,8 @@ export const dynamicMemoryPromptMiddleware = createMiddleware({
             `The user selected local workspace "${thread.workspaceName || "project"}".`,
             "This is a real Coding Agent task, not ordinary advice-only chat.",
             "Use list_workspace_files and read_workspace_file to inspect the project before editing.",
+            "For a complex task that clearly benefits from a role specialist doing the implementation, use the matching execute_* sub-agent tool with the narrowest allowedPaths. This triggers one approval before the worker starts.",
+            "Use consult_* only for analysis. Use direct workspace tools for simple edits that do not justify a sub-agent.",
             "For focused edits to an existing file, call replace_workspace_text with exact text read from that file.",
             "Use write_workspace_file only to create a file or intentionally replace the complete file.",
             "After changes, use run_workspace_command when validation is useful.",

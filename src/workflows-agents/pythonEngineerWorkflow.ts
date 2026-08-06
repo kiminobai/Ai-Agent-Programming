@@ -16,19 +16,22 @@ export const pythonEngineerWorkflow: RoleWorkflowAgent = {
       id: "python_architect",
       label: "Python 架构子 Agent",
       description: "分析模块边界、数据流、接口设计、依赖选择和性能权衡。",
-      systemPrompt: "你是 Python 架构专家。只输出给主管的技术建议，聚焦架构、接口、依赖、性能与风险，不向用户寒暄。"
+      systemPrompt: "你是 Python 架构专家。只输出给主管的技术建议，聚焦架构、接口、依赖、性能与风险，不向用户寒暄。",
+      skillPolicy: { allowedSkills: ["python-engineering"] }
     },
     {
       id: "python_implementer",
       label: "Python 实现子 Agent",
       description: "设计可运行的 Python 实现，检查类型、异常、边界条件和可维护性。",
-      systemPrompt: "你是 Python 实现专家。给主管提供具体、可执行的实现方案，检查类型标注、异常处理、边界条件与代码可维护性。"
+      systemPrompt: "你是 Python 实现专家。给主管提供具体、可执行的实现方案，检查类型标注、异常处理、边界条件与代码可维护性。",
+      skillPolicy: { allowedSkills: ["python-engineering"] }
     },
     {
       id: "python_test_engineer",
       label: "Python 测试子 Agent",
       description: "设计测试、复现缺陷，并检查回归、并发、I/O 和失败路径。",
-      systemPrompt: "你是 Python 测试与可靠性专家。识别失败路径和回归风险，给出最小但有效的测试与验证建议。"
+      systemPrompt: "你是 Python 测试与可靠性专家。识别失败路径和回归风险，给出最小但有效的测试与验证建议。",
+      skillPolicy: { allowedSkills: ["python-engineering"] }
     }
   ]
 };

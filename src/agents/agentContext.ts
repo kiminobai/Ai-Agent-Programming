@@ -10,7 +10,9 @@ export const AgentContextSchema = z.object({
   userId: z.string().min(1),
   threadId: z.string().min(1),
   // 每次用户提交使用独立 turnId，把工具操作绑定到对应回复。
-  turnId: z.string().optional()
+  turnId: z.string().optional(),
+  // 执行型子 Agent 的写入能力范围。主管 Agent 不设置此字段。
+  workspaceWritePathPrefixes: z.array(z.string().min(1)).max(20).optional()
 });
 
 export type AgentContext = z.infer<typeof AgentContextSchema>;
