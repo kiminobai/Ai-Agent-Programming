@@ -32,6 +32,11 @@ import {
   failRunningTaskPlan
 } from "./taskPlanRepository";
 import { createSkillPromptMiddleware } from "../skills/skillPromptMiddleware";
+import {
+  getMcpApprovalInterrupts,
+  getMcpTools,
+  type McpToolMode
+} from "../mcp/mcpManager";
 
 // 学习点：ToolAgentMessage 是项目自己的简单消息格式。
 // 进入 LangChain 前，会再转换成 HumanMessage / AIMessage。
@@ -59,6 +64,7 @@ export interface LangChainToolAgentOptions {
   systemPrompt: string;
   roleWorkflow?: RoleWorkflowAgent;
   reasoningEffort?: ReasoningEffort;
+  mode: McpToolMode;
   // Chat 与 Work 使用不同 SQLite，因此各自使用对应的 LangGraph checkpointer。
   checkpointer?: typeof sqliteCheckpointer;
 }
@@ -134,6 +140,9 @@ export class LangChainToolAgent {
         ];
       })
     );
+    // MCP Tool 在服务启动时完成发现；Agent 只获得当前 Chat/Work 模式允许的工具。
+    const mcpTools = getMcpTools(options.mode);
+    const mcpApprovalInterrupts = getMcpApprovalInterrupts(options.mode);
 
     // 学习点：只对会修改长期数据的工具启用人工审批。
     // 天气、计算、时间和文档检索都是只读操作，仍然自动执行。
@@ -159,6 +168,7 @@ export class LangChainToolAgent {
           allowedDecisions: ["approve", "reject"],
           description: "Agent 准备在工作区运行开发命令。"
         },
+        ...mcpApprovalInterrupts,
         ...executionSubAgentInterrupts
       },
       descriptionPrefix: "此操作需要用户确认"
@@ -179,7 +189,7 @@ export class LangChainToolAgent {
 
     this.agent = createAgent({
       model,
-      tools: [...langChainTools, ...roleSubAgentTools],
+      tools: [...langChainTools, ...mcpTools, ...roleSubAgentTools],
       systemPrompt: options.systemPrompt,
       stateSchema: ToolMemoryState,
       contextSchema: AgentContextSchema,

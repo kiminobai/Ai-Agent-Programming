@@ -20,6 +20,7 @@ assert.deepEqual(skillNames, [
   "code-review",
   "coding",
   "document",
+  "mcp-integration",
   "product-management",
   "python-engineering",
   "rag",
@@ -42,6 +43,17 @@ const codingTask = selectAgentSkills({
   mode: "work",
   hasUploadedDocument: false
 });
+
+const mcpTask = selectAgentSkills({
+  userMessage: "给当前 Agent 接入 VS Code MCP Server，并限制写入权限",
+  roleId: "web-fullstack-engineer",
+  mode: "work",
+  hasUploadedDocument: false
+});
+assert.deepEqual(
+  mcpTask.map((skill) => skill.name),
+  ["mcp-integration", "web-fullstack-engineering"]
+);
 assert.deepEqual(
   codingTask.map((skill) => skill.name),
   ["web-fullstack-engineering", "coding"]

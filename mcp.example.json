@@ -1,0 +1,24 @@
+{
+  "servers": {
+    "local-development-tools": {
+      "enabled": false,
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "replace-with-a-trusted-mcp-server-package"],
+      "cwd": ".",
+      "allowedModes": ["work"],
+      "approval": "mutating",
+      "allowedTools": []
+    },
+    "remote-development-service": {
+      "enabled": false,
+      "transport": "http",
+      "url": "https://example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${env:MCP_REMOTE_TOKEN}"
+      },
+      "allowedModes": ["work"],
+      "approval": "always"
+    }
+  }
+}

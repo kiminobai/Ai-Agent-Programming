@@ -82,6 +82,11 @@ import {
   resolveGeneratedFileStorageKey
 } from "./files/generatedFileStore";
 import type { UploadedDocumentRecord } from "./rag/uploadedDocumentStore";
+import {
+  closeMcpConnections,
+  getMcpServerStatuses,
+  initializeMcpTools
+} from "./mcp/mcpManager";
 
 type MulterRequest = Request & {
   file?: Express.Multer.File;
@@ -109,6 +114,11 @@ const upload = multer({
     // Office files and image uploads can be larger than plain prompt documents.
     fileSize: 50 * 1024 * 1024
   }
+});
+
+app.get("/api/mcp/status", (_req, res) => {
+  // 只返回连接状态和 Tool 名称，不返回 command、headers、环境变量或令牌。
+  res.json({ servers: getMcpServerStatuses() });
 });
 
 app.get("/api/workspace/activity", (req, res) => {
@@ -1582,15 +1592,31 @@ const chatHandler: RequestHandler = async (
 
 app.post("/api/chat", maybeChatUpload, chatHandler);
 
-app.listen(appConfig.port, appConfig.host, () => {
-  console.log(`Chat Demo is running at http://${appConfig.host}:${appConfig.port}`);
-  void cleanupStalePendingUploads()
-    .then((deletedCount) => {
-      if (deletedCount > 0) {
-        console.log(`Cleaned ${deletedCount} stale pending upload file(s).`);
-      }
-    })
-    .catch((error) => {
-      console.warn("Failed to clean stale pending upload files:", error);
-    });
+async function startServer(): Promise<void> {
+  // MCP 必须先完成 Tool Discovery，再创建任何缓存 Agent。
+  await initializeMcpTools();
+  app.listen(appConfig.port, appConfig.host, () => {
+    console.log(`Chat Demo is running at http://${appConfig.host}:${appConfig.port}`);
+    void cleanupStalePendingUploads()
+      .then((deletedCount) => {
+        if (deletedCount > 0) {
+          console.log(`Cleaned ${deletedCount} stale pending upload file(s).`);
+        }
+      })
+      .catch((error) => {
+        console.warn("Failed to clean stale pending upload files:", error);
+      });
+  });
+}
+
+process.once("SIGINT", () => {
+  void closeMcpConnections().finally(() => process.exit(0));
+});
+process.once("SIGTERM", () => {
+  void closeMcpConnections().finally(() => process.exit(0));
+});
+
+void startServer().catch((error) => {
+  console.error("服务启动失败：", error);
+  process.exitCode = 1;
 });

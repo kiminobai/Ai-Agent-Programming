@@ -30,17 +30,20 @@ const ROLE_SKILL_ALLOWLIST: Record<string, Set<string>> = {
   "python-engineer": new Set([
     ...COMMON_SKILLS,
     "python-engineering",
-    "secure-code-review"
+    "secure-code-review",
+    "mcp-integration"
   ]),
   "react-expert": new Set([
     ...COMMON_SKILLS,
     "react-engineering",
-    "secure-code-review"
+    "secure-code-review",
+    "mcp-integration"
   ]),
   "web-fullstack-engineer": new Set([
     ...COMMON_SKILLS,
     "web-fullstack-engineering",
-    "secure-code-review"
+    "secure-code-review",
+    "mcp-integration"
   ]),
   "product-manager": new Set([
     ...COMMON_SKILLS,
@@ -52,7 +55,8 @@ const ROLE_SKILL_ALLOWLIST: Record<string, Set<string>> = {
   ]),
   "code-reviewer": new Set([
     ...COMMON_SKILLS,
-    "secure-code-review"
+    "secure-code-review",
+    "mcp-integration"
   ])
 };
 
@@ -75,6 +79,12 @@ type SkillRule = {
 // 角色专业技能补充 Role/Workflow，不复制角色身份和公共执行流程。
 // 高优先级留给当前附件与明确任务，避免“React 角色分析 PDF”时误选 React Skill。
 const SKILL_RULES: SkillRule[] = [
+  {
+    name: "mcp-integration",
+    keywords:
+      /\bmcp\b|model context protocol|模型上下文协议|mcp server|mcp client|stdio|streamable http|vscode.*工具|编辑器集成/i,
+    priority: 90
+  },
   {
     name: "python-engineering",
     roleIds: ["python-engineer"],

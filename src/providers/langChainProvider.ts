@@ -170,6 +170,7 @@ export class LangChainProvider implements ChatProvider {
       systemPrompt: effectiveSystemPrompt,
       roleWorkflow,
       reasoningEffort: effectiveReasoningEffort,
+      mode: storageMode,
       checkpointer: isWorkThread
         ? workSqliteCheckpointer
         : sqliteCheckpointer
