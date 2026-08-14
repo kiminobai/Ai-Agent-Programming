@@ -99,6 +99,25 @@ sqliteDb.exec(`
   CREATE INDEX IF NOT EXISTS idx_workspace_turn_snapshots_thread_turn
   ON workspace_turn_snapshots(thread_id, turn_id, created_at ASC);
 
+  -- Work 文件冲突记录。用于区分 Agent 读取后的外部改动与回退阶段的二次改动。
+  CREATE TABLE IF NOT EXISTS workspace_turn_conflicts (
+    conflict_id TEXT PRIMARY KEY,
+    thread_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    turn_id TEXT NOT NULL,
+    file_path TEXT NOT NULL,
+    conflict_type TEXT NOT NULL,
+    expected_hash TEXT,
+    actual_hash TEXT,
+    status TEXT NOT NULL DEFAULT 'unresolved',
+    message TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    resolved_at TEXT
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_workspace_turn_conflicts_thread_turn
+  ON workspace_turn_conflicts(thread_id, turn_id, status, created_at ASC);
+
   -- Durable task ledger. A stable idempotency key prevents retries or resumes
   -- from executing the same side effect or expensive sub-agent task twice.
   CREATE TABLE IF NOT EXISTS agent_task_executions (

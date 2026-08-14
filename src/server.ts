@@ -54,6 +54,8 @@ import {
 import type { ThreadMode } from "./threads/threadRepository";
 import { listWorkspaceActivity } from "./workspace/workspaceActivityRepository";
 import {
+  listWorkspaceConflicts,
+  listWorkspaceTurnConflicts,
   listWorkspaceTurnDiffs,
   rollbackWorkspaceTurn
 } from "./workspace/workspaceTurnSnapshotRepository";
@@ -137,7 +139,10 @@ app.get("/api/workspace/activity", (req, res) => {
     res.status(404).json({ error: "工作任务不存在。" });
     return;
   }
-  res.json({ activities: listWorkspaceActivity(threadId, userId) });
+  res.json({
+    activities: listWorkspaceActivity(threadId, userId),
+    conflicts: listWorkspaceConflicts(threadId, userId)
+  });
 });
 
 app.get("/api/workspace/diff", async (req, res) => {
@@ -151,7 +156,8 @@ app.get("/api/workspace/diff", async (req, res) => {
   }
   try {
     res.json({
-      diffs: await listWorkspaceTurnDiffs(threadId, userId, turnId)
+      diffs: await listWorkspaceTurnDiffs(threadId, userId, turnId),
+      conflicts: listWorkspaceTurnConflicts(threadId, userId, turnId)
     });
   } catch (error) {
     res.status(500).json({

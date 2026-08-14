@@ -16,8 +16,11 @@ import {
 import { saveWorkspaceActivity } from "../../workspace/workspaceActivityRepository";
 import { executeDurableTask } from "../../agents/durableTaskExecution";
 import {
+  assertWorkspaceVersion,
   ensureWorkspaceTurnSnapshot,
-  finalizeWorkspaceTurnSnapshot
+  finalizeWorkspaceTurnSnapshot,
+  hashWorkspaceContent,
+  resolveWorkspaceTurnConflicts
 } from "../../workspace/workspaceTurnSnapshotRepository";
 import { isWorkspaceWritePathAllowed } from "../../workspace/workspaceDelegationPolicy";
 
@@ -98,6 +101,7 @@ export const readWorkspaceFileTool = tool(
     const content = await fs.readFile(absolutePath, "utf8");
     return writeToolContext(runtime, "read_workspace_file", { filePath }, {
       filePath,
+      contentHash: hashWorkspaceContent(content),
       content
     });
   },
@@ -111,19 +115,27 @@ export const readWorkspaceFileTool = tool(
 );
 
 export const writeWorkspaceFileTool = tool(
-  async ({ filePath, content }, runtime: ToolMemoryRuntime) => {
+  async ({ filePath, content, expectedHash }, runtime: ToolMemoryRuntime) => {
     assertWritePathAllowed(runtime, filePath);
     const durable = await executeDurableTask(
       runtime,
       "write_workspace_file",
-      { filePath, content },
+      { filePath, content, expectedHash },
       async ({ idempotencyKey }) => {
         const workspace = getWorkspace(runtime);
         const absolutePath = resolveWorkspacePath(workspace.rootPath, filePath);
-        const previousContent = await fs
-          .readFile(absolutePath, "utf8")
-          .catch(() => "");
+        const previousBuffer = await fs.readFile(absolutePath).catch(() => null);
+        const previousContent = previousBuffer?.toString("utf8") ?? "";
         const context = (runtime.context ?? {}) as AgentContext;
+        assertWorkspaceVersion({
+          threadId: context.threadId,
+          userId: context.userId,
+          turnId: context.turnId,
+          filePath,
+          expectedHash,
+          current: previousBuffer ?? Buffer.alloc(0),
+          existed: Boolean(previousBuffer)
+        });
         await ensureWorkspaceTurnSnapshot({
           threadId: context.threadId,
           userId: context.userId,
@@ -138,6 +150,12 @@ export const writeWorkspaceFileTool = tool(
           turnId: context.turnId,
           filePath,
           absolutePath
+        });
+        resolveWorkspaceTurnConflicts({
+          threadId: context.threadId,
+          userId: context.userId,
+          turnId: context.turnId,
+          filePath
         });
         const previousLines = previousContent
           ? previousContent.split(/\r?\n/).length
@@ -170,23 +188,35 @@ export const writeWorkspaceFileTool = tool(
       "在当前工作区创建或完整覆盖一个文本文件。该操作会修改本机文件，必须经过用户审批。",
     schema: z.object({
       filePath: z.string().min(1).describe("工作区内相对文件路径"),
-      content: z.string().describe("要写入文件的完整内容")
+      content: z.string().describe("要写入文件的完整内容"),
+      expectedHash: z
+        .string()
+        .describe("read_workspace_file 返回的 contentHash；新文件使用 missing")
     })
   }
 );
 
 export const replaceWorkspaceTextTool = tool(
-  async ({ filePath, operations }, runtime: ToolMemoryRuntime) => {
+  async ({ filePath, operations, expectedHash }, runtime: ToolMemoryRuntime) => {
     assertWritePathAllowed(runtime, filePath);
     const durable = await executeDurableTask(
       runtime,
       "replace_workspace_text",
-      { filePath, operations },
+      { filePath, operations, expectedHash },
       async ({ idempotencyKey }) => {
         const workspace = getWorkspace(runtime);
         const absolutePath = resolveWorkspacePath(workspace.rootPath, filePath);
         const previousContent = await fs.readFile(absolutePath, "utf8");
         const context = (runtime.context ?? {}) as AgentContext;
+        assertWorkspaceVersion({
+          threadId: context.threadId,
+          userId: context.userId,
+          turnId: context.turnId,
+          filePath,
+          expectedHash,
+          current: Buffer.from(previousContent, "utf8"),
+          existed: true
+        });
         let nextContent = previousContent;
         let replacementCount = 0;
 
@@ -220,6 +250,12 @@ export const replaceWorkspaceTextTool = tool(
           turnId: context.turnId,
           filePath,
           absolutePath
+        });
+        resolveWorkspaceTurnConflicts({
+          threadId: context.threadId,
+          userId: context.userId,
+          turnId: context.turnId,
+          filePath
         });
         saveWorkspaceActivity({
           threadId: context.threadId,
@@ -260,6 +296,9 @@ export const replaceWorkspaceTextTool = tool(
       "在已读取的工作区文本/代码文件中执行精确替换。仅修改匹配内容，任一原文找不到就完全停止；修改现有文件时优先使用，且必须经过用户审批。",
     schema: z.object({
       filePath: z.string().min(1).describe("工作区内相对文件路径"),
+      expectedHash: z
+        .string()
+        .describe("最近一次 read_workspace_file 返回的 contentHash"),
       operations: z.array(
         z.object({
           find: z.string().min(1).describe("文件中必须存在的精确原文"),

@@ -21725,6 +21725,7 @@
     const [isWorkspaceLoading, setIsWorkspaceLoading] = (0, import_react.useState)(false);
     const [workspaceActivities, setWorkspaceActivities] = (0, import_react.useState)([]);
     const [workspaceDiffs, setWorkspaceDiffs] = (0, import_react.useState)({});
+    const [workspaceConflicts, setWorkspaceConflicts] = (0, import_react.useState)({});
     const [workProgressPanel, setWorkProgressPanel] = (0, import_react.useState)(null);
     const [loadingDiffTurnId, setLoadingDiffTurnId] = (0, import_react.useState)("");
     const [subAgentRuns, setSubAgentRuns] = (0, import_react.useState)([]);
@@ -21880,6 +21881,7 @@
       if (appMode !== "work" || !activeThreadId || !userId.trim()) {
         setWorkspaceActivities([]);
         setWorkspaceDiffs({});
+        setWorkspaceConflicts({});
         return;
       }
       setWorkspaceDiffs({});
@@ -22552,6 +22554,14 @@
         throw new Error(data.error || "\u8BFB\u53D6\u5DE5\u4F5C\u8BB0\u5F55\u5931\u8D25\u3002");
       }
       setWorkspaceActivities(data.activities || []);
+      const conflicts = data.conflicts || [];
+      setWorkspaceConflicts(
+        conflicts.reduce((grouped, conflict) => {
+          var _a;
+          (grouped[_a = conflict.turnId] || (grouped[_a] = [])).push(conflict);
+          return grouped;
+        }, {})
+      );
     }
     async function loadWorkspaceDiff(turnId) {
       setLoadingDiffTurnId(turnId);
@@ -22566,6 +22576,10 @@
         setWorkspaceDiffs((current) => ({
           ...current,
           [turnId]: data.diffs || []
+        }));
+        setWorkspaceConflicts((current) => ({
+          ...current,
+          [turnId]: data.conflicts || []
         }));
       } catch (diffError) {
         setError(diffError instanceof Error ? diffError.message : "\u8BFB\u53D6 Diff \u5931\u8D25\u3002");
@@ -23332,6 +23346,7 @@
           (file) => file.turnId === entry.turnId
         ) : [];
         const turnDiffs = entry.turnId ? workspaceDiffs[entry.turnId] : void 0;
+        const turnConflicts = entry.role === "assistant" && entry.turnId && isLastAssistantForTurn ? workspaceConflicts[entry.turnId] || [] : [];
         return /* @__PURE__ */ import_react.default.createElement(
           "div",
           {
@@ -23460,7 +23475,7 @@
                   "\u2193"
                 )
               ))
-            ) : null, changedFiles.length ? /* @__PURE__ */ import_react.default.createElement("section", { className: "work-activity-card work-activity-inline" }, /* @__PURE__ */ import_react.default.createElement("header", null, /* @__PURE__ */ import_react.default.createElement("strong", null, "\u5DF2\u7F16\u8F91 ", changedFiles.length, " \u4E2A\u6587\u4EF6"), /* @__PURE__ */ import_react.default.createElement("span", { className: "flex items-center gap-2" }, /* @__PURE__ */ import_react.default.createElement(
+            ) : null, changedFiles.length || turnConflicts.length ? /* @__PURE__ */ import_react.default.createElement("section", { className: "work-activity-card work-activity-inline" }, /* @__PURE__ */ import_react.default.createElement("header", null, /* @__PURE__ */ import_react.default.createElement("strong", null, changedFiles.length ? `\u5DF2\u7F16\u8F91 ${changedFiles.length} \u4E2A\u6587\u4EF6` : "\u6587\u4EF6\u4FEE\u6539\u5DF2\u505C\u6B62"), /* @__PURE__ */ import_react.default.createElement("span", { className: "flex items-center gap-2" }, changedFiles.length ? /* @__PURE__ */ import_react.default.createElement(
               "button",
               {
                 className: "rounded-lg border border-zinc-200 px-2 py-1 text-xs hover:bg-zinc-50",
@@ -23481,7 +23496,7 @@
                 type: "button"
               },
               loadingDiffTurnId === entry.turnId ? "\u8BFB\u53D6\u4E2D\u2026" : turnDiffs ? "\u6536\u8D77 Diff" : "\u67E5\u770B Diff"
-            ), /* @__PURE__ */ import_react.default.createElement(
+            ) : null, changedFiles.length ? /* @__PURE__ */ import_react.default.createElement(
               "button",
               {
                 className: "rounded-lg border border-red-200 px-2 py-1 text-xs text-red-600 hover:bg-red-50 disabled:opacity-40",
@@ -23498,7 +23513,15 @@
               turnDiffs?.every(
                 (diff) => diff.status === "rolled_back"
               ) ? "\u5DF2\u56DE\u9000" : "\u56DE\u9000\u672C\u8F6E"
-            ))), changedFiles.map((filePath) => /* @__PURE__ */ import_react.default.createElement("div", { className: "work-file-row", key: filePath }, /* @__PURE__ */ import_react.default.createElement("span", null, filePath), /* @__PURE__ */ import_react.default.createElement("span", { className: "work-file-status" }, "+", turnActivities.filter((item) => item.filePath === filePath).reduce((total, item) => total + (item.additions || 0), 0), " ", "-", turnActivities.filter((item) => item.filePath === filePath).reduce((total, item) => total + (item.deletions || 0), 0)))), turnDiffs ? /* @__PURE__ */ import_react.default.createElement("div", { className: "workspace-diff-list" }, turnDiffs.map((diff) => /* @__PURE__ */ import_react.default.createElement("section", { className: "workspace-diff", key: diff.snapshotId }, /* @__PURE__ */ import_react.default.createElement("div", { className: "workspace-diff-heading" }, /* @__PURE__ */ import_react.default.createElement("strong", null, diff.filePath), /* @__PURE__ */ import_react.default.createElement("span", null, /* @__PURE__ */ import_react.default.createElement("b", null, "+", diff.additions), " ", /* @__PURE__ */ import_react.default.createElement("i", null, "-", diff.deletions), diff.changedAfterSnapshot ? " \xB7 \u6587\u4EF6\u4E4B\u540E\u53C8\u6709\u53D8\u5316" : "")), /* @__PURE__ */ import_react.default.createElement("pre", null, diff.patch.split(/\r?\n/).map((line, index) => /* @__PURE__ */ import_react.default.createElement(
+            ) : null)), turnConflicts.map((conflict) => /* @__PURE__ */ import_react.default.createElement(
+              "div",
+              {
+                className: `mx-3 my-2 rounded-xl border px-3 py-2 text-sm ${conflict.status === "unresolved" ? "border-amber-200 bg-amber-50 text-amber-900" : "border-zinc-200 bg-zinc-50 text-zinc-500"}`,
+                key: conflict.conflictId
+              },
+              /* @__PURE__ */ import_react.default.createElement("strong", null, conflict.status === "unresolved" ? "\u68C0\u6D4B\u5230\u6587\u4EF6\u51B2\u7A81" : "\u51B2\u7A81\u5DF2\u89E3\u51B3", conflict.filePath !== "*" ? ` \xB7 ${conflict.filePath}` : ""),
+              /* @__PURE__ */ import_react.default.createElement("p", { className: "mt-1" }, conflict.message)
+            )), changedFiles.map((filePath) => /* @__PURE__ */ import_react.default.createElement("div", { className: "work-file-row", key: filePath }, /* @__PURE__ */ import_react.default.createElement("span", null, filePath), /* @__PURE__ */ import_react.default.createElement("span", { className: "work-file-status" }, "+", turnActivities.filter((item) => item.filePath === filePath).reduce((total, item) => total + (item.additions || 0), 0), " ", "-", turnActivities.filter((item) => item.filePath === filePath).reduce((total, item) => total + (item.deletions || 0), 0)))), turnDiffs ? /* @__PURE__ */ import_react.default.createElement("div", { className: "workspace-diff-list" }, turnDiffs.map((diff) => /* @__PURE__ */ import_react.default.createElement("section", { className: "workspace-diff", key: diff.snapshotId }, /* @__PURE__ */ import_react.default.createElement("div", { className: "workspace-diff-heading" }, /* @__PURE__ */ import_react.default.createElement("strong", null, diff.filePath), /* @__PURE__ */ import_react.default.createElement("span", null, /* @__PURE__ */ import_react.default.createElement("b", null, "+", diff.additions), " ", /* @__PURE__ */ import_react.default.createElement("i", null, "-", diff.deletions), diff.changedAfterSnapshot ? " \xB7 \u6587\u4EF6\u4E4B\u540E\u53C8\u6709\u53D8\u5316" : "")), /* @__PURE__ */ import_react.default.createElement("pre", null, diff.patch.split(/\r?\n/).map((line, index) => /* @__PURE__ */ import_react.default.createElement(
               "code",
               {
                 className: line.startsWith("+") && !line.startsWith("+++") ? "diff-added" : line.startsWith("-") && !line.startsWith("---") ? "diff-removed" : line.startsWith("@@") ? "diff-hunk" : "",

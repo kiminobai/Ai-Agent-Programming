@@ -222,6 +222,16 @@ type WorkspaceTurnDiff = {
   changedAfterSnapshot: boolean;
 };
 
+type WorkspaceTurnConflict = {
+  conflictId: string;
+  turnId: string;
+  filePath: string;
+  conflictType: "write_changed" | "rollback_changed" | "rollback_failed";
+  status: "unresolved" | "resolved";
+  message: string;
+  createdAt: string;
+};
+
 type SubAgentRun = {
   runId: string;
   parentRunId?: string;
@@ -624,6 +634,9 @@ function App() {
   const [workspaceDiffs, setWorkspaceDiffs] = useState<
     Record<string, WorkspaceTurnDiff[]>
   >({});
+  const [workspaceConflicts, setWorkspaceConflicts] = useState<
+    Record<string, WorkspaceTurnConflict[]>
+  >({});
   const [workProgressPanel, setWorkProgressPanel] = useState<
     "plan" | "files" | null
   >(null);
@@ -828,6 +841,7 @@ function App() {
     if (appMode !== "work" || !activeThreadId || !userId.trim()) {
       setWorkspaceActivities([]);
       setWorkspaceDiffs({});
+      setWorkspaceConflicts({});
       return;
     }
     setWorkspaceDiffs({});
@@ -1657,6 +1671,13 @@ function App() {
       throw new Error(data.error || "读取工作记录失败。");
     }
     setWorkspaceActivities((data.activities || []) as WorkspaceActivity[]);
+    const conflicts = (data.conflicts || []) as WorkspaceTurnConflict[];
+    setWorkspaceConflicts(
+      conflicts.reduce<Record<string, WorkspaceTurnConflict[]>>((grouped, conflict) => {
+        (grouped[conflict.turnId] ||= []).push(conflict);
+        return grouped;
+      }, {})
+    );
   }
 
   async function loadWorkspaceDiff(turnId: string) {
@@ -1672,6 +1693,10 @@ function App() {
       setWorkspaceDiffs((current) => ({
         ...current,
         [turnId]: (data.diffs || []) as WorkspaceTurnDiff[]
+      }));
+      setWorkspaceConflicts((current) => ({
+        ...current,
+        [turnId]: (data.conflicts || []) as WorkspaceTurnConflict[]
       }));
     } catch (diffError) {
       setError(diffError instanceof Error ? diffError.message : "读取 Diff 失败。");
@@ -2821,6 +2846,10 @@ function App() {
               const turnDiffs = entry.turnId
                 ? workspaceDiffs[entry.turnId]
                 : undefined;
+              const turnConflicts =
+                entry.role === "assistant" && entry.turnId && isLastAssistantForTurn
+                  ? workspaceConflicts[entry.turnId] || []
+                  : [];
               return (
               <div
                 key={entry.id}
@@ -3027,12 +3056,16 @@ function App() {
                             ))}
                           </section>
                         ) : null}
-                        {changedFiles.length ? (
+                        {changedFiles.length || turnConflicts.length ? (
                           <section className="work-activity-card work-activity-inline">
                             <header>
-                              <strong>已编辑 {changedFiles.length} 个文件</strong>
+                              <strong>
+                                {changedFiles.length
+                                  ? `已编辑 ${changedFiles.length} 个文件`
+                                  : "文件修改已停止"}
+                              </strong>
                               <span className="flex items-center gap-2">
-                                <button
+                                {changedFiles.length ? <button
                                   className="rounded-lg border border-zinc-200 px-2 py-1 text-xs hover:bg-zinc-50"
                                   disabled={loadingDiffTurnId === entry.turnId}
                                   onClick={() => {
@@ -3055,8 +3088,8 @@ function App() {
                                     : turnDiffs
                                       ? "收起 Diff"
                                       : "查看 Diff"}
-                                </button>
-                                <button
+                                </button> : null}
+                                {changedFiles.length ? <button
                                   className="rounded-lg border border-red-200 px-2 py-1 text-xs text-red-600 hover:bg-red-50 disabled:opacity-40"
                                   disabled={
                                     !entry.turnId ||
@@ -3076,9 +3109,25 @@ function App() {
                                   )
                                     ? "已回退"
                                     : "回退本轮"}
-                                </button>
+                                </button> : null}
                               </span>
                             </header>
+                            {turnConflicts.map((conflict) => (
+                              <div
+                                className={`mx-3 my-2 rounded-xl border px-3 py-2 text-sm ${
+                                  conflict.status === "unresolved"
+                                    ? "border-amber-200 bg-amber-50 text-amber-900"
+                                    : "border-zinc-200 bg-zinc-50 text-zinc-500"
+                                }`}
+                                key={conflict.conflictId}
+                              >
+                                <strong>
+                                  {conflict.status === "unresolved" ? "检测到文件冲突" : "冲突已解决"}
+                                  {conflict.filePath !== "*" ? ` · ${conflict.filePath}` : ""}
+                                </strong>
+                                <p className="mt-1">{conflict.message}</p>
+                              </div>
+                            ))}
                             {changedFiles.map((filePath) => (
                               <div className="work-file-row" key={filePath}>
                                 <span>{filePath}</span>
