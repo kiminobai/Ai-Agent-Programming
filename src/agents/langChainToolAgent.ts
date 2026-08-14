@@ -43,6 +43,7 @@ import {
   getMcpTools,
   type McpToolMode
 } from "../mcp/mcpManager";
+import { agentErrorHandlingMiddleware } from "./agentErrorHandlingMiddleware";
 
 // 学习点：ToolAgentMessage 是项目自己的简单消息格式。
 // 进入 LangChain 前，会再转换成 HumanMessage / AIMessage。
@@ -227,6 +228,8 @@ export class LangChainToolAgent {
       contextSchema: AgentContextSchema,
       // 学习点：每次模型调用前，动态拼接长期记忆、短期工具上下文和上传文档状态。
       middleware: [
+        // 最外层统一处理模型和工具错误，确保分类、脱敏、重试与事件格式一致。
+        agentErrorHandlingMiddleware,
         toolContextEditor,
         memorySummarizer,
         dynamicMemoryPromptMiddleware,

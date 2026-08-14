@@ -7,10 +7,18 @@ process.env.KIMIBAI_WORK_DATA_ROOT = path.join(testRoot, "work-data");
 
 async function main() {
   await fs.rm(testRoot, { recursive: true, force: true });
-  const [{ estimateTokensFromChars }, dispatcher, snapshots, workspaceTools, database] =
+  const [
+    { estimateTokensFromChars },
+    dispatcher,
+    errorHandling,
+    snapshots,
+    workspaceTools,
+    database
+  ] =
     await Promise.all([
       import("../src/agents/agentTelemetryRepository"),
       import("../src/agents/dynamicSubAgentDispatcher"),
+      import("../src/agents/agentErrorHandlingMiddleware"),
       import("../src/workspace/workspaceTurnSnapshotRepository"),
       import("../src/tools/langchain/workspaceTools"),
       import("../src/db/sqlite")
@@ -56,6 +64,23 @@ async function main() {
     /连续失败 5 次，已自动中断/
   );
   assert.equal(exhaustedAttempts, 5, "自动重试必须在总共尝试 5 次后中断");
+
+  const hiddenSecret = errorHandling.sanitizeErrorDetail(
+    "Authorization: Bearer sk-example-secret-123456789?api_key=visible-secret"
+  );
+  assert(!hiddenSecret.includes("example-secret"), "错误信息不得泄露 API Key");
+  assert.equal(
+    errorHandling.normalizeAgentError(new Error("401 Invalid Authentication")).category,
+    "authentication"
+  );
+  assert.equal(
+    errorHandling.normalizeAgentError(new Error("429 Too Many Requests")).category,
+    "rate_limit"
+  );
+  assert.equal(
+    errorHandling.normalizeAgentError(new Error("workspace file conflict")).category,
+    "conflict"
+  );
 
   const baseTask = {
     specialistId: "reviewer",
