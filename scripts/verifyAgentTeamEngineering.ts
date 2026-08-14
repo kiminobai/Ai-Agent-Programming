@@ -81,6 +81,49 @@ async function main() {
     errorHandling.normalizeAgentError(new Error("workspace file conflict")).category,
     "conflict"
   );
+  assert.equal(
+    errorHandling.normalizeAgentError(new Error("BadRequestError: HTTP 400")).category,
+    "validation"
+  );
+  assert.equal(
+    errorHandling.normalizeAgentError(new Error("NotFoundError: HTTP 404")).category,
+    "not_found"
+  );
+  assert.equal(
+    errorHandling.normalizeAgentError(new Error("UnprocessableEntityError: HTTP 422")).category,
+    "validation"
+  );
+  assert.equal(
+    errorHandling.normalizeAgentError(new Error("APIConnectionError")).category,
+    "network"
+  );
+  assert.equal(
+    errorHandling.normalizeAgentError(
+      Object.assign(new Error("429 Credit balance exhausted"), {
+        code: "credit_balance_exhausted"
+      })
+    ).category,
+    "billing"
+  );
+  assert.equal(
+    dispatcher.isRetryableSubAgentError(
+      Object.assign(new Error("429 Credit balance exhausted"), {
+        code: "credit_balance_exhausted"
+      })
+    ),
+    false,
+    "余额耗尽不能自动重试"
+  );
+  const retryAfterDelay = dispatcher.getRetryDelayMs(
+    Object.assign(new Error("429 rate limit"), {
+      headers: { "retry-after": "2" }
+    }),
+    1
+  );
+  assert(
+    retryAfterDelay >= 2_000 && retryAfterDelay < 2_150,
+    "429 应优先遵守 Retry-After Header"
+  );
 
   const baseTask = {
     specialistId: "reviewer",

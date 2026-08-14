@@ -16,6 +16,8 @@ import { recordAgentEvent } from "./agentTelemetryRepository";
 
 export type AgentErrorCategory =
   | "authentication"
+  | "permission"
+  | "billing"
   | "rate_limit"
   | "network"
   | "service"
@@ -23,6 +25,7 @@ export type AgentErrorCategory =
   | "cancelled"
   | "approval"
   | "conflict"
+  | "not_found"
   | "validation"
   | "unknown";
 
@@ -50,6 +53,19 @@ function rawErrorMessage(error: unknown): string {
   return typeof error === "string" ? error : "未知错误";
 }
 
+function structuredErrorText(error: unknown): string {
+  const record = error && typeof error === "object"
+    ? error as Record<string, unknown>
+    : {};
+  return [
+    error instanceof Error ? error.name : "",
+    rawErrorMessage(error),
+    record.status,
+    record.code,
+    record.type
+  ].join(" ");
+}
+
 /** 删除密钥、Authorization Header 和 URL 查询参数，防止错误日志泄露凭据。 */
 export function sanitizeErrorDetail(error: unknown): string {
   return rawErrorMessage(error)
@@ -61,7 +77,7 @@ export function sanitizeErrorDetail(error: unknown): string {
 
 export function normalizeAgentError(error: unknown): NormalizedAgentError {
   const safeDetail = sanitizeErrorDetail(error);
-  const value = safeDetail.toLowerCase();
+  const value = structuredErrorText(error).toLowerCase();
   const retryable = isRetryableSubAgentError(error);
 
   if (error instanceof AgentRetryExhaustedError) {
@@ -73,10 +89,26 @@ export function normalizeAgentError(error: unknown): NormalizedAgentError {
     };
   }
 
-  if (/401|403|invalid authentication|api.?key|unauthorized|forbidden/.test(value)) {
+  if (/credit[_ ]balance[_ ]exhausted|organization[_ ]spend[_ ]limit[_ ]exceeded|project[_ ]spend[_ ]limit[_ ]exceeded|organization[_ ]usage[_ ]limit[_ ]exceeded|insufficient[_ ]quota/.test(value)) {
+    return {
+      category: "billing",
+      userMessage: "模型服务的余额、消费额度或使用额度已耗尽，请调整账户额度后再试。",
+      retryable: false,
+      safeDetail
+    };
+  }
+  if (/401|authenticationerror|invalid authentication|incorrect api key|api.?key|unauthorized/.test(value)) {
     return {
       category: "authentication",
       userMessage: "模型或服务认证失败，请检查对应的 API Key 和接口地址。",
+      retryable: false,
+      safeDetail
+    };
+  }
+  if (/403|permissiondeniederror|forbidden|country.+not supported|ip not authorized/.test(value)) {
+    return {
+      category: "permission",
+      userMessage: "当前 API Key、项目、地区或网络地址没有访问该服务的权限。",
       retryable: false,
       safeDetail
     };
@@ -97,11 +129,11 @@ export function normalizeAgentError(error: unknown): NormalizedAgentError {
       safeDetail
     };
   }
-  if (/timeout|timed out|etimedout|超时/.test(value)) {
+  if (/apitimeouterror|timeout|timed out|etimedout|超时/.test(value)) {
     return {
       category: "timeout",
-      userMessage: "请求处理超时，任务已停止。",
-      retryable: false,
+      userMessage: "请求处理超时；系统会在安全范围内重试，仍失败时自动停止。",
+      retryable,
       safeDetail
     };
   }
@@ -113,7 +145,7 @@ export function normalizeAgentError(error: unknown): NormalizedAgentError {
       safeDetail
     };
   }
-  if (/conflict|冲突|changed after|发生了变化/.test(value)) {
+  if (/409|conflicterror|conflict|冲突|changed after|发生了变化/.test(value)) {
     return {
       category: "conflict",
       userMessage: "文件已被其他操作修改，请重新读取最新内容后再继续。",
@@ -121,7 +153,15 @@ export function normalizeAgentError(error: unknown): NormalizedAgentError {
       safeDetail
     };
   }
-  if (/econn|network|socket|fetch failed|dns/.test(value)) {
+  if (/404|notfounderror|not found|不存在/.test(value)) {
+    return {
+      category: "not_found",
+      userMessage: "请求的模型、文件或资源不存在，请检查名称和标识。",
+      retryable: false,
+      safeDetail
+    };
+  }
+  if (/apiconnectionerror|econn|network|socket|fetch failed|dns|ssl|certificate/.test(value)) {
     return {
       category: "network",
       userMessage: "网络连接暂时不可用，请检查网络后重试。",
@@ -137,7 +177,7 @@ export function normalizeAgentError(error: unknown): NormalizedAgentError {
       safeDetail
     };
   }
-  if (/invalid|required|必须|缺少|不支持|只能|无效/.test(value)) {
+  if (/400|422|badrequesterror|unprocessableentityerror|invalid|required|必须|缺少|不支持|只能|无效/.test(value)) {
     return {
       category: "validation",
       userMessage: safeDetail,

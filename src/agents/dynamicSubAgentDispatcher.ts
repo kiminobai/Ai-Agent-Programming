@@ -145,15 +145,49 @@ export function validateTaskGraph(tasks: DispatchTask[]): void {
 }
 
 export function isRetryableSubAgentError(error: unknown): boolean {
-  const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
+  const record = error && typeof error === "object"
+    ? error as Record<string, unknown>
+    : {};
+  const message = [
+    error instanceof Error ? error.name : "",
+    error instanceof Error ? error.message : String(error),
+    record.status,
+    record.code,
+    record.type
+  ].join(" ").toLowerCase();
   if (
-    /auth|401|403|approval|批准|拒绝|conflict|冲突|changed after|发生了变化|abort|cancel|停止|timeout|超时/.test(
+    /auth|401|403|approval|批准|拒绝|conflict|冲突|changed after|发生了变化|abort|cancel|停止|credit[_ ]balance[_ ]exhausted|spend[_ ]limit|usage[_ ]limit|insufficient[_ ]quota/.test(
       message
     )
   ) return false;
-  return /429|rate.?limit|too many requests|5\d\d|econnreset|econnrefused|etimedout|network|socket|fetch failed|temporar/.test(
+  return /429|rate.?limit|too many requests|5\d\d|apiconnectionerror|apitimeouterror|econnreset|econnrefused|etimedout|timeout|超时|network|socket|fetch failed|temporar/.test(
     message
   );
+}
+
+export function getRetryDelayMs(error: unknown, attempt: number): number {
+  const record = error && typeof error === "object"
+    ? error as Record<string, unknown>
+    : {};
+  const headers = record.headers;
+  let retryAfter: string | null | undefined;
+  if (headers && typeof headers === "object" && "get" in headers) {
+    retryAfter = (headers as { get(name: string): string | null }).get("retry-after");
+  } else if (headers && typeof headers === "object") {
+    const plainHeaders = headers as Record<string, unknown>;
+    retryAfter = String(plainHeaders["retry-after"] ?? plainHeaders["Retry-After"] ?? "") || undefined;
+  }
+
+  let retryAfterMs = 0;
+  if (retryAfter) {
+    const seconds = Number(retryAfter);
+    retryAfterMs = Number.isFinite(seconds)
+      ? Math.max(0, seconds * 1_000)
+      : Math.max(0, Date.parse(retryAfter) - Date.now());
+  }
+  const exponentialBackoff = 400 * 2 ** Math.max(0, attempt - 1);
+  // 服务端 Retry-After 优先；设置单次等待上限，避免异常 Header 永久挂起任务。
+  return Math.min(60_000, Math.max(retryAfterMs, exponentialBackoff) + Math.floor(Math.random() * 150));
 }
 
 export class AgentRetryExhaustedError extends Error {
@@ -186,7 +220,7 @@ export async function runWithControlledRetry<T>(input: {
         throw new AgentRetryExhaustedError(attempts, error);
       }
       input.onRetry?.(attempts, error);
-      const delayMs = 400 * 2 ** (attempts - 1) + Math.floor(Math.random() * 150);
+      const delayMs = getRetryDelayMs(error, attempts);
       await new Promise<void>((resolve, reject) => {
         const timer = setTimeout(resolve, delayMs);
         input.signal?.addEventListener("abort", () => {
@@ -290,7 +324,10 @@ export function createDynamicSubAgentTools(
 
         const concurrency = Math.max(1, Math.min(maxConcurrency ?? DEFAULT_CONCURRENCY, MAX_CONCURRENCY));
         const taskTimeout = Math.max(5_000, Math.min(timeoutMs ?? DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS));
-        const retryLimit = Math.max(0, Math.min(input.maxRetries ?? DEFAULT_MAX_RETRIES, MAX_RETRIES));
+        // 执行型子代理可能已调用写文件或命令工具，整轮重试会重复副作用。
+        const retryLimit = mode === "execute"
+          ? 0
+          : Math.max(0, Math.min(input.maxRetries ?? DEFAULT_MAX_RETRIES, MAX_RETRIES));
         const batchResultBudget = Math.max(
           2_000,
           Math.min(resultBudgetChars ?? DEFAULT_BATCH_RESULT_CHARS, MAX_BATCH_RESULT_CHARS)
