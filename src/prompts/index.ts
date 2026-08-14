@@ -4,21 +4,24 @@
  */
 import { codeReviewerRole } from "./codeReviewer";
 import { productManagerRole } from "./productManager";
-import { pythonEngineerRole } from "./pythonEngineer";
-import { reactExpertRole } from "./reactExpert";
+import { softwareEngineerRole } from "./softwareEngineer";
 import { technicalInterviewerRole } from "./technicalInterviewer";
-import { webFullstackEngineerRole } from "./webFullstackEngineer";
 import { PromptRole } from "../types";
 
 export const promptRoles: PromptRole[] = [
-  pythonEngineerRole,
+  softwareEngineerRole,
   productManagerRole,
   codeReviewerRole,
-  webFullstackEngineerRole,
-  reactExpertRole,
   technicalInterviewerRole
 ];
 
 export function getPromptRoleById(roleId: string): PromptRole | undefined {
-  return promptRoles.find((role) => role.id === roleId);
+  const normalizedRoleId = [
+    "python-engineer",
+    "react-expert",
+    "web-fullstack-engineer"
+  ].includes(roleId)
+    ? "software-engineer"
+    : roleId;
+  return promptRoles.find((role) => role.id === normalizedRoleId);
 }

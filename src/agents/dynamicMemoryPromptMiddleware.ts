@@ -119,6 +119,8 @@ export const dynamicMemoryPromptMiddleware = createMiddleware({
             "This is a real Coding Agent task, not ordinary advice-only chat.",
             "Use list_workspace_files and read_workspace_file to inspect the project before editing.",
             "For a complex task that clearly benefits from a role specialist doing the implementation, use the matching execute_* sub-agent tool with the narrowest allowedPaths. This triggers one approval before the worker starts.",
+            "When two or more specialist tasks are independent, prefer dispatch_dynamic_subagents for read-only work or execute_dynamic_subagents for approved workspace work. Keep dependent tasks sequential.",
+            "Dynamic batches must stay within the task, concurrency, timeout, context, and output budgets. Never delegate the same work twice, and let one failed child remain isolated from successful siblings.",
             "Use consult_* only for analysis. Use direct workspace tools for simple edits that do not justify a sub-agent.",
             "For focused edits to an existing file, call replace_workspace_text with exact text read from that file.",
             "Use write_workspace_file only to create a file or intentionally replace the complete file.",

@@ -6,25 +6,28 @@
 import { promptRoles } from "../prompts";
 import { codeReviewerWorkflow } from "./codeReviewerWorkflow";
 import { productManagerWorkflow } from "./productManagerWorkflow";
-import { pythonEngineerWorkflow } from "./pythonEngineerWorkflow";
-import { reactExpertWorkflow } from "./reactExpertWorkflow";
+import { softwareEngineerWorkflow } from "./softwareEngineerWorkflow";
 import { technicalInterviewerWorkflow } from "./technicalInterviewerWorkflow";
 import { RoleWorkflowAgent } from "./types";
-import { webFullstackEngineerWorkflow } from "./webFullstackEngineerWorkflow";
 
 export const roleWorkflowAgents: RoleWorkflowAgent[] = [
-  pythonEngineerWorkflow,
+  softwareEngineerWorkflow,
   productManagerWorkflow,
   codeReviewerWorkflow,
-  webFullstackEngineerWorkflow,
-  reactExpertWorkflow,
   technicalInterviewerWorkflow
 ];
 
 export function getRoleWorkflowAgent(
   roleId: string
 ): RoleWorkflowAgent | undefined {
-  return roleWorkflowAgents.find((workflow) => workflow.roleId === roleId);
+  const normalizedRoleId = [
+    "python-engineer",
+    "react-expert",
+    "web-fullstack-engineer"
+  ].includes(roleId)
+    ? "software-engineer"
+    : roleId;
+  return roleWorkflowAgents.find((workflow) => workflow.roleId === normalizedRoleId);
 }
 
 export function findRoleWorkflowBySystemPrompt(

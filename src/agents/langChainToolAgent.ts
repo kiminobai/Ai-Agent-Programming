@@ -161,6 +161,17 @@ export class LangChainToolAgent {
         ];
       })
     );
+    executionSubAgentInterrupts.execute_dynamic_subagents = {
+      allowedDecisions: ["approve", "reject"],
+      description: (toolCall: { args?: { tasks?: unknown } }) => {
+        const tasks = Array.isArray(toolCall.args?.tasks) ? toolCall.args.tasks : [];
+        return [
+          `Agent 准备并行执行 ${tasks.length} 个互不依赖的子任务。`,
+          "每个子任务只能修改其声明的工作区相对路径；重叠路径会被拒绝。",
+          "批准后整批开始，单项失败不会自动中断其他子任务。"
+        ].join("\n");
+      }
+    };
     // MCP Tool 在服务启动时完成发现；Agent 只获得当前 Chat/Work 模式允许的工具。
     const mcpTools = getMcpTools(options.mode, options.threadId);
     const mcpApprovalInterrupts = getMcpApprovalInterrupts(options.mode, options.threadId);
@@ -980,6 +991,16 @@ export class LangChainToolAgent {
           }
         };
       }
+    }
+    if (toolName === "dispatch_dynamic_subagents" || toolName === "execute_dynamic_subagents") {
+      const input = candidate.data?.input as { tasks?: unknown } | undefined;
+      const count = Array.isArray(input?.tasks) ? input.tasks.length : 0;
+      return {
+        stage: "subagent",
+        message: candidate.event === "on_tool_end"
+          ? `${count} 个子任务已处理，正在验证并汇总结果…`
+          : `正在异步调度 ${count} 个专业子任务…`
+      };
     }
     if (
       toolName.startsWith("consult_") ||

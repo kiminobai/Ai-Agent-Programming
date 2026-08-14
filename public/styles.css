@@ -1299,6 +1299,49 @@ input {
   flex: none;
 }
 
+/* 子代理属于主任务内部实现，只展示聚合进度，不呈现内部目录和推理细节。 */
+.subagent-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  max-width: 100%;
+  margin: 9px 0 13px;
+  padding: 7px 11px;
+  border: 1px solid #e4e7eb;
+  border-radius: 999px;
+  background: #f8f9fa;
+  color: #5c626b;
+  font-size: 12px;
+}
+
+.subagent-summary small {
+  color: #9298a1;
+}
+
+.subagent-summary-dot {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 50%;
+  background: #8a919b;
+}
+
+.subagent-summary-dot.running {
+  border: 2px solid #cfd4da;
+  border-top-color: #16a47d;
+  background: transparent;
+  animation: work-progress-spin 0.9s linear infinite;
+}
+
+.subagent-summary-dot.succeeded {
+  background: #16a47d;
+}
+
+.subagent-summary-dot.failed {
+  background: #d95c67;
+}
+
 .work-progress-files b {
   color: #15966f;
 }
@@ -1389,134 +1432,6 @@ input {
   margin-bottom: 10px;
   padding-bottom: 10px;
   border-bottom: 1px solid rgba(161, 161, 170, 0.24);
-}
-
-.subagent-tree {
-  width: 100%;
-  margin: 12px 0 14px;
-  overflow: hidden;
-  border: 1px solid #e4e4e7;
-  border-radius: 14px;
-  background: #fafafa;
-}
-
-.subagent-root {
-  display: flex;
-  width: 100%;
-  align-items: center;
-  gap: 10px;
-  padding: 12px 14px;
-  border: 0;
-  background: transparent;
-  color: #18181b;
-  text-align: left;
-  cursor: pointer;
-}
-
-.subagent-root:hover {
-  background: #f4f4f5;
-}
-
-.subagent-chevron {
-  width: 16px;
-  color: #71717a;
-  font-size: 20px;
-  line-height: 1;
-}
-
-.subagent-root-copy {
-  display: grid;
-  min-width: 0;
-  flex: 1;
-  gap: 1px;
-}
-
-.subagent-root-copy strong,
-.subagent-child-title strong {
-  overflow: hidden;
-  font-size: 13px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.subagent-root-copy small,
-.subagent-meta {
-  color: #71717a;
-  font-size: 11px;
-}
-
-.subagent-children {
-  border-top: 1px solid #e4e4e7;
-  background: #fff;
-}
-
-.subagent-child {
-  display: flex;
-  gap: 8px;
-  padding: 11px 14px 11px 20px;
-  border-bottom: 1px solid #f1f1f3;
-}
-
-.subagent-child:last-child {
-  border-bottom: 0;
-}
-
-.subagent-branch {
-  color: #a1a1aa;
-  font-family: Consolas, monospace;
-}
-
-.subagent-child-main {
-  min-width: 0;
-  flex: 1;
-}
-
-.subagent-child-title,
-.subagent-meta {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.subagent-child p {
-  margin: 3px 0 5px;
-  overflow: hidden;
-  color: #52525b;
-  font-size: 12px;
-  line-height: 1.55;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.subagent-meta {
-  justify-content: flex-start;
-  flex-wrap: wrap;
-}
-
-.subagent-status {
-  flex: 0 0 auto;
-  border-radius: 999px;
-  padding: 2px 8px;
-  background: #f4f4f5;
-  color: #52525b;
-  font-size: 11px;
-  line-height: 1.6;
-}
-
-.subagent-status.running {
-  background: #fff7ed;
-  color: #c2410c;
-}
-
-.subagent-status.succeeded {
-  background: #ecfdf5;
-  color: #047857;
-}
-
-.subagent-status.failed {
-  background: #fff1f2;
-  color: #be123c;
 }
 
 @keyframes agent-progress-pulse {

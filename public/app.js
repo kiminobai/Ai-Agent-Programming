@@ -21492,18 +21492,6 @@
       cancelled: "\u5DF2\u505C\u6B62"
     }[status];
   }
-  function formatSubAgentToolName(toolName) {
-    return {
-      calculator: "\u8BA1\u7B97\u5668",
-      current_time: "\u5F53\u524D\u65F6\u95F4",
-      get_weather: "\u5929\u6C14\u67E5\u8BE2",
-      retrieve_knowledge_base: "\u77E5\u8BC6\u5E93\u68C0\u7D22",
-      retrieve_uploaded_document_chunks: "\u4E0A\u4F20\u6587\u6863\u68C0\u7D22",
-      recall_preference: "\u8BFB\u53D6\u7528\u6237\u504F\u597D",
-      list_workspace_files: "\u67E5\u770B\u5DE5\u4F5C\u533A\u76EE\u5F55",
-      read_workspace_file: "\u8BFB\u53D6\u5DE5\u4F5C\u533A\u6587\u4EF6"
-    }[toolName] || toolName;
-  }
   async function readJsonResponse(response, apiName) {
     const text = await response.text();
     try {
@@ -21742,9 +21730,6 @@
     const [subAgentRuns, setSubAgentRuns] = (0, import_react.useState)([]);
     const [taskPlans, setTaskPlans] = (0, import_react.useState)([]);
     const [generatedFiles, setGeneratedFiles] = (0, import_react.useState)([]);
-    const [expandedSubAgentRoots, setExpandedSubAgentRoots] = (0, import_react.useState)(
-      () => /* @__PURE__ */ new Set()
-    );
     const [isLoginOpen, setIsLoginOpen] = (0, import_react.useState)(false);
     const [loginName, setLoginName] = (0, import_react.useState)("admin");
     const [loginPassword, setLoginPassword] = (0, import_react.useState)("admin123");
@@ -22626,15 +22611,6 @@
       }
       const runs = data.runs || [];
       setSubAgentRuns(runs);
-      setExpandedSubAgentRoots((current) => {
-        const next = new Set(current);
-        for (const run of runs) {
-          if (run.depth === 1 && run.status === "running") {
-            next.add(run.runId);
-          }
-        }
-        return next;
-      });
     }
     async function loadTaskPlans() {
       const response = await fetch(
@@ -23431,37 +23407,33 @@
               const children = subAgentRuns.filter(
                 (run) => run.parentRunId === rootRun.runId
               );
-              const expanded = expandedSubAgentRoots.has(rootRun.runId) || rootRun.status === "running";
+              const runningCount = children.filter(
+                (child) => child.status === "running"
+              ).length;
+              const succeededCount = children.filter(
+                (child) => child.status === "succeeded"
+              ).length;
+              const failedCount = children.filter(
+                (child) => child.status === "failed"
+              ).length;
               return /* @__PURE__ */ import_react.default.createElement(
-                "section",
+                "div",
                 {
-                  className: "subagent-tree",
+                  className: `subagent-summary ${rootRun.status}`,
                   key: rootRun.runId,
-                  "aria-label": "\u5B50\u4EE3\u7406\u4EFB\u52A1\u76EE\u5F55"
+                  role: "status",
+                  "aria-label": "\u5185\u90E8\u5E76\u884C\u4EFB\u52A1\u72B6\u6001"
                 },
                 /* @__PURE__ */ import_react.default.createElement(
-                  "button",
+                  "span",
                   {
-                    type: "button",
-                    className: "subagent-root",
-                    onClick: () => setExpandedSubAgentRoots((current) => {
-                      const next = new Set(current);
-                      if (next.has(rootRun.runId)) {
-                        next.delete(rootRun.runId);
-                      } else {
-                        next.add(rootRun.runId);
-                      }
-                      return next;
-                    }),
-                    "aria-expanded": expanded
-                  },
-                  /* @__PURE__ */ import_react.default.createElement("span", { className: "subagent-chevron" }, expanded ? "\u2304" : "\u203A"),
-                  /* @__PURE__ */ import_react.default.createElement("span", { className: "subagent-root-copy" }, /* @__PURE__ */ import_react.default.createElement("strong", null, rootRun.agentLabel), /* @__PURE__ */ import_react.default.createElement("small", null, children.length, " \u4E2A\u5B50\u4EE3\u7406\u4EFB\u52A1")),
-                  /* @__PURE__ */ import_react.default.createElement("span", { className: `subagent-status ${rootRun.status}` }, rootRun.status === "running" ? "\u8FDB\u884C\u4E2D" : rootRun.status === "succeeded" ? "\u5DF2\u5B8C\u6210" : "\u6709\u4EFB\u52A1\u5931\u8D25")
+                    className: `subagent-summary-dot ${rootRun.status}`,
+                    "aria-hidden": "true"
+                  }
                 ),
-                expanded ? /* @__PURE__ */ import_react.default.createElement("div", { className: "subagent-children" }, children.map((child) => /* @__PURE__ */ import_react.default.createElement("div", { className: "subagent-child", key: child.runId }, /* @__PURE__ */ import_react.default.createElement("span", { className: "subagent-branch", "aria-hidden": "true" }, "\u2514"), /* @__PURE__ */ import_react.default.createElement("div", { className: "subagent-child-main" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "subagent-child-title" }, /* @__PURE__ */ import_react.default.createElement("strong", null, child.agentLabel), /* @__PURE__ */ import_react.default.createElement("span", { className: `subagent-status ${child.status}` }, child.status === "running" ? "\u6B63\u5728\u5904\u7406" : child.status === "succeeded" ? child.replayed ? "\u5DF2\u590D\u7528" : "\u5DF2\u5B8C\u6210" : "\u5931\u8D25")), /* @__PURE__ */ import_react.default.createElement("p", null, child.taskSummary), /* @__PURE__ */ import_react.default.createElement("div", { className: "subagent-meta" }, /* @__PURE__ */ import_react.default.createElement("span", null, "\u5DE5\u5177\uFF1A", child.toolNames.length ? child.toolNames.map(formatSubAgentToolName).join("\u3001") : "\u65E0"), child.completedAt ? /* @__PURE__ */ import_react.default.createElement("span", null, formatElapsedTime(
-                  new Date(child.completedAt).getTime() - new Date(child.startedAt).getTime()
-                )) : null))))) : null
+                /* @__PURE__ */ import_react.default.createElement("span", null, rootRun.status === "running" ? `\u6B63\u5728\u5E76\u884C\u5904\u7406 ${children.length} \u4E2A\u5185\u90E8\u4EFB\u52A1` : `\u5185\u90E8\u4EFB\u52A1\u5DF2\u5B8C\u6210 ${succeededCount}/${children.length}`),
+                runningCount > 0 ? /* @__PURE__ */ import_react.default.createElement("small", null, runningCount, " \u9879\u8FDB\u884C\u4E2D") : null,
+                failedCount > 0 ? /* @__PURE__ */ import_react.default.createElement("small", null, failedCount, " \u9879\u672A\u5B8C\u6210") : null
               );
             }), !PENDING_STATUS_TEXTS.has(entry.content) || entry.completed !== false ? /* @__PURE__ */ import_react.default.createElement("div", { className: "markdown-body" }, renderMarkdown(entry.content)) : null, turnGeneratedFiles.length ? /* @__PURE__ */ import_react.default.createElement(
               "section",

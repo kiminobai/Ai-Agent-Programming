@@ -35,6 +35,7 @@ import {
   normalizeWorkspaceScopePath,
   workspaceScopesOverlap
 } from "../workspace/workspaceDelegationPolicy";
+import { createDynamicSubAgentTools } from "./dynamicSubAgentDispatcher";
 
 const INTERNAL_SUB_AGENT_TAG = "internal-role-sub-agent";
 const FORBIDDEN_SUB_AGENT_TOOLS = new Set([
@@ -471,7 +472,7 @@ export function createRoleSubAgentTools(
     return [];
   }
 
-  return roleWorkflow.subAgents.flatMap((definition) => [
+  const fixedTools = roleWorkflow.subAgents.flatMap((definition) => [
     createRoleSubAgentTool(
       model,
       roleWorkflow,
@@ -487,6 +488,10 @@ export function createRoleSubAgentTools(
       "execute"
     )
   ]);
+  return [
+    ...fixedTools,
+    ...createDynamicSubAgentTools(model, roleWorkflow, availableTools)
+  ];
 }
 
 export function getRoleSubAgentExecutionToolNames(

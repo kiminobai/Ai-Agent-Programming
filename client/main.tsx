@@ -190,21 +190,6 @@ function getTaskPlanStatusText(status: TaskPlan["status"]): string {
   }[status];
 }
 
-function formatSubAgentToolName(toolName: string): string {
-  return (
-    {
-      calculator: "计算器",
-      current_time: "当前时间",
-      get_weather: "天气查询",
-      retrieve_knowledge_base: "知识库检索",
-      retrieve_uploaded_document_chunks: "上传文档检索",
-      recall_preference: "读取用户偏好",
-      list_workspace_files: "查看工作区目录",
-      read_workspace_file: "读取工作区文件"
-    }[toolName] || toolName
-  );
-}
-
 type DesktopWorkspace = {
   name: string;
   path: string;
@@ -646,9 +631,6 @@ function App() {
   const [subAgentRuns, setSubAgentRuns] = useState<SubAgentRun[]>([]);
   const [taskPlans, setTaskPlans] = useState<TaskPlan[]>([]);
   const [generatedFiles, setGeneratedFiles] = useState<GeneratedFile[]>([]);
-  const [expandedSubAgentRoots, setExpandedSubAgentRoots] = useState<Set<string>>(
-    () => new Set()
-  );
   const [isLoginOpen, setIsLoginOpen] = useState(false);
   const [loginName, setLoginName] = useState("admin");
   const [loginPassword, setLoginPassword] = useState("admin123");
@@ -1739,15 +1721,6 @@ function App() {
     }
     const runs = (data.runs || []) as SubAgentRun[];
     setSubAgentRuns(runs);
-    setExpandedSubAgentRoots((current) => {
-      const next = new Set(current);
-      for (const run of runs) {
-        if (run.depth === 1 && run.status === "running") {
-          next.add(run.runId);
-        }
-      }
-      return next;
-    });
   }
 
   async function loadTaskPlans() {
@@ -2986,93 +2959,34 @@ function App() {
                           const children = subAgentRuns.filter(
                             (run) => run.parentRunId === rootRun.runId
                           );
-                          const expanded =
-                            expandedSubAgentRoots.has(rootRun.runId) ||
-                            rootRun.status === "running";
+                          const runningCount = children.filter(
+                            (child) => child.status === "running"
+                          ).length;
+                          const succeededCount = children.filter(
+                            (child) => child.status === "succeeded"
+                          ).length;
+                          const failedCount = children.filter(
+                            (child) => child.status === "failed"
+                          ).length;
                           return (
-                            <section
-                              className="subagent-tree"
+                            <div
+                              className={`subagent-summary ${rootRun.status}`}
                               key={rootRun.runId}
-                              aria-label="子代理任务目录"
+                              role="status"
+                              aria-label="内部并行任务状态"
                             >
-                              <button
-                                type="button"
-                                className="subagent-root"
-                                onClick={() =>
-                                  setExpandedSubAgentRoots((current) => {
-                                    const next = new Set(current);
-                                    if (next.has(rootRun.runId)) {
-                                      next.delete(rootRun.runId);
-                                    } else {
-                                      next.add(rootRun.runId);
-                                    }
-                                    return next;
-                                  })
-                                }
-                                aria-expanded={expanded}
-                              >
-                                <span className="subagent-chevron">
-                                  {expanded ? "⌄" : "›"}
-                                </span>
-                                <span className="subagent-root-copy">
-                                  <strong>{rootRun.agentLabel}</strong>
-                                  <small>
-                                    {children.length} 个子代理任务
-                                  </small>
-                                </span>
-                                <span className={`subagent-status ${rootRun.status}`}>
-                                  {rootRun.status === "running"
-                                    ? "进行中"
-                                    : rootRun.status === "succeeded"
-                                      ? "已完成"
-                                      : "有任务失败"}
-                                </span>
-                              </button>
-                              {expanded ? (
-                                <div className="subagent-children">
-                                  {children.map((child) => (
-                                    <div className="subagent-child" key={child.runId}>
-                                      <span className="subagent-branch" aria-hidden="true">
-                                        └
-                                      </span>
-                                      <div className="subagent-child-main">
-                                        <div className="subagent-child-title">
-                                          <strong>{child.agentLabel}</strong>
-                                          <span className={`subagent-status ${child.status}`}>
-                                            {child.status === "running"
-                                              ? "正在处理"
-                                              : child.status === "succeeded"
-                                                ? child.replayed
-                                                  ? "已复用"
-                                                  : "已完成"
-                                                : "失败"}
-                                          </span>
-                                        </div>
-                                        <p>{child.taskSummary}</p>
-                                        <div className="subagent-meta">
-                                          <span>
-                                            工具：
-                                            {child.toolNames.length
-                                              ? child.toolNames
-                                                  .map(formatSubAgentToolName)
-                                                  .join("、")
-                                              : "无"}
-                                          </span>
-                                          {child.completedAt ? (
-                                            <span>
-                                              {formatElapsedTime(
-                                                new Date(child.completedAt).getTime() -
-                                                  new Date(child.startedAt).getTime()
-                                              )}
-                                            </span>
-                                          ) : null}
-                                        </div>
-                                      </div>
-                                    </div>
-                                  ))}
-                                </div>
-                              ) : null}
-                            </section>
+                              <span
+                                className={`subagent-summary-dot ${rootRun.status}`}
+                                aria-hidden="true"
+                              />
+                              <span>
+                                {rootRun.status === "running"
+                                  ? `正在并行处理 ${children.length} 个内部任务`
+                                  : `内部任务已完成 ${succeededCount}/${children.length}`}
+                              </span>
+                              {runningCount > 0 ? <small>{runningCount} 项进行中</small> : null}
+                              {failedCount > 0 ? <small>{failedCount} 项未完成</small> : null}
+                            </div>
                           );
                         })}
                         {!PENDING_STATUS_TEXTS.has(entry.content) || entry.completed !== false ? (

@@ -20,7 +20,7 @@ export const appConfig = {
     tokenTtlSeconds: Number(process.env.AUTH_TOKEN_TTL_SECONDS || 7 * 24 * 60 * 60)
   },
   // 学习点：默认角色用于新对话初始化；前端仍然可以让用户手动切换角色。
-  defaultRoleId: process.env.DEFAULT_ROLE_ID || "python-engineer",
+  defaultRoleId: process.env.DEFAULT_ROLE_ID || "software-engineer",
   // 学习点：vectorStoreProvider 决定 RAG 向量索引写到哪里。
   // sqlite 最简单，Chroma 更接近真实向量数据库，但需要单独启动服务。
   vectorStoreProvider:

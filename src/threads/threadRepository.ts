@@ -29,6 +29,14 @@ function databaseForMode(mode: ThreadMode) {
   return mode === "work" ? workSqliteDb : sqliteDb;
 }
 
+function normalizeStoredRoleId(roleId: string): string {
+  return ["python-engineer", "react-expert", "web-fullstack-engineer"].includes(
+    roleId
+  )
+    ? "software-engineer"
+    : roleId;
+}
+
 export function databaseForThread(threadId: string) {
   return getDatabaseForThread(threadId);
 }
@@ -63,7 +71,8 @@ function mapThreadRow(
     userId: row.user_id,
     providerId: row.provider_id,
     modelId: row.model_id,
-    roleId: row.role_id,
+    // 历史开发角色统一映射到软件工程师，旧对话无需迁移或删除即可继续打开。
+    roleId: normalizeStoredRoleId(row.role_id),
     reasoningEffort: row.reasoning_effort ?? undefined,
     mode: row.mode,
     workspacePath: row.workspace_path ?? undefined,

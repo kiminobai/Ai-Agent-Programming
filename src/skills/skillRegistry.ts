@@ -29,6 +29,15 @@ const COMMON_SKILLS = new Set(["coding", "code-review", "document", "rag"]);
 // 每个角色只能加载公共 Skill、自己的专业 Skill，以及确有必要的安全补充。
 // 这项白名单是权限边界：用户文本不能靠关键词把其他角色 Skill 注入当前 Agent。
 const ROLE_SKILL_ALLOWLIST: Record<string, Set<string>> = {
+  "software-engineer": new Set([
+    ...COMMON_SKILLS,
+    "python-engineering",
+    "react-engineering",
+    "web-fullstack-engineering",
+    "secure-code-review",
+    "mcp-integration"
+  ]),
+  // 旧角色 ID 仅用于兼容历史对话，新建对话不再展示这些角色。
   "python-engineer": new Set([
     ...COMMON_SKILLS,
     "python-engineering",
@@ -90,21 +99,21 @@ const SKILL_RULES: SkillRule[] = [
   },
   {
     name: "python-engineering",
-    roleIds: ["python-engineer"],
+    roleIds: ["software-engineer", "python-engineer"],
     keywords:
       /python|pyproject|pytest|mypy|ruff|pip|venv|虚拟环境|协程|生成器|装饰器/i,
     priority: 80
   },
   {
     name: "react-engineering",
-    roleIds: ["react-expert"],
+    roleIds: ["software-engineer", "react-expert"],
     keywords:
       /react|tsx|jsx|组件|hook|effect|前端状态|渲染|可访问性|响应式/i,
     priority: 80
   },
   {
     name: "web-fullstack-engineering",
-    roleIds: ["web-fullstack-engineer"],
+    roleIds: ["software-engineer", "web-fullstack-engineer"],
     keywords:
       /全栈|前后端|接口|api|数据库|鉴权|登录|上传|下载|部署|express|electron/i,
     priority: 80
