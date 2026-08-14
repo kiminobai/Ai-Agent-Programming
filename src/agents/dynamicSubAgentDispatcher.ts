@@ -19,6 +19,13 @@ import {
   startSubAgentRun
 } from "./subAgentRunRepository";
 import {
+  appendAgentMessage,
+  createCollaborationPlan,
+  readBlackboardResults,
+  updateCollaborationTask,
+  writeBlackboardResult
+} from "./agentCollaborationRepository";
+import {
   normalizeWorkspaceScopePath,
   workspaceScopesOverlap
 } from "../workspace/workspaceDelegationPolicy";
@@ -44,10 +51,19 @@ type DispatchMode = "consult" | "execute";
 const DispatchTaskSchema = z.object({
   id: z.string().min(1).max(80),
   specialistId: z.string().min(1).describe("当前角色允许的子代理 id。"),
+  kind: z
+    .enum(["research", "implementation", "review", "test"])
+    .default("research")
+    .describe("子任务类型，用于让主管明确研究、实现、审核或测试边界。"),
   task: z.string().min(1).max(MAX_TASK_CHARS),
   context: z.string().max(MAX_CONTEXT_CHARS).optional(),
   expectedOutput: z.string().max(600).optional(),
-  allowedPaths: z.array(z.string().min(1)).max(20).optional()
+  allowedPaths: z.array(z.string().min(1)).max(20).optional(),
+  dependsOn: z
+    .array(z.string().min(1).max(80))
+    .max(MAX_TASKS)
+    .default([])
+    .describe("必须先成功完成的子任务 id；无依赖任务会受控并行执行。")
 });
 
 type DispatchTask = z.infer<typeof DispatchTaskSchema>;
@@ -56,6 +72,13 @@ type DispatchInput = {
   maxConcurrency?: number;
   timeoutMs?: number;
   resultBudgetChars?: number;
+};
+type DispatchResult = {
+  id: string;
+  specialistId: string;
+  status: "succeeded" | "failed" | "blocked" | "timed_out" | "cancelled";
+  output?: string;
+  error?: string;
 };
 
 function extractText(content: unknown): string {
@@ -82,10 +105,62 @@ function latestText(result: unknown, maxChars: number): string {
   throw new Error("子代理没有返回有效结果。");
 }
 
-function assertNoWriteConflicts(tasks: DispatchTask[]): void {
+function validateTaskGraph(tasks: DispatchTask[]): void {
+  const ids = new Set<string>();
+  for (const task of tasks) {
+    if (ids.has(task.id)) throw new Error(`子任务 id 重复：${task.id}。`);
+    ids.add(task.id);
+  }
+  for (const task of tasks) {
+    for (const dependencyId of task.dependsOn) {
+      if (dependencyId === task.id) throw new Error(`子任务 ${task.id} 不能依赖自身。`);
+      if (!ids.has(dependencyId)) {
+        throw new Error(`子任务 ${task.id} 依赖不存在的任务 ${dependencyId}。`);
+      }
+    }
+  }
+
+  // 学习点：拓扑遍历用于提前发现循环依赖，避免所有任务一直等待。
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  const byId = new Map(tasks.map((task) => [task.id, task]));
+  const visit = (taskId: string): void => {
+    if (visiting.has(taskId)) throw new Error(`子任务依赖形成循环：${taskId}。`);
+    if (visited.has(taskId)) return;
+    visiting.add(taskId);
+    for (const dependencyId of byId.get(taskId)?.dependsOn ?? []) visit(dependencyId);
+    visiting.delete(taskId);
+    visited.add(taskId);
+  };
+  for (const task of tasks) visit(task.id);
+}
+
+function transitivelyDependsOn(
+  task: DispatchTask,
+  possibleDependencyId: string,
+  byId: Map<string, DispatchTask>,
+  seen = new Set<string>()
+): boolean {
+  if (task.dependsOn.includes(possibleDependencyId)) return true;
+  for (const dependencyId of task.dependsOn) {
+    if (seen.has(dependencyId)) continue;
+    seen.add(dependencyId);
+    const dependency = byId.get(dependencyId);
+    if (dependency && transitivelyDependsOn(dependency, possibleDependencyId, byId, seen)) return true;
+  }
+  return false;
+}
+
+function assertNoParallelWriteConflicts(tasks: DispatchTask[]): void {
+  const byId = new Map(tasks.map((task) => [task.id, task]));
   for (let left = 0; left < tasks.length; left += 1) {
     const leftPaths = (tasks[left].allowedPaths ?? []).map(normalizeWorkspaceScopePath);
     for (let right = left + 1; right < tasks.length; right += 1) {
+      // 有依赖关系的任务必定串行，因此可以依次修改同一个文件。
+      if (
+        transitivelyDependsOn(tasks[left], tasks[right].id, byId) ||
+        transitivelyDependsOn(tasks[right], tasks[left].id, byId)
+      ) continue;
       const rightPaths = (tasks[right].allowedPaths ?? []).map(normalizeWorkspaceScopePath);
       if (leftPaths.some((a) => rightPaths.some((b) => workspaceScopesOverlap(a, b)))) {
         throw new Error(
@@ -137,8 +212,9 @@ export function createDynamicSubAgentTools(
           if (tasks.some((task) => !(task.allowedPaths?.length))) {
             throw new Error("每个执行型子任务都必须声明至少一个允许写入的相对路径。");
           }
-          assertNoWriteConflicts(tasks);
+          assertNoParallelWriteConflicts(tasks);
         }
+        validateTaskGraph(tasks);
         const totalContextChars = tasks.reduce(
           (total, task) => total + task.task.length + (task.context?.length ?? 0),
           0
@@ -161,11 +237,37 @@ export function createDynamicSubAgentTools(
         );
         const startedAt = Date.now();
 
-        const results = await mapWithConcurrency(tasks, concurrency, async (task) => {
+        createCollaborationPlan({
+          threadId: context.threadId,
+          turnId: context.turnId,
+          userId: context.userId,
+          mode,
+          tasks: tasks.map((task) => ({
+            id: task.id,
+            specialistId: task.specialistId,
+            task: task.task,
+            dependsOn: task.dependsOn,
+            allowedPaths: task.allowedPaths
+          }))
+        });
+
+        const executeTask = async (task: DispatchTask): Promise<DispatchResult> => {
           runtime.signal?.throwIfAborted();
           const definition = workflow.subAgents.find((item) => item.id === task.specialistId);
           if (!definition) {
-            return { id: task.id, status: "failed" as const, error: "未授权的子代理类型。" };
+            updateCollaborationTask({
+              threadId: context.threadId,
+              turnId: context.turnId!,
+              taskId: task.id,
+              status: "failed",
+              errorText: "未授权的子代理类型。"
+            });
+            return {
+              id: task.id,
+              specialistId: task.specialistId,
+              status: "failed",
+              error: "未授权的子代理类型。"
+            };
           }
           const allowedToolNames = mode === "execute"
             ? definition.executionPolicy?.allowedTools ?? [
@@ -198,6 +300,32 @@ export function createDynamicSubAgentTools(
                 : "这是只读任务，禁止写文件、运行副作用命令或写入记忆。"
             ].join("\n")
           });
+          const dependencyResults = readBlackboardResults({
+            threadId: context.threadId,
+            turnId: context.turnId!,
+            taskIds: task.dependsOn
+          });
+          appendAgentMessage({
+            threadId: context.threadId,
+            turnId: context.turnId!,
+            taskId: task.id,
+            correlationId: task.id,
+            from: "supervisor",
+            to: task.specialistId,
+            type: "request",
+            payload: {
+              kind: task.kind,
+              task: task.task,
+              dependsOn: task.dependsOn,
+              allowedPaths: task.allowedPaths ?? []
+            }
+          });
+          updateCollaborationTask({
+            threadId: context.threadId,
+            turnId: context.turnId!,
+            taskId: task.id,
+            status: "running"
+          });
           const run = startSubAgentRun({
             threadId: context.threadId,
             userId: context.userId,
@@ -219,6 +347,9 @@ export function createDynamicSubAgentTools(
                 messages: [new HumanMessage([
                   `任务：${task.task}`,
                   task.context ? `必要上下文：${task.context}` : "",
+                  dependencyResults.length
+                    ? `已确认的依赖结果（共享 Blackboard）：\n${JSON.stringify(dependencyResults)}`
+                    : "",
                   task.expectedOutput ? `期望结果：${task.expectedOutput}` : "",
                   mode === "execute" ? `允许写入：${(task.allowedPaths ?? []).join("、")}` : ""
                 ].filter(Boolean).join("\n"))]
@@ -236,6 +367,35 @@ export function createDynamicSubAgentTools(
             );
             const output = latestText(result, resultLimit);
             finishSubAgentRun(run.runId, "succeeded");
+            const sharedResult = {
+              kind: task.kind,
+              summary: output,
+              producedBy: task.specialistId
+            };
+            writeBlackboardResult({
+              threadId: context.threadId,
+              turnId: context.turnId!,
+              taskId: task.id,
+              authorAgent: task.specialistId,
+              content: sharedResult
+            });
+            appendAgentMessage({
+              threadId: context.threadId,
+              turnId: context.turnId!,
+              taskId: task.id,
+              correlationId: task.id,
+              from: task.specialistId,
+              to: "supervisor",
+              type: task.kind === "review" ? "feedback" : "result",
+              payload: sharedResult
+            });
+            updateCollaborationTask({
+              threadId: context.threadId,
+              turnId: context.turnId!,
+              taskId: task.id,
+              status: "succeeded",
+              resultSummary: output
+            });
             return { id: task.id, specialistId: task.specialistId, status: "succeeded" as const, output };
           } catch (error) {
             const cancelled = runtime.signal?.aborted;
@@ -246,6 +406,13 @@ export function createDynamicSubAgentTools(
                 ? `子任务超过 ${taskTimeout}ms。`
                 : error instanceof Error ? error.message : String(error);
             finishSubAgentRun(run.runId, "failed", { errorText: message });
+            updateCollaborationTask({
+              threadId: context.threadId,
+              turnId: context.turnId!,
+              taskId: task.id,
+              status: cancelled ? "cancelled" : timedOut ? "timed_out" : "failed",
+              errorText: message
+            });
             return {
               id: task.id,
               specialistId: task.specialistId,
@@ -256,7 +423,51 @@ export function createDynamicSubAgentTools(
             clearTimeout(timer);
             runtime.signal?.removeEventListener("abort", onAbort);
           }
-        });
+        };
+
+        // 学习点：每一波只运行依赖已成功的任务；同一波内部并行，波与波之间串行。
+        const pending = new Map(tasks.map((task) => [task.id, task]));
+        const resultById = new Map<string, Awaited<ReturnType<typeof executeTask>>>();
+        while (pending.size > 0) {
+          runtime.signal?.throwIfAborted();
+
+          for (const task of [...pending.values()]) {
+            const failedDependency = task.dependsOn.find((dependencyId) => {
+              const dependency = resultById.get(dependencyId);
+              return dependency && dependency.status !== "succeeded";
+            });
+            if (!failedDependency) continue;
+            const blocked = {
+              id: task.id,
+              specialistId: task.specialistId,
+              status: "blocked" as const,
+              error: `依赖任务 ${failedDependency} 未成功，当前任务未执行。`
+            };
+            resultById.set(task.id, blocked);
+            pending.delete(task.id);
+            updateCollaborationTask({
+              threadId: context.threadId,
+              turnId: context.turnId!,
+              taskId: task.id,
+              status: "blocked",
+              errorText: blocked.error
+            });
+          }
+
+          const ready = [...pending.values()]
+            .filter((task) => task.dependsOn.every((dependencyId) => resultById.get(dependencyId)?.status === "succeeded"))
+            .slice(0, concurrency);
+          if (ready.length === 0) {
+            if (pending.size === 0) break;
+            throw new Error("子代理依赖图无法继续调度，请检查依赖状态。 ");
+          }
+          const waveResults = await mapWithConcurrency(ready, concurrency, executeTask);
+          ready.forEach((task, index) => {
+            resultById.set(task.id, waveResults[index]);
+            pending.delete(task.id);
+          });
+        }
+        const results = tasks.map((task) => resultById.get(task.id)!);
 
         return JSON.stringify({
           mode,
@@ -272,8 +483,8 @@ export function createDynamicSubAgentTools(
       {
         name: mode === "execute" ? "execute_dynamic_subagents" : "dispatch_dynamic_subagents",
         description: mode === "execute"
-          ? "将多个互不依赖的编码或验证任务动态委派给专职子代理并受控并行执行。整批执行前需要用户审批。"
-          : "将多个互不依赖的研究、分析或审核任务动态委派给专职子代理并异步并行执行。简单任务不要使用。",
+          ? "将编码、验证或审核任务按依赖 DAG 委派给专职子代理；无依赖任务并行，有依赖任务串行。整批执行前需要用户审批。"
+          : "将研究、分析或审核任务按依赖 DAG 委派给专职子代理；通过共享 Blackboard 传递结构化结果。简单任务不要使用。",
         schema: z.object({
           tasks: z.array(DispatchTaskSchema).min(2).max(MAX_TASKS),
           maxConcurrency: z.number().int().min(1).max(MAX_CONCURRENCY).optional(),

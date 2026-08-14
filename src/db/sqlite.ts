@@ -142,6 +142,63 @@ sqliteDb.exec(`
   CREATE INDEX IF NOT EXISTS idx_subagent_runs_thread_turn
   ON subagent_runs(thread_id, turn_id, started_at ASC);
 
+  -- Agent 协作任务 DAG。与对话消息分离，保存依赖、状态、预算和结构化结果。
+  CREATE TABLE IF NOT EXISTS agent_collaboration_tasks (
+    thread_id TEXT NOT NULL,
+    turn_id TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    specialist_id TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    task_summary TEXT NOT NULL,
+    depends_on_json TEXT NOT NULL DEFAULT '[]',
+    allowed_paths_json TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL,
+    attempt INTEGER NOT NULL DEFAULT 0,
+    result_summary TEXT,
+    error_text TEXT,
+    created_at TEXT NOT NULL,
+    started_at TEXT,
+    completed_at TEXT,
+    PRIMARY KEY (thread_id, turn_id, task_id)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_agent_collaboration_tasks_turn
+  ON agent_collaboration_tasks(thread_id, turn_id, status, created_at ASC);
+
+  -- Agent 间只交换结构化消息，不共享私有 Prompt、思考过程或完整历史。
+  CREATE TABLE IF NOT EXISTS agent_collaboration_messages (
+    message_id TEXT PRIMARY KEY,
+    thread_id TEXT NOT NULL,
+    turn_id TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    correlation_id TEXT NOT NULL,
+    from_agent TEXT NOT NULL,
+    to_agent TEXT NOT NULL,
+    message_type TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_agent_collaboration_messages_turn
+  ON agent_collaboration_messages(thread_id, turn_id, created_at ASC);
+
+  -- Blackboard 保存可被依赖任务读取的确认结果和产物引用。
+  CREATE TABLE IF NOT EXISTS agent_blackboard_entries (
+    entry_id TEXT PRIMARY KEY,
+    thread_id TEXT NOT NULL,
+    turn_id TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    author_agent TEXT NOT NULL,
+    entry_type TEXT NOT NULL,
+    content_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(thread_id, turn_id, task_id, entry_type)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_agent_blackboard_turn
+  ON agent_blackboard_entries(thread_id, turn_id, created_at ASC);
+
   -- Work Agent 的结构化任务计划。计划与聊天文本分离，刷新后仍能恢复。
   CREATE TABLE IF NOT EXISTS agent_task_plans (
     thread_id TEXT NOT NULL,

@@ -243,16 +243,76 @@ execute_dynamic_subagents
 
 失败项使用 `failed`、`timed_out` 或 `cancelled`，并返回简短错误；一个 worker 失败不会丢弃其他成功结果。
 
-## 10. 失败隔离、停止与结果汇总
+## 10. Agent 间协作
+
+并行 Subagents 只解决“同时做多件事”，完整协作还要解决“后一个 Agent 如何安全使用前一个 Agent 的结果”。当前项目使用受控协作，而不是让子代理互相发送无限增长的自然语言聊天。
+
+```text
+Supervisor 创建任务 DAG
+        ↓
+无依赖任务进入同一 Wave 并行执行
+        ↓
+子代理通过 AgentMessage 返回结构化结果
+        ↓
+结果写入当前 Turn 的 Blackboard
+        ↓
+依赖任务读取已确认结果并进入下一 Wave
+        ↓
+实现 → 审核 → 测试 / 修正 → Supervisor 汇总
+```
+
+### AgentMessage
+
+AgentMessage 是 Agent 之间的结构化信封，当前支持：
+
+| 类型 | 用途 |
+| --- | --- |
+| `request` | Supervisor 向子代理分派任务、边界和依赖 |
+| `result` | 子代理返回可复用的任务结果 |
+| `feedback` | 审核子代理返回问题和修改意见 |
+| `handoff` | 为后续显式转交保留的消息类型，不代表共享完整对话 |
+
+消息包含 `threadId`、`turnId`、`taskId` 和 `correlationId`，因此可以定位来源、恢复状态和避免把不同对话的结果混在一起。消息不包含隐藏 Prompt、私有推理或完整聊天历史。
+
+### Blackboard
+
+Blackboard 是当前 Turn 内的共享结果区。上游子代理成功后写入结果摘要，下游只按 `dependsOn` 读取自己需要的条目：
+
+```json
+{
+  "kind": "implementation",
+  "summary": "已完成的实现、产物、验证和风险",
+  "producedBy": "backend_engineer"
+}
+```
+
+它不是长期记忆，也不是 Agent 共用的无限上下文。新 Turn 不会自动把全部 Blackboard 塞给模型，从而避免上下文污染和 Token 浪费。
+
+### DAG、审核与返工
+
+每个动态子任务可声明 `dependsOn` 和 `kind`。`kind` 支持 `research`、`implementation`、`review`、`test`。例如：
+
+```text
+implement-api
+    ├─ review-api（dependsOn: implement-api）
+    └─ test-api（dependsOn: implement-api）
+             ↓
+fix-api（dependsOn: review-api, test-api）
+```
+
+无依赖任务并行，有依赖任务串行。同一文件允许在依赖链中依次修改，但两个可能并行的任务仍禁止声明重叠写入范围。上游失败、超时或取消时，下游标记为 `blocked`，不会拿残缺结果继续执行。
+
+## 11. 失败隔离、停止与结果汇总
 
 - **失败隔离**：每个 worker 自己捕获错误并形成结构化结果。
 - **超时隔离**：单项超时只终止该项，不自动取消同批兄弟任务。
 - **停止传播**：用户停止主任务时取消整批未完成任务。
 - **结果截断**：每个结果按批次预算分配上限，避免一个子代理占满上下文。
-- **冲突隔离**：执行批次提前检查 `allowedPaths`，重叠时整批拒绝并行。
+- **冲突隔离**：执行批次提前检查 `allowedPaths`；并行分支重叠时拒绝，依赖链中的串行修改允许继续。
+- **依赖隔离**：失败任务只阻断依赖它的下游，不影响无关分支。
 - **最终验证**：子代理结果不能直接回复用户，主管必须去重、解决冲突并形成最终答案。
 
-## 11. 前端展示
+## 12. 前端展示
 
 Subagent 不创建独立 Thread，因此不会出现在左侧聊天、任务或项目列表中。主对话只显示聚合状态：
 
@@ -263,7 +323,7 @@ Subagent 不创建独立 Thread，因此不会出现在左侧聊天、任务或�
 
 前端不展示子代理名称、工具清单、委派 Prompt、内部讨论和原始输出。这些信息只用于后端调度、恢复和诊断。
 
-## 12. 持久化、耐久执行与隐私
+## 13. 持久化、耐久执行与隐私
 
 `subagent_runs` 表保存任务树元数据：
 
@@ -275,6 +335,14 @@ Subagent 不创建独立 Thread，因此不会出现在左侧聊天、任务或�
 
 它不保存并展示子代理的私有分析内容。刷新页面后，前端通过 `/api/subagents/runs` 恢复聚合状态，而不是恢复子代理目录。
 
+完整协作另外使用三张表：
+
+| 表 | 保存内容 |
+| --- | --- |
+| `agent_collaboration_tasks` | DAG 依赖、任务状态、重试次数和结果摘要 |
+| `agent_collaboration_messages` | `request/result/feedback/handoff` 结构化消息 |
+| `agent_blackboard_entries` | 当前 Turn 内可供依赖任务读取的确认结果 |
+
 固定 `consult_* / execute_*` 子代理调用经过 `executeDurableTask`：
 
 - 同一工具调用恢复时复用成功结果。
@@ -283,7 +351,7 @@ Subagent 不创建独立 Thread，因此不会出现在左侧聊天、任务或�
 
 动态批次目前把每个 worker 的运行元数据写入 `subagent_runs`，支持刷新后恢复聚合状态；但它不会在应用重启后自动接着执行尚未完成的远程模型请求。重启恢复和结果复用属于下一层 Durable Scheduler 能力，不能把“已记录运行状态”误认为“后台模型调用必然续跑”。
 
-## 13. Subagents 与其他概念的区别
+## 14. Subagents 与其他概念的区别
 
 | 概念 | 核心作用 |
 | --- | --- |
@@ -294,19 +362,20 @@ Subagent 不创建独立 Thread，因此不会出现在左侧聊天、任务或�
 | Dynamic Subagents | 主管在运行时决定创建哪些专职执行单元 |
 | Async Subagents | 子任务通过受控异步 worker pool 并发执行 |
 | Workflow | 用固定或条件 Edge 控制流程 |
-| Handoff | 把对话控制权交给另一个 Agent |
+| Handoff | 显式转交任务责任；当前仍由 Supervisor 持有用户对话控制权 |
 | Supervisor | 用户仍面对主管，子代理只在内部协作 |
 
-当前项目使用 Supervisor 模式，不使用 Handoff。最终用户始终与所选角色主管对话。
+当前项目使用 Supervisor + Blackboard 协作模式。内部可以记录结构化 Handoff 消息，但不会把用户对话控制权交给子代理；最终用户始终与所选角色主管对话。
 
-## 14. 当前项目文件映射
+## 15. 当前项目文件映射
 
 | 文件 | 职责 |
 | --- | --- |
 | `src/workflows-agents/types.ts` | Custom Subagent、Context 和 Tool Policy 类型 |
 | `src/workflows-agents/*.ts` | 各角色的专职子代理定义 |
 | `src/agents/roleSubAgentTools.ts` | 创建子代理、限制上下文、过滤工具、调用模型 |
-| `src/agents/dynamicSubAgentDispatcher.ts` | 动态任务、并发池、预算、超时、取消与失败隔离 |
+| `src/agents/dynamicSubAgentDispatcher.ts` | DAG 波次、动态任务、并发池、预算、超时、取消与依赖阻断 |
+| `src/agents/agentCollaborationRepository.ts` | AgentMessage、Blackboard 和协作任务状态持久化 |
 | `src/agents/subAgentRunRepository.ts` | 持久化主管与内部运行状态 |
 | `src/agents/durableTaskExecution.ts` | 固定子代理调用的幂等与成功结果复用 |
 | `src/agents/langChainToolAgent.ts` | 主管 Agent、事件过滤与进度状态 |

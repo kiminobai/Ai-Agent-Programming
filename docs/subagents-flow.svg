@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1480" viewBox="0 0 1800 1480">
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1900" viewBox="0 0 1800 1900">
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#f7f9fc"/>
@@ -24,9 +24,9 @@
     </style>
   </defs>
 
-  <rect width="1800" height="1480" fill="url(#bg)"/>
-  <text x="900" y="66" text-anchor="middle" class="title">并行 Subagents 动态调度流程</text>
-  <text x="900" y="102" text-anchor="middle" class="subtitle">Supervisor 拆解任务，按 DAG、权限与预算调度内部子代理，最终统一验证与回答</text>
+  <rect width="1800" height="1900" fill="url(#bg)"/>
+  <text x="900" y="66" text-anchor="middle" class="title">Subagents 与 Agent 间协作流程</text>
+  <text x="900" y="102" text-anchor="middle" class="subtitle">Supervisor 通过 DAG、AgentMessage 与 Blackboard 调度内部子代理，最终统一验证与回答</text>
 
   <!-- 主流程 -->
   <rect x="610" y="140" width="580" height="105" rx="22" class="card"/>
@@ -108,26 +108,57 @@
   <text x="580" y="1245" class="node-text">各子代理拥有独立 Prompt、最小上下文、Skill 与 Tool 权限</text>
   <text x="580" y="1273" class="small">单项失败 / 超时彼此隔离；用户停止时 AbortSignal 取消整批未完成任务</text>
 
-  <!-- 聚合与最终输出 -->
+  <!-- 结构化协作消息 -->
   <path d="M900 1300 L900 1340" class="edge"/>
-  <rect x="430" y="1342" width="940" height="100" rx="22" class="card"/>
-  <rect x="430" y="1342" width="10" height="100" rx="5" fill="#18a67e"/>
-  <text x="470" y="1383" class="node-title">结构化回传 → Supervisor 验证、去重、冲突处理 → 最终回答</text>
-  <text x="470" y="1416" class="node-text">子代理草稿不直接展示；成功结果保留，失败项降级或由主管决定重试</text>
+  <rect x="520" y="1342" width="760" height="112" rx="22" class="card"/>
+  <rect x="520" y="1342" width="10" height="112" rx="5" fill="#3478e5"/>
+  <text x="560" y="1384" class="node-title">AgentMessage：结构化回传</text>
+  <text x="560" y="1417" class="node-text">request / result / feedback / handoff，携带 Thread、Turn、Task 与关联 ID</text>
+  <text x="560" y="1444" class="small">只传任务结果和产物引用，不传私有推理、隐藏 Prompt 或完整对话</text>
+
+  <path d="M900 1454 L900 1492" class="edge"/>
+  <rect x="520" y="1494" width="760" height="112" rx="22" class="card"/>
+  <rect x="520" y="1494" width="10" height="112" rx="5" fill="#7a5bd6"/>
+  <text x="560" y="1536" class="node-title">Blackboard：写入当前 Turn 的确认结果</text>
+  <text x="560" y="1569" class="node-text">下游只读取 dependsOn 指定的上游摘要、产物与验证状态</text>
+  <text x="560" y="1596" class="small">不是长期记忆，也不会把全部子代理上下文复制给每个任务</text>
+
+  <!-- 失败分支与下一波 -->
+  <path d="M520 1550 L388 1550" class="edge-dashed"/>
+  <rect x="80" y="1494" width="305" height="112" rx="20" class="card"/>
+  <rect x="80" y="1494" width="9" height="112" rx="5" fill="#e15759"/>
+  <text x="115" y="1534" class="node-title">上游未成功</text>
+  <text x="115" y="1567" class="node-text">相关下游标记 blocked</text>
+  <text x="115" y="1595" class="small">无关分支继续，不使用残缺结果</text>
+
+  <path d="M900 1606 L900 1644" class="edge"/>
+  <rect x="520" y="1646" width="760" height="112" rx="22" class="card"/>
+  <rect x="520" y="1646" width="10" height="112" rx="5" fill="#f29a2e"/>
+  <text x="560" y="1688" class="node-title">唤醒下一 Wave：实现 → 审核 / 测试 → 修正</text>
+  <text x="560" y="1721" class="node-text">依赖全部成功才运行；同一文件可在依赖链中安全串行修改</text>
+  <text x="560" y="1748" class="small">若仍有待办任务则回到 Worker Pool，直到 DAG 收敛</text>
+  <path d="M1280 1702 L1335 1702 L1335 1235 L1260 1235" class="edge-dashed"/>
+
+  <!-- 聚合与最终输出 -->
+  <path d="M900 1758 L900 1792" class="edge"/>
+  <rect x="430" y="1794" width="940" height="82" rx="22" class="card"/>
+  <rect x="430" y="1794" width="10" height="82" rx="5" fill="#18a67e"/>
+  <text x="470" y="1828" class="node-title">Supervisor 验证、去重、解决冲突 → 最终回答</text>
+  <text x="470" y="1858" class="node-text">子代理草稿不直接展示；主管只向用户输出经过验收的结果</text>
 
   <!-- 简单任务汇入最终 -->
-  <path d="M320 587 L320 1392 L430 1392" class="edge"/>
+  <path d="M320 587 L320 1835 L430 1835" class="edge"/>
 
-  <!-- 底部说明 -->
-  <rect x="90" y="1220" width="350" height="150" rx="20" fill="#ffffff" stroke="#d6deea" stroke-width="2"/>
-  <text x="125" y="1262" class="node-title">状态与界面</text>
-  <text x="125" y="1295" class="node-text">subagent_runs 保存运行元数据</text>
-  <text x="125" y="1325" class="node-text">子代理不创建独立 Thread</text>
-  <text x="125" y="1355" class="node-text">前端只显示聚合进度</text>
+  <!-- 两侧说明 -->
+  <rect x="80" y="1646" width="305" height="138" rx="20" fill="#ffffff" stroke="#d6deea" stroke-width="2"/>
+  <text x="115" y="1687" class="node-title">持久化状态</text>
+  <text x="115" y="1720" class="node-text">协作任务 / 消息 / Blackboard</text>
+  <text x="115" y="1750" class="node-text">写入 Chat 或 Work SQLite</text>
+  <text x="115" y="1777" class="small">刷新后可恢复聚合运行记录</text>
 
-  <rect x="1360" y="1220" width="350" height="150" rx="20" fill="#ffffff" stroke="#d6deea" stroke-width="2"/>
-  <text x="1395" y="1262" class="node-title">隐私与边界</text>
-  <text x="1395" y="1295" class="node-text">不展示内部 Prompt 与推理</text>
-  <text x="1395" y="1325" class="node-text">不共享完整对话与其他草稿</text>
-  <text x="1395" y="1355" class="node-text">最终输出始终由主管负责</text>
+  <rect x="1415" y="1646" width="305" height="138" rx="20" fill="#ffffff" stroke="#d6deea" stroke-width="2"/>
+  <text x="1450" y="1687" class="node-title">隐私与边界</text>
+  <text x="1450" y="1720" class="node-text">不展示内部 Prompt 与推理</text>
+  <text x="1450" y="1750" class="node-text">不共享完整对话与草稿</text>
+  <text x="1450" y="1777" class="small">最终输出始终由主管负责</text>
 </svg>
