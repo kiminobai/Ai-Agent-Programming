@@ -70,6 +70,16 @@ function toWorkspace(directoryPath) {
 }
 
 function registerWorkspaceHandlers() {
+  ipcMain.handle("extensions:select-skill", async () => {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: "选择 Skill 目录或 SKILL.md",
+      properties: ["openFile", "openDirectory"],
+      filters: [{ name: "Skill", extensions: ["md"] }],
+      buttonLabel: "安装这个 Skill"
+    });
+    return result.canceled ? null : result.filePaths[0] || null;
+  });
+
   ipcMain.handle("workspace:select", async (_event, userId) => {
     const result = await dialog.showOpenDialog(mainWindow, {
       title: "选择 Agent 工作目录",
@@ -189,7 +199,8 @@ async function ensureLocalServer() {
       ...process.env,
       // Work 数据只保存在当前电脑的系统 Documents 目录。
       // Chat 数据仍使用服务端原有 DATA 目录。
-      KIMIBAI_WORK_DATA_ROOT: getKimiBaiDocumentsRoot()
+      KIMIBAI_WORK_DATA_ROOT: getKimiBaiDocumentsRoot(),
+      KIMIBAI_EXTENSIONS_ROOT: path.join(getKimiBaiDocumentsRoot(), "extensions")
     },
     stdio: "inherit",
     windowsHide: true

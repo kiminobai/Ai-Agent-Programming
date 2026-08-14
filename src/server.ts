@@ -41,8 +41,10 @@ import {
   searchHybridDocumentIndex,
   searchVectorDocumentIndex
 } from "./rag/vectorDocumentIndex";
+import { clearVectorDocumentIndex } from "./rag/vectorDocumentIndex";
 import {
   createThread,
+  clearThreadContext,
   deleteThread,
   getThreadById,
   listThreadsByUser,
@@ -73,6 +75,7 @@ import type {
 } from "./rag/uploadFileStorage";
 import {
   DEFAULT_WORKSPACE_ROOT,
+  clearWorkThreadContextFiles,
   deleteWorkThreadStorage
 } from "./workspace/localWorkStorage";
 import {
@@ -85,8 +88,13 @@ import type { UploadedDocumentRecord } from "./rag/uploadedDocumentStore";
 import {
   closeMcpConnections,
   getMcpServerStatuses,
-  initializeMcpTools
+  initializeMcpTools,
+  installMcpServer,
+  type McpServerFileConfig
 } from "./mcp/mcpManager";
+import { installSkillFromPath } from "./skills/skillInstaller";
+import { clearSkillRegistryCache, listAgentSkills } from "./skills/skillRegistry";
+import { deleteThreadExtensions } from "./extensions/threadExtensionStorage";
 
 type MulterRequest = Request & {
   file?: Express.Multer.File;
@@ -353,6 +361,89 @@ function extractJsonObject(value: string): string {
 }
 
 app.use(express.json());
+
+function requireExtensionUser(req: Request, res: Response): string | null {
+  const authorization = String(req.headers.authorization || "");
+  const token = authorization.startsWith("Bearer ")
+    ? authorization.slice("Bearer ".length).trim()
+    : "";
+  const payload = verifyAuthToken(token, appConfig.auth.tokenSecret);
+  if (!payload) {
+    res.status(401).json({ error: "请先登录，再安装扩展。" });
+    return null;
+  }
+  return payload.sub;
+}
+
+app.get("/api/extensions", (req, res) => {
+  const userId = requireExtensionUser(req, res);
+  if (!userId) return;
+  const threadId = String(req.query.threadId || "").trim();
+  if (!getThreadById(threadId, userId)) {
+    res.status(404).json({ error: "当前对话不存在，无法读取扩展。" });
+    return;
+  }
+  res.json({
+    skills: listAgentSkills(threadId).map(({ name, description, source }) => ({
+      name,
+      description,
+      source
+    })),
+    mcpServers: getMcpServerStatuses(threadId)
+  });
+});
+
+app.post("/api/extensions/skills/install", (req, res) => {
+  const userId = requireExtensionUser(req, res);
+  if (!userId) return;
+  try {
+    const sourcePath = String(req.body?.sourcePath || "").trim();
+    const threadId = String(req.body?.threadId || "").trim();
+    if (!getThreadById(threadId, userId)) throw new Error("当前对话不存在，无法安装 Skill。");
+    if (!sourcePath) throw new Error("没有选择 Skill 来源。");
+    res.json({ skill: installSkillFromPath(sourcePath, threadId) });
+  } catch (error) {
+    res.status(400).json({
+      error: error instanceof Error ? error.message : "Skill 安装失败。"
+    });
+  }
+});
+
+app.post("/api/extensions/mcp/install", async (req, res) => {
+  const userId = requireExtensionUser(req, res);
+  if (!userId) return;
+  try {
+    const threadId = String(req.body?.threadId || "").trim();
+    if (!getThreadById(threadId, userId)) throw new Error("当前对话不存在，无法安装 MCP Server。");
+    const name = String(req.body?.name || "").trim();
+    const transport = req.body?.transport === "stdio" ? "stdio" : "http";
+    const config: McpServerFileConfig = {
+      enabled: true,
+      transport,
+      allowedModes: req.body?.allowChat ? ["chat", "work"] : ["work"],
+      approval: ["always", "mutating", "never"].includes(req.body?.approval)
+        ? req.body.approval
+        : "always",
+      ...(transport === "stdio"
+        ? {
+            command: String(req.body?.command || "").trim(),
+            args: Array.isArray(req.body?.args)
+              ? req.body.args.map(String)
+              : []
+          }
+        : { url: String(req.body?.url || "").trim() })
+    };
+    const status = await installMcpServer(name, config, threadId);
+    for (const provider of providers.values()) {
+      if (provider instanceof LangChainProvider) provider.clearAgentCache();
+    }
+    res.json({ server: status });
+  } catch (error) {
+    res.status(400).json({
+      error: error instanceof Error ? error.message : "MCP Server 安装失败。"
+    });
+  }
+});
 app.use(express.static(path.join(__dirname, "..", "public")));
 
 app.post("/api/auth/login", (req: Request, res: Response) => {
@@ -625,6 +716,9 @@ app.delete("/api/threads/:threadId", async (req: Request, res: Response) => {
         deleteGeneratedThreadDirectory({ userId, threadId })
       ]);
     }
+    await closeMcpConnections(threadId);
+    deleteThreadExtensions(threadId);
+    clearSkillRegistryCache(threadId);
     res.json({ ok: true });
   } catch (error) {
     const message =
@@ -1611,6 +1705,38 @@ async function startServer(): Promise<void> {
 
 process.once("SIGINT", () => {
   void closeMcpConnections().finally(() => process.exit(0));
+});
+
+app.post("/api/threads/:threadId/clear-context", async (req: Request, res: Response) => {
+  const userId = String(req.query.userId || "").trim();
+  const threadId = String(req.params.threadId || "").trim();
+  if (!userId || !threadId) {
+    res.status(400).json({ error: "userId and threadId are required." });
+    return;
+  }
+
+  try {
+    const existing = getThreadById(threadId, userId);
+    if (!existing) {
+      res.status(404).json({ error: "当前对话不存在。" });
+      return;
+    }
+    clearVectorDocumentIndex(threadId);
+    if (existing.mode === "work") {
+      await clearWorkThreadContextFiles(threadId);
+    } else {
+      await deleteUploadThreadDirectory({ userId, threadId });
+    }
+    const thread = clearThreadContext(threadId, userId);
+    for (const provider of providers.values()) {
+      if (provider instanceof LangChainProvider) provider.clearAgentCache();
+    }
+    res.json({ ok: true, thread });
+  } catch (error) {
+    res.status(500).json({
+      error: error instanceof Error ? error.message : "清除上下文失败。"
+    });
+  }
 });
 process.once("SIGTERM", () => {
   void closeMcpConnections().finally(() => process.exit(0));

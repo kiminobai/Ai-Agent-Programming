@@ -8,11 +8,12 @@ import fs from "node:fs";
 import path from "node:path";
 import { MultiServerMCPClient } from "@langchain/mcp-adapters";
 import type { DynamicStructuredTool } from "@langchain/core/tools";
+import { getThreadMcpConfigPath } from "../extensions/threadExtensionStorage";
 
 export type McpToolMode = "chat" | "work";
-type McpApprovalPolicy = "always" | "mutating" | "never";
+export type McpApprovalPolicy = "always" | "mutating" | "never";
 
-type McpServerFileConfig = {
+export type McpServerFileConfig = {
   enabled?: boolean;
   transport?: "stdio" | "http" | "sse";
   command?: string;
@@ -54,11 +55,31 @@ const ENV_REFERENCE_PATTERN = /\$\{env:([A-Z0-9_]+)\}/gi;
 const MAX_MCP_SERVERS = 10;
 const MAX_MCP_TOOLS = 80;
 
-let client: MultiServerMCPClient | null = null;
-let loadedTools: DynamicStructuredTool[] = [];
-let toolPolicies = new Map<string, LoadedToolPolicy>();
-let statuses: McpServerStatus[] = [];
-let initializationPromise: Promise<void> | null = null;
+type McpRuntime = {
+  client: MultiServerMCPClient | null;
+  loadedTools: DynamicStructuredTool[];
+  toolPolicies: Map<string, LoadedToolPolicy>;
+  statuses: McpServerStatus[];
+  initializationPromise: Promise<void> | null;
+};
+
+const runtimes = new Map<string, McpRuntime>();
+
+function getRuntime(threadId = ""): McpRuntime {
+  const key = threadId || "__project__";
+  let runtime = runtimes.get(key);
+  if (!runtime) {
+    runtime = {
+      client: null,
+      loadedTools: [],
+      toolPolicies: new Map(),
+      statuses: [],
+      initializationPromise: null
+    };
+    runtimes.set(key, runtime);
+  }
+  return runtime;
+}
 
 function getConfigPath(): string {
   const configured = process.env.MCP_CONFIG_PATH?.trim();
@@ -73,6 +94,14 @@ function resolveEnvironmentReferences(value: string): string {
     }
     return resolved;
   });
+}
+
+function resolveStdioCommand(value: string): string {
+  const command = resolveEnvironmentReferences(value);
+  if (process.platform === "win32" && ["npm", "npx"].includes(command.toLowerCase())) {
+    return `${command}.cmd`;
+  }
+  return command;
 }
 
 function resolveRecordValues(
@@ -102,8 +131,7 @@ function resolveServerCwd(value: string | undefined): string | undefined {
   return target;
 }
 
-function readConfigFile(): McpConfigFile {
-  const configPath = getConfigPath();
+function readConfigAt(configPath: string): McpConfigFile {
   if (!fs.existsSync(configPath)) {
     return { servers: {} };
   }
@@ -114,6 +142,19 @@ function readConfigFile(): McpConfigFile {
     throw new Error("mcp.json 顶层必须是 JSON 对象。");
   }
   return parsed;
+}
+
+function readConfigFile(threadId = ""): McpConfigFile {
+  const projectConfig = readConfigAt(getConfigPath());
+  const threadConfig = threadId
+    ? readConfigAt(getThreadMcpConfigPath(threadId))
+    : { servers: {} };
+  return {
+    servers: {
+      ...(projectConfig.servers ?? {}),
+      ...(threadConfig.servers ?? {})
+    }
+  };
 }
 
 function validateServerConfig(
@@ -165,20 +206,21 @@ function getReadOnlyHint(tool: DynamicStructuredTool): boolean {
   return metadata?.annotations?.readOnlyHint === true;
 }
 
-export async function initializeMcpTools(): Promise<void> {
-  if (initializationPromise) {
-    return initializationPromise;
+export async function initializeMcpTools(threadId = ""): Promise<void> {
+  const runtime = getRuntime(threadId);
+  if (runtime.initializationPromise) {
+    return runtime.initializationPromise;
   }
 
-  initializationPromise = (async () => {
-    const configFile = readConfigFile();
+  runtime.initializationPromise = (async () => {
+    const configFile = readConfigFile(threadId);
     const allServers = Object.entries(configFile.servers ?? {});
     if (allServers.length > MAX_MCP_SERVERS) {
       throw new Error(`MCP Server 数量不能超过 ${MAX_MCP_SERVERS}。`);
     }
 
     const enabledServers = allServers.filter(([, config]) => config.enabled);
-    statuses = allServers.map(([name, config]) => ({
+    runtime.statuses = allServers.map(([name, config]) => ({
       name,
       enabled: config.enabled === true,
       connected: false,
@@ -196,7 +238,7 @@ export async function initializeMcpTools(): Promise<void> {
       if (transport === "stdio") {
         adapterServers[name] = {
           transport,
-          command: resolveEnvironmentReferences(config.command!),
+          command: resolveStdioCommand(config.command!),
           args: config.args!.map(resolveEnvironmentReferences),
           cwd: resolveServerCwd(config.cwd),
           env: resolveRecordValues(config.env),
@@ -214,7 +256,7 @@ export async function initializeMcpTools(): Promise<void> {
       }
     }
 
-    client = new MultiServerMCPClient({
+    runtime.client = new MultiServerMCPClient({
       mcpServers: adapterServers,
       prefixToolNameWithServerName: true,
       additionalToolNamePrefix: "mcp",
@@ -223,10 +265,10 @@ export async function initializeMcpTools(): Promise<void> {
       onConnectionError: "ignore"
     } as ConstructorParameters<typeof MultiServerMCPClient>[0]);
 
-    const tools = await client.getTools();
+    const tools = await runtime.client.getTools();
     if (tools.length > MAX_MCP_TOOLS) {
-      await client.close();
-      client = null;
+      await runtime.client.close();
+      runtime.client = null;
       throw new Error(`MCP Tool 数量不能超过 ${MAX_MCP_TOOLS}。`);
     }
 
@@ -252,7 +294,7 @@ export async function initializeMcpTools(): Promise<void> {
         });
       }
 
-      const status = statuses.find((item) => item.name === serverName);
+      const status = runtime.statuses.find((item) => item.name === serverName);
       if (status) {
         status.connected = acceptedTools.length > 0;
         status.toolNames = acceptedTools.map((tool) => tool.name);
@@ -261,32 +303,34 @@ export async function initializeMcpTools(): Promise<void> {
         }
       }
     }
-    loadedTools = nextTools;
-    toolPolicies = nextPolicies;
+    runtime.loadedTools = nextTools;
+    runtime.toolPolicies = nextPolicies;
   })().catch((error) => {
     const message =
       error instanceof Error ? error.message : "未知 MCP 初始化错误。";
-    statuses = statuses.map((status) =>
+    runtime.statuses = runtime.statuses.map((status) =>
       status.enabled && !status.connected
         ? { ...status, error: status.error ?? message }
         : status
     );
     console.warn(`MCP 初始化失败，已在不启用 MCP 的情况下继续：${message}`);
-    loadedTools = [];
-    toolPolicies = new Map();
+    runtime.loadedTools = [];
+    runtime.toolPolicies = new Map();
   });
 
-  return initializationPromise;
+  return runtime.initializationPromise;
 }
 
-export function getMcpTools(mode: McpToolMode): DynamicStructuredTool[] {
-  return loadedTools.filter((tool) =>
-    toolPolicies.get(tool.name)?.allowedModes.includes(mode)
+export function getMcpTools(mode: McpToolMode, threadId = ""): DynamicStructuredTool[] {
+  const runtime = getRuntime(threadId);
+  return runtime.loadedTools.filter((tool) =>
+    runtime.toolPolicies.get(tool.name)?.allowedModes.includes(mode)
   );
 }
 
 export function getMcpApprovalInterrupts(
-  mode: McpToolMode
+  mode: McpToolMode,
+  threadId = ""
 ): Record<
   string,
   {
@@ -295,16 +339,16 @@ export function getMcpApprovalInterrupts(
   }
 > {
   return Object.fromEntries(
-    getMcpTools(mode)
+    getMcpTools(mode, threadId)
       .filter((tool) => {
-        const policy = toolPolicies.get(tool.name)!;
+        const policy = getRuntime(threadId).toolPolicies.get(tool.name)!;
         return (
           policy.approval === "always" ||
           (policy.approval === "mutating" && !policy.readOnly)
         );
       })
       .map((tool) => {
-        const policy = toolPolicies.get(tool.name)!;
+        const policy = getRuntime(threadId).toolPolicies.get(tool.name)!;
         return [
           tool.name,
           {
@@ -316,14 +360,47 @@ export function getMcpApprovalInterrupts(
   );
 }
 
-export function getMcpServerStatuses(): McpServerStatus[] {
-  return statuses.map((status) => ({
+export function getMcpServerStatuses(threadId = ""): McpServerStatus[] {
+  return getRuntime(threadId).statuses.map((status) => ({
     ...status,
     toolNames: [...status.toolNames]
   }));
 }
 
-export async function closeMcpConnections(): Promise<void> {
-  await client?.close();
-  client = null;
+export async function closeMcpConnections(threadId?: string): Promise<void> {
+  if (threadId !== undefined) {
+    const runtime = getRuntime(threadId);
+    await runtime.client?.close();
+    runtimes.delete(threadId || "__project__");
+    return;
+  }
+  await Promise.all([...runtimes.values()].map((runtime) => runtime.client?.close()));
+  runtimes.clear();
+}
+
+export async function reloadMcpTools(threadId = ""): Promise<void> {
+  await closeMcpConnections(threadId);
+  await initializeMcpTools(threadId);
+}
+
+export async function installMcpServer(
+  name: string,
+  config: McpServerFileConfig,
+  threadId: string
+): Promise<McpServerStatus | undefined> {
+  validateServerConfig(name, config);
+  const configPath = getThreadMcpConfigPath(threadId);
+  const current = readConfigAt(configPath);
+  const next: McpConfigFile = {
+    servers: {
+      ...(current.servers ?? {}),
+      [name]: { ...config, enabled: true }
+    }
+  };
+  fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  const temporaryPath = `${configPath}.tmp`;
+  fs.writeFileSync(temporaryPath, JSON.stringify(next, null, 2), "utf8");
+  fs.renameSync(temporaryPath, configPath);
+  await reloadMcpTools(threadId);
+  return getMcpServerStatuses(threadId).find((status) => status.name === name);
 }

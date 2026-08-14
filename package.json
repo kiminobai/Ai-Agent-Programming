@@ -21,6 +21,7 @@
     "rag:verify-chunking": "tsx scripts/verifyStructuredChunker.ts",
     "skills:verify": "tsx scripts/verifySkills.ts",
     "mcp:verify": "tsx scripts/verifyMcp.ts",
+    "context:verify": "tsx scripts/verifyContextCompaction.ts",
     "kb:index": "tsx scripts/indexKnowledgeBase.ts ai-agent-learning-manual",
     "start": "tsx src/server.ts",
     "dev": "tsc --watch",

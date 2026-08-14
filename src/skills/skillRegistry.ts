@@ -6,11 +6,13 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import { getThreadSkillsRoot } from "../extensions/threadExtensionStorage";
 
 export interface AgentSkillMetadata {
   name: string;
   description: string;
   filePath: string;
+  source: "builtin" | "user";
 }
 
 export interface LoadedAgentSkill extends AgentSkillMetadata {
@@ -62,6 +64,7 @@ const ROLE_SKILL_ALLOWLIST: Record<string, Set<string>> = {
 
 type SkillSelectionContext = {
   userMessage: string;
+  threadId?: string;
   roleId?: string;
   mode: "chat" | "work";
   hasUploadedDocument: boolean;
@@ -156,20 +159,32 @@ const SKILL_RULES: SkillRule[] = [
   }
 ];
 
-let metadataCache: AgentSkillMetadata[] | null = null;
+const metadataCache = new Map<string, AgentSkillMetadata[]>();
 
-function getSkillsRoot(): string {
+function getBuiltinSkillsRoot(): string {
   return path.resolve(process.cwd(), "skills");
 }
 
-function parseSkillFile(filePath: string): LoadedAgentSkill {
+function getSkillRoots(threadId?: string): Array<{ root: string; source: "builtin" | "user" }> {
+  return [
+    { root: getBuiltinSkillsRoot(), source: "builtin" },
+    ...(threadId
+      ? [{ root: getThreadSkillsRoot(threadId), source: "user" as const }]
+      : [])
+  ];
+}
+
+export function parseSkillFile(
+  filePath: string,
+  source: "builtin" | "user" = "builtin"
+): LoadedAgentSkill {
   const stat = fs.statSync(filePath);
   if (stat.size > MAX_SKILL_FILE_BYTES) {
     throw new Error(`Skill 文件过大，已拒绝加载：${filePath}`);
   }
 
-  const source = fs.readFileSync(filePath, "utf8");
-  const match = source.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/);
+  const fileContent = fs.readFileSync(filePath, "utf8");
+  const match = fileContent.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/);
   if (!match) {
     throw new Error(`Skill 缺少有效 YAML frontmatter：${filePath}`);
   }
@@ -198,17 +213,24 @@ function parseSkillFile(filePath: string): LoadedAgentSkill {
     name,
     description,
     filePath,
+    source,
     instructions
   };
 }
 
-function isPathInsideSkillsRoot(filePath: string): boolean {
-  const root = `${fs.realpathSync(getSkillsRoot())}${path.sep}`;
+function isPathInsideRoot(filePath: string, skillsRoot: string): boolean {
+  const root = `${fs.realpathSync(skillsRoot)}${path.sep}`;
   const target = fs.realpathSync(filePath);
   return target.startsWith(root);
 }
 
-function isAllowedForRole(skillName: string, roleId?: string): boolean {
+function isAllowedForRole(skillName: string, roleId?: string, threadId?: string): boolean {
+  const installedSkill = listAgentSkills(threadId).find(
+    (skill) => skill.name === skillName && skill.source === "user"
+  );
+  if (installedSkill) {
+    return true;
+  }
   if (!roleId) {
     return COMMON_SKILLS.has(skillName);
   }
@@ -218,37 +240,39 @@ function isAllowedForRole(skillName: string, roleId?: string): boolean {
   );
 }
 
-export function listAgentSkills(): AgentSkillMetadata[] {
-  if (metadataCache) {
-    return metadataCache;
+export function listAgentSkills(threadId?: string): AgentSkillMetadata[] {
+  const cacheKey = threadId || "__builtin__";
+  const cached = metadataCache.get(cacheKey);
+  if (cached) {
+    return cached;
   }
 
-  const skillsRoot = getSkillsRoot();
-  if (!fs.existsSync(skillsRoot)) {
-    metadataCache = [];
-    return metadataCache;
+  const discovered = new Map<string, AgentSkillMetadata>();
+  for (const { root, source } of getSkillRoots(threadId)) {
+    if (!fs.existsSync(root)) continue;
+    for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+      const filePath = path.join(root, entry.name, "SKILL.md");
+      if (!fs.existsSync(filePath) || !isPathInsideRoot(filePath, root)) continue;
+      const { name, description } = parseSkillFile(filePath, source);
+      // 内置 Skill 优先，用户安装不能覆盖项目安全基线。
+      if (!discovered.has(name)) {
+        discovered.set(name, { name, description, filePath, source });
+      }
+    }
   }
-
-  metadataCache = fs
-    .readdirSync(skillsRoot, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
-    .map((entry) => path.join(skillsRoot, entry.name, "SKILL.md"))
-    .filter((filePath) => fs.existsSync(filePath))
-    .filter((filePath) => isPathInsideSkillsRoot(filePath))
-    .map((filePath) => {
-      const { name, description } = parseSkillFile(filePath);
-      return { name, description, filePath };
-    })
-    .sort((left, right) => left.name.localeCompare(right.name));
-
-  return metadataCache;
+  const result = [...discovered.values()].sort((left, right) =>
+    left.name.localeCompare(right.name)
+  );
+  metadataCache.set(cacheKey, result);
+  return result;
 }
 
 export function selectAgentSkills(
   context: SkillSelectionContext
 ): LoadedAgentSkill[] {
   const availableSkills = new Map(
-    listAgentSkills().map((skill) => [skill.name, skill])
+    listAgentSkills(context.threadId).map((skill) => [skill.name, skill])
   );
   const scores = new Map<string, number>();
 
@@ -262,7 +286,7 @@ export function selectAgentSkills(
     if (
       (roleMatched || modeMatched || attachmentMatched || keywordMatched) &&
       availableSkills.has(rule.name) &&
-      isAllowedForRole(rule.name, context.roleId)
+      isAllowedForRole(rule.name, context.roleId, context.threadId)
     ) {
       let score = rule.priority;
       if (keywordMatched) score += 10;
@@ -270,6 +294,16 @@ export function selectAgentSkills(
       if (roleMatched) score += 5;
       if (modeMatched) score += 2;
       scores.set(rule.name, Math.max(scores.get(rule.name) ?? 0, score));
+    }
+  }
+
+  // 用户安装 Skill 没有硬编码规则时，允许通过 Skill 名称显式触发。
+  for (const skill of availableSkills.values()) {
+    if (
+      skill.source === "user" &&
+      context.userMessage.toLowerCase().includes(skill.name.toLowerCase())
+    ) {
+      scores.set(skill.name, 105);
     }
   }
 
@@ -290,7 +324,18 @@ export function selectAgentSkills(
         rightScore - leftScore || leftName.localeCompare(rightName)
     )
     .slice(0, MAX_ACTIVE_SKILLS)
-    .map(([name]) => parseSkillFile(availableSkills.get(name)!.filePath));
+    .map(([name]) => {
+      const skill = availableSkills.get(name)!;
+      return parseSkillFile(skill.filePath, skill.source);
+    });
+}
+
+export function clearSkillRegistryCache(threadId?: string): void {
+  if (threadId) {
+    metadataCache.delete(threadId);
+    return;
+  }
+  metadataCache.clear();
 }
 
 export function formatSkillsForSystemPrompt(

@@ -57,6 +57,7 @@ export function createSkillPromptMiddleware(roleId?: string) {
       const thread = getThreadById(threadId, userId);
       const skills = selectAgentSkills({
         userMessage: getLatestUserText(request.state.messages),
+        threadId,
         roleId,
         mode: thread?.mode === "work" ? "work" : "chat",
         hasUploadedDocument: Boolean(getUploadedDocument(threadId))

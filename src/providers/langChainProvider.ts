@@ -26,6 +26,7 @@ import {
   sqliteCheckpointer,
   workSqliteCheckpointer
 } from "../db/sqlite";
+import { initializeMcpTools } from "../mcp/mcpManager";
 
 export class LangChainProvider implements ChatProvider {
   readonly id: ProviderId;
@@ -55,6 +56,7 @@ export class LangChainProvider implements ChatProvider {
     turnId?: string
   ): Promise<string> {
     this.requireApiKey();
+    await initializeMcpTools(threadId);
 
     // 学习点：普通非流式调用，也是交给 LangChainToolAgent 执行。
     const agent = this.getOrCreateToolAgent(
@@ -87,6 +89,7 @@ export class LangChainProvider implements ChatProvider {
     onProgress?: (progress: AgentProgress) => void
   ): Promise<string> {
     this.requireApiKey();
+    await initializeMcpTools(threadId);
 
     // 学习点：Streaming 也是同一个 Agent，只是每生成一段就通过 onDelta 推给前端。
     const agent = this.getOrCreateToolAgent(
@@ -115,6 +118,7 @@ export class LangChainProvider implements ChatProvider {
     fewShotExamples: FewShotExample[] = [],
     reasoningEffort?: ReasoningEffort
   ): Promise<ToolAgentMessage[]> {
+    await initializeMcpTools(threadId);
     // 学习点：这里用于刷新页面后恢复当前 thread 的历史消息。
     const agent = this.getOrCreateToolAgent(
       modelId,
@@ -155,7 +159,8 @@ export class LangChainProvider implements ChatProvider {
       roleWorkflow?.workflowId ?? "base-agent-workflow",
       effectiveSystemPrompt,
       effectiveReasoningEffort ?? "",
-      storageMode
+      storageMode,
+      threadId ?? ""
     ].join("\u0000");
     const existingAgent = this.agents.get(agentKey);
     if (existingAgent) {
@@ -171,6 +176,7 @@ export class LangChainProvider implements ChatProvider {
       roleWorkflow,
       reasoningEffort: effectiveReasoningEffort,
       mode: storageMode,
+      threadId: threadId ?? "",
       checkpointer: isWorkThread
         ? workSqliteCheckpointer
         : sqliteCheckpointer
@@ -294,6 +300,10 @@ export class LangChainProvider implements ChatProvider {
     );
 
     return promptParts.join("\n\n");
+  }
+
+  clearAgentCache(): void {
+    this.agents.clear();
   }
 
   private stripFewShotMessages(

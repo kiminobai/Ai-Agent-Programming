@@ -371,3 +371,48 @@ export function deleteThread(threadId: string, userId: string): boolean {
   deleteTransaction();
   return true;
 }
+
+export function clearThreadContext(
+  threadId: string,
+  userId: string
+): ChatThreadRecord | null {
+  const thread = getThreadById(threadId, userId);
+  if (!thread) return null;
+
+  const database = databaseForMode(thread.mode);
+  const deleteCheckpointRows = (tableName: string) => {
+    const exists = database
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
+      .get(tableName);
+    if (!exists) return;
+    const columns = database.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{
+      name: string;
+    }>;
+    if (columns.some((column) => column.name === "thread_id")) {
+      database.prepare(`DELETE FROM ${tableName} WHERE thread_id = ?`).run(threadId);
+    }
+  };
+
+  // 清除会被模型继续读取的对话状态，但保留对话本身、工作记录和生成文件。
+  database.transaction(() => {
+    database.prepare("DELETE FROM agent_task_plan_steps WHERE thread_id = ?").run(threadId);
+    database.prepare("DELETE FROM agent_task_plans WHERE thread_id = ?").run(threadId);
+    database.prepare("DELETE FROM subagent_runs WHERE thread_id = ?").run(threadId);
+    database.prepare("DELETE FROM agent_task_executions WHERE thread_id = ?").run(threadId);
+    database.prepare("DELETE FROM document_qa_messages WHERE thread_id = ?").run(threadId);
+    database.prepare("DELETE FROM document_graph_edges WHERE thread_id = ?").run(threadId);
+    database.prepare("DELETE FROM document_graph_nodes WHERE thread_id = ?").run(threadId);
+    sqliteVectorStore.clearIndex(threadId, database);
+    database.prepare("DELETE FROM uploaded_documents WHERE thread_id = ?").run(threadId);
+    for (const tableName of ["checkpoint_writes", "checkpoint_blobs", "checkpoints"]) {
+      deleteCheckpointRows(tableName);
+    }
+    database
+      .prepare(
+        "UPDATE chat_threads SET last_message_preview = NULL, updated_at = ? WHERE thread_id = ? AND user_id = ?"
+      )
+      .run(new Date().toISOString(), threadId, userId);
+  })();
+
+  return getThreadById(threadId, userId);
+}

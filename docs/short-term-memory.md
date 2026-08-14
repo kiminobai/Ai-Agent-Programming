@@ -101,8 +101,14 @@ wrapModelCall: async (request, handler) => {
 
 当前项目使用 `summarizationMiddleware`：
 
-- 接近 8,000 Token 时触发摘要。
-- 摘要旧消息后保留最近 12 条消息。
+用户也可以在输入框左侧点击 `+` -> `清除上下文`。该操作会清除当前 `threadId` 的消息、LangGraph Checkpoint、工具状态、任务计划和附件检索索引，但保留对话本身、长期用户偏好、工作目录、工作修改记录、生成文件以及该对话安装的 Skill/MCP。
+
+- 默认按 64,000 Token 上下文窗口计算，模型不同时可通过环境变量调整。
+- 达到窗口的 50% 时，先将较早的工具大输出替换为占位说明，保留最近 6 个工具结果和原始工具参数。
+- 达到窗口的 72%，或者消息达到 100 条时，自动把旧消息压缩成结构化摘要。
+- 摘要后保留最近 16 条完整消息，并保持 AI Tool Call 与 Tool Result 配对完整。
+- 摘要必须保留当前目标、用户约束和纠正、已确认决策、文件修改、命令结果、待审批操作、未完成事项和关键错误。
+- 重复内容、寒暄、过期计划、冗长日志、重复工具输出和私有推理不会进入摘要。
 - 结构化工具历史继续由 `toolContextHistory` 独立维护。
 - 工具历史最多保留最近 20 条。
 - 注入动态提示时，参数最多保留 600 个字符，结果最多保留 1,200 个字符。
@@ -125,9 +131,7 @@ Provider 使用“模型 + System Prompt + threadId”区分 Agent 使用场景�
 
 ### 服务重启
 
-`MemorySaver` 只保存在当前 Node.js 进程内存中。服务重启后，短期记忆会丢失。
-
-如果需要跨进程、跨重启恢复，应把 `MemorySaver` 替换为数据库 Checkpointer，例如 PostgreSQL 或其他 LangGraph 支持的持久化存储。
+当前使用 SQLite Checkpointer，不是 `MemorySaver`。Chat 状态保存在 `data/chat-demo.sqlite`，Work 状态保存在系统文档目录下的 `KimiBai/data/work.sqlite`，因此服务和电脑重启后仍能恢复。
 
 ## 当前代码对应关系
 
@@ -137,6 +141,7 @@ Provider 使用“模型 + System Prompt + threadId”区分 Agent 使用场景�
 | `src/server.ts` | 接收并转发 `threadId` |
 | `src/providers/langChainProvider.ts` | 复用 Agent，管理线程初始化 |
 | `src/agents/langChainToolAgent.ts` | 注册 State、Checkpointer、Middleware 和 Tools |
+| `src/agents/contextCompactionPolicy.ts` | 定义自动压缩水位、保留预算和结构化摘要规则 |
 | `src/agents/toolMemoryState.ts` | 定义自定义状态、Reducer、工具读写函数 |
 | `src/agents/dynamicMemoryPromptMiddleware.ts` | 读取完整状态并创建动态 System Prompt |
 | `src/tools/langchain/*.ts` | 使用 `ToolRuntime` 读取状态并用 `Command` 写回 |

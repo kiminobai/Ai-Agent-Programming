@@ -21754,6 +21754,18 @@
     const [approvalTurnId, setApprovalTurnId] = (0, import_react.useState)("");
     const [approvalDecisions, setApprovalDecisions] = (0, import_react.useState)({});
     const [attachment, setAttachment] = (0, import_react.useState)(null);
+    const [isAddMenuOpen, setIsAddMenuOpen] = (0, import_react.useState)(false);
+    const [extensionDialog, setExtensionDialog] = (0, import_react.useState)(null);
+    const [skillSourcePath, setSkillSourcePath] = (0, import_react.useState)("");
+    const [extensionMessage, setExtensionMessage] = (0, import_react.useState)("");
+    const [isInstallingExtension, setIsInstallingExtension] = (0, import_react.useState)(false);
+    const [mcpName, setMcpName] = (0, import_react.useState)("");
+    const [mcpTransport, setMcpTransport] = (0, import_react.useState)("stdio");
+    const [mcpCommand, setMcpCommand] = (0, import_react.useState)("npx");
+    const [mcpArgs, setMcpArgs] = (0, import_react.useState)("");
+    const [mcpUrl, setMcpUrl] = (0, import_react.useState)("");
+    const [mcpApproval, setMcpApproval] = (0, import_react.useState)("always");
+    const [mcpAllowChat, setMcpAllowChat] = (0, import_react.useState)(false);
     const [composerAttachmentPreviewUrl, setComposerAttachmentPreviewUrl] = (0, import_react.useState)("");
     const [activeDocumentName, setActiveDocumentName] = (0, import_react.useState)("");
     const chatLayoutRef = (0, import_react.useRef)(null);
@@ -22381,7 +22393,46 @@
         await loadThreads(guestUserId, modelId, roleId, reasoningEffort);
       }
     }
-    async function selectDesktopWorkspace() {
+    async function clearCurrentThreadContext() {
+      if (!activeThreadId || !userId.trim() || isSubmitting) return;
+      setIsAddMenuOpen(false);
+      const confirmed = window.confirm(
+        "\u786E\u5B9A\u6E05\u9664\u5F53\u524D\u5BF9\u8BDD\u4E0A\u4E0B\u6587\u5417\uFF1F\u6D88\u606F\u3001\u77ED\u671F\u8BB0\u5FC6\u3001\u5DE5\u5177\u72B6\u6001\u548C\u5F53\u524D\u9644\u4EF6\u5C06\u88AB\u6E05\u9664\uFF1B\u5BF9\u8BDD\u3001\u5DE5\u4F5C\u76EE\u5F55\u3001\u5DF2\u751F\u6210\u6587\u4EF6\u4EE5\u53CA\u672C\u5BF9\u8BDD\u5B89\u88C5\u7684 Skill/MCP \u4F1A\u4FDD\u7559\u3002"
+      );
+      if (!confirmed) return;
+      setError("");
+      setIsThreadLoading(true);
+      try {
+        const response = await fetch(
+          `/api/threads/${encodeURIComponent(activeThreadId)}/clear-context?userId=${encodeURIComponent(userId.trim())}`,
+          { method: "POST" }
+        );
+        const data = await readJsonResponse(response, "/api/threads/:threadId/clear-context");
+        if (!response.ok) throw new Error(data.error || "\u6E05\u9664\u4E0A\u4E0B\u6587\u5931\u8D25\u3002");
+        setEntries([]);
+        setAttachment(null);
+        setActiveDocumentName("");
+        setApprovalRequest(null);
+        setApprovalTurnId("");
+        setApprovalDecisions({});
+        setSubAgentRuns([]);
+        setTaskPlans([]);
+        setWorkspaceDiffs({});
+        if (data.thread) {
+          setThreads(
+            (current) => current.map(
+              (thread) => thread.threadId === activeThreadId ? data.thread : thread
+            )
+          );
+        }
+        shouldAutoScrollRef.current = true;
+      } catch (clearError) {
+        setError(clearError instanceof Error ? clearError.message : "\u6E05\u9664\u4E0A\u4E0B\u6587\u5931\u8D25\u3002");
+      } finally {
+        setIsThreadLoading(false);
+      }
+    }
+    async function selectDesktopWorkspace(forceWorkTask = false) {
       if (!window.desktopAPI) {
         setWorkspaceError("\u5DE5\u4F5C\u76EE\u5F55\u9009\u62E9\u4EC5\u5728 Electron \u684C\u9762\u7248\u4E2D\u53EF\u7528\u3002");
         return;
@@ -22395,7 +22446,8 @@
         if (selectedWorkspace) {
           skipNextWorkspaceRestoreRef.current = true;
           setWorkspace(selectedWorkspace);
-          if (appMode === "work" && modelId && roleId) {
+          if ((appMode === "work" || forceWorkTask) && modelId && roleId) {
+            if (forceWorkTask) setAppMode("work");
             await handleCreateThread({
               nextMode: "work",
               nextWorkspace: selectedWorkspace
@@ -22408,6 +22460,91 @@
         );
       } finally {
         setIsWorkspaceLoading(false);
+      }
+    }
+    function requireExtensionSession() {
+      if (authSession) return authSession;
+      setIsLoginOpen(true);
+      setExtensionMessage("\u8BF7\u5148\u767B\u5F55\uFF0C\u518D\u5B89\u88C5 Skill \u6216 MCP Server\u3002");
+      return null;
+    }
+    async function chooseSkillSource() {
+      setIsAddMenuOpen(false);
+      if (!requireExtensionSession()) return;
+      if (!window.desktopAPI) {
+        setExtensionMessage("\u5B89\u88C5\u672C\u5730 Skill \u4EC5\u652F\u6301 Electron \u684C\u9762\u7248\u3002");
+        setExtensionDialog("skill");
+        return;
+      }
+      const selected = await window.desktopAPI.selectSkillSource();
+      if (!selected) return;
+      setSkillSourcePath(selected);
+      setExtensionMessage("");
+      setExtensionDialog("skill");
+    }
+    async function installSelectedSkill(event) {
+      event.preventDefault();
+      const session = requireExtensionSession();
+      if (!session || !skillSourcePath) return;
+      try {
+        setIsInstallingExtension(true);
+        setExtensionMessage("");
+        const response = await fetch("/api/extensions/skills/install", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${session.token}`
+          },
+          body: JSON.stringify({ sourcePath: skillSourcePath, threadId: activeThreadId })
+        });
+        const data = await readJsonResponse(response, "/api/extensions/skills/install");
+        if (!response.ok) throw new Error(data.error || "Skill \u5B89\u88C5\u5931\u8D25\u3002");
+        setExtensionMessage(`\u5DF2\u5B89\u88C5 Skill\uFF1A${data.skill.name}\u3002\u4E0B\u4E00\u8F6E\u4EFB\u52A1\u5373\u53EF\u4F7F\u7528\u3002`);
+        setSkillSourcePath("");
+      } catch (installError) {
+        setExtensionMessage(
+          installError instanceof Error ? installError.message : "Skill \u5B89\u88C5\u5931\u8D25\u3002"
+        );
+      } finally {
+        setIsInstallingExtension(false);
+      }
+    }
+    async function installMcpServer(event) {
+      event.preventDefault();
+      const session = requireExtensionSession();
+      if (!session) return;
+      try {
+        setIsInstallingExtension(true);
+        setExtensionMessage("\u6B63\u5728\u8FDE\u63A5\u5E76\u53D1\u73B0 MCP Tools\u2026");
+        const response = await fetch("/api/extensions/mcp/install", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${session.token}`
+          },
+          body: JSON.stringify({
+            threadId: activeThreadId,
+            name: mcpName,
+            transport: mcpTransport,
+            command: mcpCommand,
+            args: mcpArgs.split(/\r?\n/).map((item) => item.trim()).filter(Boolean),
+            url: mcpUrl,
+            approval: mcpApproval,
+            allowChat: mcpAllowChat
+          })
+        });
+        const data = await readJsonResponse(response, "/api/extensions/mcp/install");
+        if (!response.ok) throw new Error(data.error || "MCP Server \u5B89\u88C5\u5931\u8D25\u3002");
+        const toolCount = data.server?.toolNames?.length ?? 0;
+        setExtensionMessage(
+          data.server?.connected ? `MCP Server \u5DF2\u8FDE\u63A5\uFF0C\u53D1\u73B0 ${toolCount} \u4E2A Tool\u3002` : data.server?.error || "\u914D\u7F6E\u5DF2\u4FDD\u5B58\uFF0C\u4F46 MCP Server \u6682\u672A\u8FDE\u63A5\u3002"
+        );
+      } catch (installError) {
+        setExtensionMessage(
+          installError instanceof Error ? installError.message : "MCP Server \u5B89\u88C5\u5931\u8D25\u3002"
+        );
+      } finally {
+        setIsInstallingExtension(false);
       }
     }
     async function clearDesktopWorkspace() {
@@ -23060,7 +23197,7 @@
         onClick: () => void handleLogout()
       },
       "\u9000\u51FA"
-    ) : null)), isLoginOpen ? /* @__PURE__ */ import_react.default.createElement("div", { className: "login-modal-backdrop", role: "presentation" }, /* @__PURE__ */ import_react.default.createElement("form", { className: "login-modal", onSubmit: handleLoginSubmit }, /* @__PURE__ */ import_react.default.createElement("div", { className: "login-modal-header" }, /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("h2", null, "\u767B\u5F55"), /* @__PURE__ */ import_react.default.createElement("p", null, "\u767B\u5F55\u540E\u4F7F\u7528\u56FA\u5B9A\u7528\u6237\u8BB0\u5FC6\u3002")), /* @__PURE__ */ import_react.default.createElement(
+    ) : null)), extensionDialog ? /* @__PURE__ */ import_react.default.createElement("div", { className: "login-modal-backdrop", role: "presentation" }, extensionDialog === "skill" ? /* @__PURE__ */ import_react.default.createElement("form", { className: "login-modal extension-modal", onSubmit: installSelectedSkill }, /* @__PURE__ */ import_react.default.createElement("div", { className: "login-modal-header" }, /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("h2", null, "\u5B89\u88C5 Skill"), /* @__PURE__ */ import_react.default.createElement("p", null, "Skill \u53EA\u5BF9\u5F53\u524D\u5BF9\u8BDD\u751F\u6548\uFF0C\u4E0D\u4F1A\u5F71\u54CD\u5176\u4ED6\u5BF9\u8BDD\u6216\u8986\u76D6\u5185\u7F6E Skill\u3002")), /* @__PURE__ */ import_react.default.createElement("button", { type: "button", className: "login-modal-close", onClick: () => setExtensionDialog(null) }, "\xD7")), /* @__PURE__ */ import_react.default.createElement("label", null, "\u6765\u6E90", /* @__PURE__ */ import_react.default.createElement("input", { value: skillSourcePath || "\u5C1A\u672A\u9009\u62E9", readOnly: true })), /* @__PURE__ */ import_react.default.createElement("button", { type: "button", className: "extension-secondary-button", onClick: () => void chooseSkillSource() }, "\u91CD\u65B0\u9009\u62E9\u76EE\u5F55\u6216 SKILL.md"), extensionMessage ? /* @__PURE__ */ import_react.default.createElement("p", { className: "extension-feedback" }, extensionMessage) : null, /* @__PURE__ */ import_react.default.createElement("button", { className: "login-submit", type: "submit", disabled: !skillSourcePath || isInstallingExtension }, isInstallingExtension ? "\u6B63\u5728\u5B89\u88C5\u2026" : "\u786E\u8BA4\u5B89\u88C5")) : /* @__PURE__ */ import_react.default.createElement("form", { className: "login-modal extension-modal", onSubmit: installMcpServer }, /* @__PURE__ */ import_react.default.createElement("div", { className: "login-modal-header" }, /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("h2", null, "\u6DFB\u52A0 MCP Server"), /* @__PURE__ */ import_react.default.createElement("p", null, "\u4EC5\u5728\u5F53\u524D\u5BF9\u8BDD\u8FDE\u63A5\u3002\u5916\u90E8 Server \u53EF\u8FD0\u884C\u547D\u4EE4\u6216\u8BBF\u95EE\u8FDC\u7A0B\u670D\u52A1\uFF0C\u8BF7\u53EA\u5B89\u88C5\u53EF\u4FE1\u6765\u6E90\u3002")), /* @__PURE__ */ import_react.default.createElement("button", { type: "button", className: "login-modal-close", onClick: () => setExtensionDialog(null) }, "\xD7")), /* @__PURE__ */ import_react.default.createElement("label", null, "\u540D\u79F0", /* @__PURE__ */ import_react.default.createElement("input", { value: mcpName, onChange: (event) => setMcpName(event.target.value), placeholder: "\u4F8B\u5982 vscode-tools", required: true })), /* @__PURE__ */ import_react.default.createElement("label", null, "\u8FDE\u63A5\u65B9\u5F0F", /* @__PURE__ */ import_react.default.createElement("select", { value: mcpTransport, onChange: (event) => setMcpTransport(event.target.value) }, /* @__PURE__ */ import_react.default.createElement("option", { value: "stdio" }, "\u672C\u5730 stdio"), /* @__PURE__ */ import_react.default.createElement("option", { value: "http" }, "\u8FDC\u7A0B HTTP"))), mcpTransport === "stdio" ? /* @__PURE__ */ import_react.default.createElement(import_react.default.Fragment, null, /* @__PURE__ */ import_react.default.createElement("label", null, "\u542F\u52A8\u547D\u4EE4", /* @__PURE__ */ import_react.default.createElement("input", { value: mcpCommand, onChange: (event) => setMcpCommand(event.target.value), placeholder: "npx", required: true })), /* @__PURE__ */ import_react.default.createElement("label", null, "\u53C2\u6570\uFF08\u6BCF\u884C\u4E00\u4E2A\uFF09", /* @__PURE__ */ import_react.default.createElement("textarea", { value: mcpArgs, onChange: (event) => setMcpArgs(event.target.value), placeholder: "-y\n\u53EF\u4FE1\u7684-mcp-server-package", rows: 4 }))) : /* @__PURE__ */ import_react.default.createElement("label", null, "Server URL", /* @__PURE__ */ import_react.default.createElement("input", { value: mcpUrl, onChange: (event) => setMcpUrl(event.target.value), placeholder: "https://example.com/mcp", required: true })), /* @__PURE__ */ import_react.default.createElement("label", null, "\u5BA1\u6279\u7B56\u7565", /* @__PURE__ */ import_react.default.createElement("select", { value: mcpApproval, onChange: (event) => setMcpApproval(event.target.value) }, /* @__PURE__ */ import_react.default.createElement("option", { value: "always" }, "\u6BCF\u6B21\u8C03\u7528\u90FD\u786E\u8BA4"), /* @__PURE__ */ import_react.default.createElement("option", { value: "mutating" }, "\u53EA\u8BFB\u81EA\u52A8\uFF0C\u4FEE\u6539\u9700\u786E\u8BA4"), /* @__PURE__ */ import_react.default.createElement("option", { value: "never" }, "\u4E0D\u786E\u8BA4\uFF08\u4EC5\u53EF\u4FE1\u53EA\u8BFB\u670D\u52A1\uFF09"))), /* @__PURE__ */ import_react.default.createElement("label", { className: "extension-check" }, /* @__PURE__ */ import_react.default.createElement("input", { type: "checkbox", checked: mcpAllowChat, onChange: (event) => setMcpAllowChat(event.target.checked) }), "\u540C\u65F6\u5141\u8BB8\u5728\u804A\u5929\u6A21\u5F0F\u4F7F\u7528"), extensionMessage ? /* @__PURE__ */ import_react.default.createElement("p", { className: "extension-feedback" }, extensionMessage) : null, /* @__PURE__ */ import_react.default.createElement("button", { className: "login-submit", type: "submit", disabled: isInstallingExtension }, isInstallingExtension ? "\u6B63\u5728\u8FDE\u63A5\u2026" : "\u4FDD\u5B58\u5E76\u8FDE\u63A5"))) : null, isLoginOpen ? /* @__PURE__ */ import_react.default.createElement("div", { className: "login-modal-backdrop", role: "presentation" }, /* @__PURE__ */ import_react.default.createElement("form", { className: "login-modal", onSubmit: handleLoginSubmit }, /* @__PURE__ */ import_react.default.createElement("div", { className: "login-modal-header" }, /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("h2", null, "\u767B\u5F55"), /* @__PURE__ */ import_react.default.createElement("p", null, "\u767B\u5F55\u540E\u4F7F\u7528\u56FA\u5B9A\u7528\u6237\u8BB0\u5FC6\u3002")), /* @__PURE__ */ import_react.default.createElement(
       "button",
       {
         type: "button",
@@ -23149,7 +23286,7 @@
       "main",
       {
         ref: chatLayoutRef,
-        className: `chat-layout ${isEmptyThread ? "empty-thread" : ""}`,
+        className: `chat-layout ${isEmptyThread ? "empty-thread" : ""} ${appMode === "work" && isEmptyThread ? "work-empty-thread" : ""}`,
         onScroll: handleChatLayoutScroll,
         onWheel: handleChatLayoutWheel
       },
@@ -23189,7 +23326,7 @@
         "\u5DE5\u4F5C"
       ))),
       error ? /* @__PURE__ */ import_react.default.createElement("div", { className: "top-error" }, error) : null,
-      appMode === "work" && isEmptyThread ? /* @__PURE__ */ import_react.default.createElement("section", { className: "flex min-h-[calc(100vh-76px)] items-center justify-center px-6 pb-44" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "text-center" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-zinc-200 bg-white text-2xl shadow-sm" }, "\u25C7"), /* @__PURE__ */ import_react.default.createElement("h2", { className: "mt-7 text-3xl font-medium tracking-tight text-zinc-900" }, workspace ? `\u8981\u5728 ${workspace.name} \u5185\u5F00\u53D1\u4EC0\u4E48\uFF1F` : "\u9009\u62E9\u4E00\u4E2A\u9879\u76EE\u5F00\u59CB\u5DE5\u4F5C"), !workspace ? /* @__PURE__ */ import_react.default.createElement(
+      appMode === "work" && isEmptyThread ? /* @__PURE__ */ import_react.default.createElement("section", { className: "work-empty-state" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "text-center" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-zinc-200 bg-white text-2xl shadow-sm" }, "\u25C7"), /* @__PURE__ */ import_react.default.createElement("h2", { className: "mt-7 text-3xl font-medium tracking-tight text-zinc-900" }, workspace ? `\u8981\u5728 ${workspace.name} \u5185\u5F00\u53D1\u4EC0\u4E48\uFF1F` : "\u9009\u62E9\u4E00\u4E2A\u9879\u76EE\u5F00\u59CB\u5DE5\u4F5C"), !workspace ? /* @__PURE__ */ import_react.default.createElement(
         "button",
         {
           type: "button",
@@ -23405,7 +23542,7 @@
         "footer",
         {
           ref: composerShellRef,
-          className: `composer-shell ${isEmptyThread ? "home-composer" : ""}`
+          className: `composer-shell ${isEmptyThread && appMode === "chat" ? "home-composer" : ""}`
         },
         showWorkProgress ? /* @__PURE__ */ import_react.default.createElement("div", { className: "work-progress-dock" }, workProgressPanel ? /* @__PURE__ */ import_react.default.createElement("section", { className: "work-progress-popover" }, /* @__PURE__ */ import_react.default.createElement("header", null, /* @__PURE__ */ import_react.default.createElement("strong", null, workProgressPanel === "plan" ? activeWorkPlan?.title || "\u6B63\u5728\u5904\u7406\u4EFB\u52A1" : `\u5DF2\u4FEE\u6539 ${activeWorkFiles.length} \u4E2A\u6587\u4EF6`), /* @__PURE__ */ import_react.default.createElement(
           "button",
@@ -23516,16 +23653,30 @@
               setAttachment(event.target.files?.[0] || null);
             }
           }
-        ), /* @__PURE__ */ import_react.default.createElement("div", { className: "composer-actions" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "composer-controls" }, /* @__PURE__ */ import_react.default.createElement(
+        ), /* @__PURE__ */ import_react.default.createElement("div", { className: "composer-actions" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "composer-controls" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "composer-add-control" }, /* @__PURE__ */ import_react.default.createElement(
           "button",
           {
             type: "button",
-            className: "attach-button",
-            onClick: () => fileInputRef.current?.click(),
+            className: "composer-plus-button",
+            "aria-label": "\u6DFB\u52A0\u5185\u5BB9\u6216\u6269\u5C55",
+            "aria-expanded": isAddMenuOpen,
+            onClick: () => setIsAddMenuOpen((current) => !current),
             disabled: isSubmitting || isThreadLoading
           },
-          "\u4E0A\u4F20"
-        ), /* @__PURE__ */ import_react.default.createElement("label", { className: "composer-role-picker", htmlFor: "composer-model-select" }, /* @__PURE__ */ import_react.default.createElement("span", null, "\u6A21\u578B"), /* @__PURE__ */ import_react.default.createElement(
+          "+"
+        ), isAddMenuOpen ? /* @__PURE__ */ import_react.default.createElement("div", { className: "composer-add-menu" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "composer-add-heading" }, "\u6DFB\u52A0"), /* @__PURE__ */ import_react.default.createElement("button", { type: "button", onClick: () => {
+          setIsAddMenuOpen(false);
+          fileInputRef.current?.click();
+        } }, /* @__PURE__ */ import_react.default.createElement("span", null, "\u25A3"), /* @__PURE__ */ import_react.default.createElement("span", null, /* @__PURE__ */ import_react.default.createElement("b", null, "\u6587\u4EF6"), /* @__PURE__ */ import_react.default.createElement("small", null, "\u4E0A\u4F20\u5230\u5F53\u524D\u5BF9\u8BDD"))), /* @__PURE__ */ import_react.default.createElement("button", { type: "button", onClick: () => {
+          setIsAddMenuOpen(false);
+          void selectDesktopWorkspace(true);
+        } }, /* @__PURE__ */ import_react.default.createElement("span", null, "\u25B1"), /* @__PURE__ */ import_react.default.createElement("span", null, /* @__PURE__ */ import_react.default.createElement("b", null, "\u6587\u4EF6\u5939"), /* @__PURE__ */ import_react.default.createElement("small", null, "\u4F5C\u4E3A\u65B0\u7684\u5DE5\u4F5C\u4EFB\u52A1\u76EE\u5F55"))), /* @__PURE__ */ import_react.default.createElement("div", { className: "composer-add-heading" }, "\u6269\u5C55"), /* @__PURE__ */ import_react.default.createElement("button", { type: "button", onClick: () => void chooseSkillSource() }, /* @__PURE__ */ import_react.default.createElement("span", null, "\u25C7"), /* @__PURE__ */ import_react.default.createElement("span", null, /* @__PURE__ */ import_react.default.createElement("b", null, "\u5B89\u88C5 Skill"), /* @__PURE__ */ import_react.default.createElement("small", null, "\u6DFB\u52A0\u53EF\u590D\u7528\u5DE5\u4F5C\u89C4\u8303"))), /* @__PURE__ */ import_react.default.createElement("button", { type: "button", onClick: () => {
+          setIsAddMenuOpen(false);
+          if (requireExtensionSession()) {
+            setExtensionMessage("");
+            setExtensionDialog("mcp");
+          }
+        } }, /* @__PURE__ */ import_react.default.createElement("span", null, "\u2318"), /* @__PURE__ */ import_react.default.createElement("span", null, /* @__PURE__ */ import_react.default.createElement("b", null, "\u6DFB\u52A0 MCP Server"), /* @__PURE__ */ import_react.default.createElement("small", null, "\u8FDE\u63A5\u5916\u90E8\u5DE5\u5177\u4E0E\u670D\u52A1"))), /* @__PURE__ */ import_react.default.createElement("div", { className: "composer-add-heading" }, "\u5BF9\u8BDD"), /* @__PURE__ */ import_react.default.createElement("button", { type: "button", onClick: () => void clearCurrentThreadContext() }, /* @__PURE__ */ import_react.default.createElement("span", null, "\u21BA"), /* @__PURE__ */ import_react.default.createElement("span", null, /* @__PURE__ */ import_react.default.createElement("b", null, "\u6E05\u9664\u4E0A\u4E0B\u6587"), /* @__PURE__ */ import_react.default.createElement("small", null, "\u4FDD\u7559\u5BF9\u8BDD\u4E0E\u5DF2\u5B89\u88C5\u6269\u5C55")))) : null), /* @__PURE__ */ import_react.default.createElement("label", { className: "composer-role-picker", htmlFor: "composer-model-select" }, /* @__PURE__ */ import_react.default.createElement("span", null, "\u6A21\u578B"), /* @__PURE__ */ import_react.default.createElement(
           "select",
           {
             id: "composer-model-select",

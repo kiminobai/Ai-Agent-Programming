@@ -8,6 +8,8 @@ import { BaseMessage, HumanMessage, AIMessage } from "@langchain/core/messages";
 import { ChatOpenAI } from "@langchain/openai";
 import {
   createAgent,
+  ClearToolUsesEdit,
+  contextEditingMiddleware,
   humanInTheLoopMiddleware,
   summarizationMiddleware,
   type DescriptionFactory
@@ -21,6 +23,10 @@ import { AgentContext, AgentContextSchema } from "./agentContext";
 import { createAgentWorkflowGraph } from "./agentWorkflowGraph";
 import { dynamicMemoryPromptMiddleware } from "./dynamicMemoryPromptMiddleware";
 import { ToolMemoryState } from "./toolMemoryState";
+import {
+  CONTEXT_COMPACTION_SUMMARY_PROMPT,
+  getContextCompactionPolicy
+} from "./contextCompactionPolicy";
 import { getThreadById } from "../threads/threadRepository";
 import {
   createRoleSubAgentTools,
@@ -65,14 +71,12 @@ export interface LangChainToolAgentOptions {
   roleWorkflow?: RoleWorkflowAgent;
   reasoningEffort?: ReasoningEffort;
   mode: McpToolMode;
+  threadId: string;
   // Chat 与 Work 使用不同 SQLite，因此各自使用对应的 LangGraph checkpointer。
   checkpointer?: typeof sqliteCheckpointer;
 }
 
 export class LangChainToolAgent {
-  private static readonly SUMMARY_TRIGGER_TOKENS = 8_000;
-  private static readonly SUMMARY_KEEP_MESSAGES = 12;
-
   private readonly agent;
   private readonly workflow;
   private readonly checkpointer;
@@ -99,16 +103,33 @@ export class LangChainToolAgent {
       }
     });
 
-    // 学习点：短期记忆太长会超上下文。
-    // summarizationMiddleware 会在消息太多时，把旧消息压缩成摘要。
+    const compactionPolicy = getContextCompactionPolicy();
+
+    // 第一层先清理旧 Tool 大输出。参数与最近结果继续保留，避免日志挤占正常对话。
+    const toolContextEditor = contextEditingMiddleware({
+      edits: [
+        new ClearToolUsesEdit({
+          trigger: { tokens: compactionPolicy.toolOutputTriggerTokens },
+          keep: { messages: compactionPolicy.recentToolResultsToKeep },
+          clearToolInputs: false,
+          placeholder: "[较早的工具输出已自动压缩；关键结论保留在对话摘要中]"
+        })
+      ]
+    });
+
+    // 第二层把旧消息压缩成结构化续接摘要，并保留最近完整消息和 Tool 配对。
     const memorySummarizer = summarizationMiddleware({
       model,
-      trigger: {
-        tokens: LangChainToolAgent.SUMMARY_TRIGGER_TOKENS
-      },
+      trigger: [
+        { tokens: compactionPolicy.summaryTriggerTokens },
+        { messages: compactionPolicy.summaryTriggerMessages }
+      ],
       keep: {
-        messages: LangChainToolAgent.SUMMARY_KEEP_MESSAGES
-      }
+        messages: compactionPolicy.recentMessagesToKeep
+      },
+      trimTokensToSummarize: compactionPolicy.trimTokensToSummarize,
+      summaryPrompt: CONTEXT_COMPACTION_SUMMARY_PROMPT,
+      summaryPrefix: "[自动压缩的早期对话上下文]"
     });
 
     const executionSubAgentInterrupts = Object.fromEntries(
@@ -141,8 +162,8 @@ export class LangChainToolAgent {
       })
     );
     // MCP Tool 在服务启动时完成发现；Agent 只获得当前 Chat/Work 模式允许的工具。
-    const mcpTools = getMcpTools(options.mode);
-    const mcpApprovalInterrupts = getMcpApprovalInterrupts(options.mode);
+    const mcpTools = getMcpTools(options.mode, options.threadId);
+    const mcpApprovalInterrupts = getMcpApprovalInterrupts(options.mode, options.threadId);
 
     // 学习点：只对会修改长期数据的工具启用人工审批。
     // 天气、计算、时间和文档检索都是只读操作，仍然自动执行。
@@ -195,6 +216,7 @@ export class LangChainToolAgent {
       contextSchema: AgentContextSchema,
       // 学习点：每次模型调用前，动态拼接长期记忆、短期工具上下文和上传文档状态。
       middleware: [
+        toolContextEditor,
         memorySummarizer,
         dynamicMemoryPromptMiddleware,
         skillPromptMiddleware,

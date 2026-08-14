@@ -7,5 +7,6 @@ contextBridge.exposeInMainWorld("desktopAPI", {
   getWorkspace: (userId) => ipcRenderer.invoke("workspace:get", userId),
   clearWorkspace: (userId) => ipcRenderer.invoke("workspace:clear", userId),
   revealWorkspace: (workspacePath) =>
-    ipcRenderer.invoke("workspace:reveal", workspacePath)
+    ipcRenderer.invoke("workspace:reveal", workspacePath),
+  selectSkillSource: () => ipcRenderer.invoke("extensions:select-skill")
 });

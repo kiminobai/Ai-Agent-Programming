@@ -121,6 +121,14 @@ SSE 是兼容旧 MCP Server 的 Transport。新服务应优先使用 Streamable 
 
 ## 6. 配置文件
 
+桌面端用户可以在对话输入框左侧点击 `+`，选择“添加 MCP Server”。配置会写入当前对话的独立扩展目录：
+
+```text
+Documents/KimiBai/extensions/threads/<threadId>/mcp.json
+```
+
+保存后服务只为当前对话重新连接 MCP，并清除旧 Agent 的 Tool Schema 缓存，不需要重启应用。其他对话不会获得这个 MCP Server；删除对话时也会删除对应配置并关闭连接。项目根目录的 `mcp.json` 仍用于开发者预置的应用级能力，同名当前对话配置优先。
+
 最小 stdio 配置：
 
 ```json
@@ -231,7 +239,7 @@ LangGraph
 
 ## 11. 使用和排错
 
-修改 `mcp.json` 后需要重启服务，因为 Agent 的 Tool Schema 在创建时确定。
+通过对话框安装或修改 MCP 后会自动热加载。开发者直接编辑项目根目录的 `mcp.json` 时，仍建议重启服务，或者再次通过安装接口触发重新加载。
 
 验证配置：
 

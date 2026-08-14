@@ -296,6 +296,7 @@ declare global {
       getWorkspace: (userId: string) => Promise<DesktopWorkspace | null>;
       clearWorkspace: (userId: string) => Promise<void>;
       revealWorkspace: (workspacePath: string) => Promise<void>;
+      selectSkillSource: () => Promise<string | null>;
     };
   }
 }
@@ -659,6 +660,18 @@ function App() {
     Record<number, ApprovalDecision>
   >({});
   const [attachment, setAttachment] = useState<File | null>(null);
+  const [isAddMenuOpen, setIsAddMenuOpen] = useState(false);
+  const [extensionDialog, setExtensionDialog] = useState<"skill" | "mcp" | null>(null);
+  const [skillSourcePath, setSkillSourcePath] = useState("");
+  const [extensionMessage, setExtensionMessage] = useState("");
+  const [isInstallingExtension, setIsInstallingExtension] = useState(false);
+  const [mcpName, setMcpName] = useState("");
+  const [mcpTransport, setMcpTransport] = useState<"stdio" | "http">("stdio");
+  const [mcpCommand, setMcpCommand] = useState("npx");
+  const [mcpArgs, setMcpArgs] = useState("");
+  const [mcpUrl, setMcpUrl] = useState("");
+  const [mcpApproval, setMcpApproval] = useState<"always" | "mutating" | "never">("always");
+  const [mcpAllowChat, setMcpAllowChat] = useState(false);
   const [composerAttachmentPreviewUrl, setComposerAttachmentPreviewUrl] = useState("");
   const [activeDocumentName, setActiveDocumentName] = useState("");
   const chatLayoutRef = useRef<HTMLElement | null>(null);
@@ -1474,7 +1487,49 @@ function App() {
     }
   }
 
-  async function selectDesktopWorkspace() {
+  async function clearCurrentThreadContext() {
+    if (!activeThreadId || !userId.trim() || isSubmitting) return;
+    setIsAddMenuOpen(false);
+    const confirmed = window.confirm(
+      "确定清除当前对话上下文吗？消息、短期记忆、工具状态和当前附件将被清除；对话、工作目录、已生成文件以及本对话安装的 Skill/MCP 会保留。"
+    );
+    if (!confirmed) return;
+
+    setError("");
+    setIsThreadLoading(true);
+    try {
+      const response = await fetch(
+        `/api/threads/${encodeURIComponent(activeThreadId)}/clear-context?userId=${encodeURIComponent(userId.trim())}`,
+        { method: "POST" }
+      );
+      const data = await readJsonResponse(response, "/api/threads/:threadId/clear-context");
+      if (!response.ok) throw new Error(data.error || "清除上下文失败。");
+
+      setEntries([]);
+      setAttachment(null);
+      setActiveDocumentName("");
+      setApprovalRequest(null);
+      setApprovalTurnId("");
+      setApprovalDecisions({});
+      setSubAgentRuns([]);
+      setTaskPlans([]);
+      setWorkspaceDiffs({});
+      if (data.thread) {
+        setThreads((current) =>
+          current.map((thread) =>
+            thread.threadId === activeThreadId ? (data.thread as ChatThread) : thread
+          )
+        );
+      }
+      shouldAutoScrollRef.current = true;
+    } catch (clearError) {
+      setError(clearError instanceof Error ? clearError.message : "清除上下文失败。");
+    } finally {
+      setIsThreadLoading(false);
+    }
+  }
+
+  async function selectDesktopWorkspace(forceWorkTask = false) {
     if (!window.desktopAPI) {
       setWorkspaceError("工作目录选择仅在 Electron 桌面版中可用。");
       return;
@@ -1490,7 +1545,8 @@ function App() {
         // 本次目录切换会立刻创建一个新任务，避免恢复 effect 再重复创建。
         skipNextWorkspaceRestoreRef.current = true;
         setWorkspace(selectedWorkspace);
-        if (appMode === "work" && modelId && roleId) {
+        if ((appMode === "work" || forceWorkTask) && modelId && roleId) {
+          if (forceWorkTask) setAppMode("work");
           await handleCreateThread({
             nextMode: "work",
             nextWorkspace: selectedWorkspace
@@ -1503,6 +1559,97 @@ function App() {
       );
     } finally {
       setIsWorkspaceLoading(false);
+    }
+  }
+
+  function requireExtensionSession(): AuthSession | null {
+    if (authSession) return authSession;
+    setIsLoginOpen(true);
+    setExtensionMessage("请先登录，再安装 Skill 或 MCP Server。");
+    return null;
+  }
+
+  async function chooseSkillSource() {
+    setIsAddMenuOpen(false);
+    if (!requireExtensionSession()) return;
+    if (!window.desktopAPI) {
+      setExtensionMessage("安装本地 Skill 仅支持 Electron 桌面版。");
+      setExtensionDialog("skill");
+      return;
+    }
+    const selected = await window.desktopAPI.selectSkillSource();
+    if (!selected) return;
+    setSkillSourcePath(selected);
+    setExtensionMessage("");
+    setExtensionDialog("skill");
+  }
+
+  async function installSelectedSkill(event: FormEvent) {
+    event.preventDefault();
+    const session = requireExtensionSession();
+    if (!session || !skillSourcePath) return;
+    try {
+      setIsInstallingExtension(true);
+      setExtensionMessage("");
+      const response = await fetch("/api/extensions/skills/install", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${session.token}`
+        },
+        body: JSON.stringify({ sourcePath: skillSourcePath, threadId: activeThreadId })
+      });
+      const data = await readJsonResponse(response, "/api/extensions/skills/install");
+      if (!response.ok) throw new Error(data.error || "Skill 安装失败。");
+      setExtensionMessage(`已安装 Skill：${data.skill.name}。下一轮任务即可使用。`);
+      setSkillSourcePath("");
+    } catch (installError) {
+      setExtensionMessage(
+        installError instanceof Error ? installError.message : "Skill 安装失败。"
+      );
+    } finally {
+      setIsInstallingExtension(false);
+    }
+  }
+
+  async function installMcpServer(event: FormEvent) {
+    event.preventDefault();
+    const session = requireExtensionSession();
+    if (!session) return;
+    try {
+      setIsInstallingExtension(true);
+      setExtensionMessage("正在连接并发现 MCP Tools…");
+      const response = await fetch("/api/extensions/mcp/install", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${session.token}`
+        },
+        body: JSON.stringify({
+          threadId: activeThreadId,
+          name: mcpName,
+          transport: mcpTransport,
+          command: mcpCommand,
+          args: mcpArgs.split(/\r?\n/).map((item) => item.trim()).filter(Boolean),
+          url: mcpUrl,
+          approval: mcpApproval,
+          allowChat: mcpAllowChat
+        })
+      });
+      const data = await readJsonResponse(response, "/api/extensions/mcp/install");
+      if (!response.ok) throw new Error(data.error || "MCP Server 安装失败。");
+      const toolCount = data.server?.toolNames?.length ?? 0;
+      setExtensionMessage(
+        data.server?.connected
+          ? `MCP Server 已连接，发现 ${toolCount} 个 Tool。`
+          : data.server?.error || "配置已保存，但 MCP Server 暂未连接。"
+      );
+    } catch (installError) {
+      setExtensionMessage(
+        installError instanceof Error ? installError.message : "MCP Server 安装失败。"
+      );
+    } finally {
+      setIsInstallingExtension(false);
     }
   }
 
@@ -2344,6 +2491,59 @@ function App() {
         </section>
       </aside>
 
+      {extensionDialog ? (
+        <div className="login-modal-backdrop" role="presentation">
+          {extensionDialog === "skill" ? (
+            <form className="login-modal extension-modal" onSubmit={installSelectedSkill}>
+              <div className="login-modal-header">
+                <div>
+                  <h2>安装 Skill</h2>
+                  <p>Skill 只对当前对话生效，不会影响其他对话或覆盖内置 Skill。</p>
+                </div>
+                <button type="button" className="login-modal-close" onClick={() => setExtensionDialog(null)}>×</button>
+              </div>
+              <label>
+                来源
+                <input value={skillSourcePath || "尚未选择"} readOnly />
+              </label>
+              <button type="button" className="extension-secondary-button" onClick={() => void chooseSkillSource()}>
+                重新选择目录或 SKILL.md
+              </button>
+              {extensionMessage ? <p className="extension-feedback">{extensionMessage}</p> : null}
+              <button className="login-submit" type="submit" disabled={!skillSourcePath || isInstallingExtension}>
+                {isInstallingExtension ? "正在安装…" : "确认安装"}
+              </button>
+            </form>
+          ) : (
+            <form className="login-modal extension-modal" onSubmit={installMcpServer}>
+              <div className="login-modal-header">
+                <div>
+                  <h2>添加 MCP Server</h2>
+                  <p>仅在当前对话连接。外部 Server 可运行命令或访问远程服务，请只安装可信来源。</p>
+                </div>
+                <button type="button" className="login-modal-close" onClick={() => setExtensionDialog(null)}>×</button>
+              </div>
+              <label>名称<input value={mcpName} onChange={(event) => setMcpName(event.target.value)} placeholder="例如 vscode-tools" required /></label>
+              <label>连接方式<select value={mcpTransport} onChange={(event) => setMcpTransport(event.target.value as "stdio" | "http")}><option value="stdio">本地 stdio</option><option value="http">远程 HTTP</option></select></label>
+              {mcpTransport === "stdio" ? (
+                <>
+                  <label>启动命令<input value={mcpCommand} onChange={(event) => setMcpCommand(event.target.value)} placeholder="npx" required /></label>
+                  <label>参数（每行一个）<textarea value={mcpArgs} onChange={(event) => setMcpArgs(event.target.value)} placeholder={"-y\n可信的-mcp-server-package"} rows={4} /></label>
+                </>
+              ) : (
+                <label>Server URL<input value={mcpUrl} onChange={(event) => setMcpUrl(event.target.value)} placeholder="https://example.com/mcp" required /></label>
+              )}
+              <label>审批策略<select value={mcpApproval} onChange={(event) => setMcpApproval(event.target.value as typeof mcpApproval)}><option value="always">每次调用都确认</option><option value="mutating">只读自动，修改需确认</option><option value="never">不确认（仅可信只读服务）</option></select></label>
+              <label className="extension-check"><input type="checkbox" checked={mcpAllowChat} onChange={(event) => setMcpAllowChat(event.target.checked)} />同时允许在聊天模式使用</label>
+              {extensionMessage ? <p className="extension-feedback">{extensionMessage}</p> : null}
+              <button className="login-submit" type="submit" disabled={isInstallingExtension}>
+                {isInstallingExtension ? "正在连接…" : "保存并连接"}
+              </button>
+            </form>
+          )}
+        </div>
+      ) : null}
+
       {isLoginOpen ? (
         <div className="login-modal-backdrop" role="presentation">
           <form className="login-modal" onSubmit={handleLoginSubmit}>
@@ -2476,7 +2676,9 @@ function App() {
 
       <main
         ref={chatLayoutRef}
-        className={`chat-layout ${isEmptyThread ? "empty-thread" : ""}`}
+        className={`chat-layout ${isEmptyThread ? "empty-thread" : ""} ${
+          appMode === "work" && isEmptyThread ? "work-empty-thread" : ""
+        }`}
         onScroll={handleChatLayoutScroll}
         onWheel={handleChatLayoutWheel}
       >
@@ -2534,7 +2736,7 @@ function App() {
         {error ? <div className="top-error">{error}</div> : null}
 
         {appMode === "work" && isEmptyThread ? (
-          <section className="flex min-h-[calc(100vh-76px)] items-center justify-center px-6 pb-44">
+          <section className="work-empty-state">
             <div className="text-center">
               <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-zinc-200 bg-white text-2xl shadow-sm">
                 ◇
@@ -3030,7 +3232,7 @@ function App() {
         <footer
           ref={composerShellRef}
           className={`composer-shell ${
-            isEmptyThread
+            isEmptyThread && appMode === "chat"
               ? "home-composer"
               : ""
           }`}
@@ -3228,14 +3430,40 @@ function App() {
 
             <div className="composer-actions">
               <div className="composer-controls">
-                <button
-                  type="button"
-                  className="attach-button"
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={isSubmitting || isThreadLoading}
-                >
-                  上传
-                </button>
+                <div className="composer-add-control">
+                  <button
+                    type="button"
+                    className="composer-plus-button"
+                    aria-label="添加内容或扩展"
+                    aria-expanded={isAddMenuOpen}
+                    onClick={() => setIsAddMenuOpen((current) => !current)}
+                    disabled={isSubmitting || isThreadLoading}
+                  >
+                    +
+                  </button>
+                  {isAddMenuOpen ? (
+                    <div className="composer-add-menu">
+                      <div className="composer-add-heading">添加</div>
+                      <button type="button" onClick={() => { setIsAddMenuOpen(false); fileInputRef.current?.click(); }}>
+                        <span>▣</span><span><b>文件</b><small>上传到当前对话</small></span>
+                      </button>
+                      <button type="button" onClick={() => { setIsAddMenuOpen(false); void selectDesktopWorkspace(true); }}>
+                        <span>▱</span><span><b>文件夹</b><small>作为新的工作任务目录</small></span>
+                      </button>
+                      <div className="composer-add-heading">扩展</div>
+                      <button type="button" onClick={() => void chooseSkillSource()}>
+                        <span>◇</span><span><b>安装 Skill</b><small>添加可复用工作规范</small></span>
+                      </button>
+                      <button type="button" onClick={() => { setIsAddMenuOpen(false); if (requireExtensionSession()) { setExtensionMessage(""); setExtensionDialog("mcp"); } }}>
+                        <span>⌘</span><span><b>添加 MCP Server</b><small>连接外部工具与服务</small></span>
+                      </button>
+                      <div className="composer-add-heading">对话</div>
+                      <button type="button" onClick={() => void clearCurrentThreadContext()}>
+                        <span>↺</span><span><b>清除上下文</b><small>保留对话与已安装扩展</small></span>
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
                 <label className="composer-role-picker" htmlFor="composer-model-select">
                   <span>模型</span>
                   <select

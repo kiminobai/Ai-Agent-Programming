@@ -4,6 +4,8 @@
  * 这个脚本不请求模型，只验证目录规范、按需加载和误触发边界。
  */
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 import {
   listAgentSkills,
   selectAgentSkills
@@ -14,6 +16,11 @@ import {
   normalizeWorkspaceScopePath,
   workspaceScopesOverlap
 } from "../src/workspace/workspaceDelegationPolicy";
+import { installSkillFromPath } from "../src/skills/skillInstaller";
+import {
+  deleteThreadExtensions,
+  getThreadExtensionsRoot
+} from "../src/extensions/threadExtensionStorage";
 
 const skillNames = listAgentSkills().map((skill) => skill.name);
 assert.deepEqual(skillNames, [
@@ -154,5 +161,27 @@ assert.equal(workspaceScopesOverlap("src/client", "src/server"), false);
 assert.throws(() => normalizeWorkspaceScopePath("../outside"));
 assert.throws(() => normalizeWorkspaceScopePath("C:\\secret.txt"));
 assert.throws(() => normalizeWorkspaceScopePath(".env"));
+
+// 用户安装的 Skill 必须严格按 threadId 隔离，不能出现在另一段对话中。
+const testThreadA = "skill-isolation-thread-a";
+const testThreadB = "skill-isolation-thread-b";
+const testSourceRoot = path.join(process.cwd(), "data", "skill-isolation-source");
+const testSkillRoot = path.join(testSourceRoot, "thread-only-skill");
+try {
+  fs.mkdirSync(testSkillRoot, { recursive: true });
+  fs.writeFileSync(
+    path.join(testSkillRoot, "SKILL.md"),
+    "---\nname: thread-only-skill\ndescription: Verify conversation-scoped Skill isolation.\n---\n\nOnly available in its installed conversation.\n",
+    "utf8"
+  );
+  installSkillFromPath(testSkillRoot, testThreadA);
+  assert.ok(listAgentSkills(testThreadA).some((skill) => skill.name === "thread-only-skill"));
+  assert.ok(!listAgentSkills(testThreadB).some((skill) => skill.name === "thread-only-skill"));
+} finally {
+  deleteThreadExtensions(testThreadA);
+  deleteThreadExtensions(testThreadB);
+  fs.rmSync(testSourceRoot, { recursive: true, force: true });
+  fs.rmSync(getThreadExtensionsRoot(testThreadA), { recursive: true, force: true });
+}
 
 console.log(`Skill 验证通过：${skillNames.join(", ")}`);

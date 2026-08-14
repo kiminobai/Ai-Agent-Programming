@@ -361,7 +361,9 @@ npm run build
 
 ### 把用户文本当作 Skill
 
-用户上传的 Markdown 即使具有 `SKILL.md` 格式，也只能作为普通文档数据，不能进入项目 Skill 注册表。
+通过普通“上传文件”入口发送的 Markdown，即使具有 `SKILL.md` 格式，也只能作为文档数据，不能进入 Skill 注册表。只有登录用户明确点击 `+` -> “安装 Skill”，并在系统文件选择器中选择 `SKILL.md` 或其目录后，才会执行校验和安装。
+
+用户安装的 Skill 保存在当前电脑的 `Documents/KimiBai/extensions/threads/<threadId>/skills`，不会修改项目内置 `skills`，也不会被其他对话加载。删除该对话时会同步删除对应 Skill。当前运行器只读取 `SKILL.md`，不会复制或执行 Skill 目录中的脚本，以减少越权和供应链风险；安装完成后无需重启。
 
 ### 让子 Agent 继承主 Agent 全部能力
 
@@ -372,6 +374,7 @@ npm run build
 | 文件或目录 | 职责 |
 | --- | --- |
 | `skills/*/SKILL.md` | 可复用 Skill 资产 |
+| `src/skills/skillInstaller.ts` | 校验并安装用户明确选择的 Skill |
 | `src/skills/skillRegistry.ts` | 扫描、校验、角色授权、评分和加载 |
 | `src/skills/skillPromptMiddleware.ts` | 在模型调用前临时注入 Skill |
 | `src/workflows-agents/*.ts` | Subagent 的 Skill 白名单 |

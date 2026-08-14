@@ -292,6 +292,7 @@ function createRoleSubAgentTool(
       }
       const activeSkills = selectAgentSkills({
         userMessage: getLatestUserText(runtime.state.messages),
+        threadId: agentContext.threadId,
         roleId: roleWorkflow.roleId,
         mode: thread?.mode === "work" ? "work" : "chat",
         hasUploadedDocument: Boolean(

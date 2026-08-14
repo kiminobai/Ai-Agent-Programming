@@ -62,3 +62,25 @@ export async function deleteWorkThreadStorage(threadId: string): Promise<void> {
     })
   ]);
 }
+
+export async function clearWorkThreadContextFiles(threadId: string): Promise<void> {
+  // 保留用户源码、生成文件和回退快照，只清除当前附件及其临时解析/检索数据。
+  await Promise.all([
+    fs.promises.rm(getWorkTaskDirectory(threadId, "uploads"), {
+      recursive: true,
+      force: true
+    }),
+    fs.promises.rm(getWorkTaskDirectory(threadId, "extracted"), {
+      recursive: true,
+      force: true
+    }),
+    fs.promises.rm(getWorkTaskDirectory(threadId, "temp"), {
+      recursive: true,
+      force: true
+    }),
+    fs.promises.rm(path.join(WORK_INDEXES_ROOT, threadId), {
+      recursive: true,
+      force: true
+    })
+  ]);
+}
