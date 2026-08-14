@@ -205,10 +205,13 @@ export class AgentRetryExhaustedError extends Error {
 export async function runWithControlledRetry<T>(input: {
   execute: () => Promise<T>;
   maxRetries: number;
+  maxElapsedMs?: number;
   signal?: AbortSignal;
   onRetry?: (attempt: number, error: unknown) => void;
 }): Promise<{ value: T; attempts: number }> {
   let attempts = 0;
+  const startedAt = Date.now();
+  const maxElapsedMs = input.maxElapsedMs ?? 120_000;
   while (true) {
     input.signal?.throwIfAborted();
     attempts += 1;
@@ -221,6 +224,9 @@ export async function runWithControlledRetry<T>(input: {
       }
       input.onRetry?.(attempts, error);
       const delayMs = getRetryDelayMs(error, attempts);
+      if (Date.now() - startedAt + delayMs > maxElapsedMs) {
+        throw new AgentRetryExhaustedError(attempts, error);
+      }
       await new Promise<void>((resolve, reject) => {
         const timer = setTimeout(resolve, delayMs);
         input.signal?.addEventListener("abort", () => {

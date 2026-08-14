@@ -11,6 +11,11 @@ export const AgentContextSchema = z.object({
   threadId: z.string().min(1),
   // 每次用户提交使用独立 turnId，把工具操作绑定到对应回复。
   turnId: z.string().optional(),
+  // 模型中间件用这两个字段按供应商和模型分别执行 RPM/TPM 与成本预算。
+  providerId: z.string().min(1).optional(),
+  modelId: z.string().min(1).optional(),
+  // 用户选择的资源档位决定单轮输出预算；服务端硬限额始终优先。
+  usageProfile: z.enum(["economy", "balanced", "performance"]).optional(),
   // 执行型子 Agent 的写入能力范围。主管 Agent 不设置此字段。
   workspaceWritePathPrefixes: z.array(z.string().min(1)).max(20).optional()
 });

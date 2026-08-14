@@ -251,6 +251,30 @@ sqliteDb.exec(`
   CREATE INDEX IF NOT EXISTS idx_agent_observability_turn
   ON agent_observability_events(thread_id, turn_id, created_at ASC);
 
+  -- 模型请求预算账本：失败请求也保留，因为供应商会把失败的限流请求计入 RPM/TPM。
+  CREATE TABLE IF NOT EXISTS model_usage_events (
+    event_id TEXT PRIMARY KEY,
+    provider_id TEXT NOT NULL,
+    model_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    thread_id TEXT NOT NULL,
+    turn_id TEXT,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    reserved_tokens INTEGER NOT NULL DEFAULT 0,
+    estimated_cost_usd REAL NOT NULL DEFAULT 0,
+    pricing_configured INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    completed_at TEXT
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_model_usage_rate_window
+  ON model_usage_events(provider_id, model_id, created_at);
+
+  CREATE INDEX IF NOT EXISTS idx_model_usage_user_day
+  ON model_usage_events(user_id, created_at);
+
   -- Work Agent 的结构化任务计划。计划与聊天文本分离，刷新后仍能恢复。
   CREATE TABLE IF NOT EXISTS agent_task_plans (
     thread_id TEXT NOT NULL,

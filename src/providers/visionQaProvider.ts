@@ -1,5 +1,9 @@
 import fs from "fs";
-import { ProviderConfig, ProviderId } from "../types";
+import { ProviderConfig, ProviderId, UsageProfile } from "../types";
+
+function maxOutputTokens(profile: UsageProfile = "balanced"): number {
+  return profile === "economy" ? 2_048 : profile === "performance" ? 8_192 : 4_096;
+}
 
 export async function answerQuestionWithImage(input: {
   providerId: ProviderId;
@@ -9,6 +13,7 @@ export async function answerQuestionWithImage(input: {
   mimeType: string;
   question: string;
   systemPrompt: string;
+  usageProfile?: UsageProfile;
 }): Promise<string> {
   // 学习点：支持视觉的模型需要直接接收图片内容。
   // 这里把本地图片读成 base64，再作为 input_image 发给 OpenAI-compatible Responses 接口。
@@ -35,6 +40,7 @@ async function answerWithOpenAIResponsesVision(input: {
   imageUrl: string;
   question: string;
   systemPrompt: string;
+  usageProfile?: UsageProfile;
 }): Promise<string> {
   const response = await fetch(input.config.apiUrl, {
     method: "POST",
@@ -44,6 +50,7 @@ async function answerWithOpenAIResponsesVision(input: {
     },
     body: JSON.stringify({
       model: input.modelId,
+      max_output_tokens: maxOutputTokens(input.usageProfile),
       instructions: [
         input.systemPrompt,
         "You are answering a question about an uploaded image.",
@@ -84,6 +91,7 @@ async function answerWithOpenAICompatibleVision(input: {
   imageUrl: string;
   question: string;
   systemPrompt: string;
+  usageProfile?: UsageProfile;
 }): Promise<string> {
   // 学习点：Kimi/Moonshot 是 OpenAI-compatible Chat Completions。
   // 为什么这样：它的图片输入放在 messages[].content 里，而不是 OpenAI Responses 的 input 数组。
@@ -95,6 +103,7 @@ async function answerWithOpenAICompatibleVision(input: {
     },
     body: JSON.stringify({
       model: input.modelId,
+      max_tokens: maxOutputTokens(input.usageProfile),
       messages: [
         {
           role: "system",

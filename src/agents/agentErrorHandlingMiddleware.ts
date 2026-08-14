@@ -13,11 +13,21 @@ import {
   runWithControlledRetry
 } from "./dynamicSubAgentDispatcher";
 import { recordAgentEvent } from "./agentTelemetryRepository";
+import { appConfig } from "../config";
+import {
+  completeModelCall,
+  estimateModelInputTokens,
+  extractModelUsage,
+  LocalRateLimitError,
+  ModelBudgetExceededError,
+  reserveModelCall
+} from "./modelUsageController";
 
 export type AgentErrorCategory =
   | "authentication"
   | "permission"
   | "billing"
+  | "budget"
   | "rate_limit"
   | "network"
   | "service"
@@ -83,6 +93,22 @@ export function normalizeAgentError(error: unknown): NormalizedAgentError {
   if (error instanceof AgentRetryExhaustedError) {
     return {
       category: "cancelled",
+      userMessage: safeDetail,
+      retryable: false,
+      safeDetail
+    };
+  }
+  if (error instanceof ModelBudgetExceededError) {
+    return {
+      category: "budget",
+      userMessage: safeDetail,
+      retryable: false,
+      safeDetail
+    };
+  }
+  if (error instanceof LocalRateLimitError) {
+    return {
+      category: "rate_limit",
       userMessage: safeDetail,
       retryable: false,
       safeDetail
@@ -217,8 +243,36 @@ export const agentErrorHandlingMiddleware = createMiddleware({
     const context = telemetryContext(request.runtime.context);
     try {
       const invocation = await runWithControlledRetry({
-        execute: () => Promise.resolve(handler(request)),
+        execute: async () => {
+          const lease = await reserveModelCall({
+            providerId: context.providerId ?? "unknown-provider",
+            modelId: context.modelId ?? "unknown-model",
+            userId: context.userId,
+            threadId: context.threadId,
+            turnId: context.turnId,
+            usageProfile: context.usageProfile,
+            inputTokens: estimateModelInputTokens([
+              ...request.messages,
+              { content: request.systemPrompt },
+              {
+                content: request.tools.map((tool) => ({
+                  name: tool.name,
+                  description: tool.description
+                }))
+              }
+            ])
+          });
+          try {
+            const response = await Promise.resolve(handler(request));
+            completeModelCall(lease, extractModelUsage(response), "succeeded");
+            return response;
+          } catch (error) {
+            completeModelCall(lease, {}, "failed");
+            throw error;
+          }
+        },
         maxRetries: 4,
+        maxElapsedMs: appConfig.modelUsage.retryTimeBudgetMs,
         onRetry: (attempt, error) => {
           const normalized = normalizeAgentError(error);
           recordAgentEvent({

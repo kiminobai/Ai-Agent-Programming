@@ -21457,6 +21457,14 @@
   // client/main.tsx
   var import_react = __toESM(require_react());
   var import_client = __toESM(require_client());
+  var USAGE_PROFILE_STORAGE_KEY = "chat-demo-usage-profile";
+  function getStoredUsageProfile() {
+    const stored = window.localStorage.getItem(USAGE_PROFILE_STORAGE_KEY);
+    return stored === "economy" || stored === "performance" ? stored : "balanced";
+  }
+  function reasoningEffortForProfile(profile) {
+    return profile === "economy" ? "low" : profile === "performance" ? "high" : "medium";
+  }
   function formatElapsedTime(elapsedMs) {
     const totalSeconds = Math.max(0, Math.floor(elapsedMs / 1e3));
     if (totalSeconds < 60) {
@@ -21704,7 +21712,12 @@
     const [activeThreadId, setActiveThreadId] = (0, import_react.useState)("");
     const [modelId, setModelId] = (0, import_react.useState)("");
     const [roleId, setRoleId] = (0, import_react.useState)("");
-    const [reasoningEffort, setReasoningEffort] = (0, import_react.useState)("low");
+    const [reasoningEffort, setReasoningEffort] = (0, import_react.useState)(
+      () => reasoningEffortForProfile(getStoredUsageProfile())
+    );
+    const [usageProfile, setUsageProfile] = (0, import_react.useState)(
+      () => getStoredUsageProfile()
+    );
     const [message, setMessage] = (0, import_react.useState)("");
     const [entries, setEntries] = (0, import_react.useState)([]);
     const [isLoading, setIsLoading] = (0, import_react.useState)(true);
@@ -21741,6 +21754,7 @@
     const [approvalDecisions, setApprovalDecisions] = (0, import_react.useState)({});
     const [attachment, setAttachment] = (0, import_react.useState)(null);
     const [isAddMenuOpen, setIsAddMenuOpen] = (0, import_react.useState)(false);
+    const [isComposerSettingsOpen, setIsComposerSettingsOpen] = (0, import_react.useState)(false);
     const [extensionDialog, setExtensionDialog] = (0, import_react.useState)(null);
     const [skillSourcePath, setSkillSourcePath] = (0, import_react.useState)("");
     const [extensionMessage, setExtensionMessage] = (0, import_react.useState)("");
@@ -21756,12 +21770,32 @@
     const [activeDocumentName, setActiveDocumentName] = (0, import_react.useState)("");
     const chatLayoutRef = (0, import_react.useRef)(null);
     const composerShellRef = (0, import_react.useRef)(null);
+    const composerSettingsRef = (0, import_react.useRef)(null);
     const fileInputRef = (0, import_react.useRef)(null);
     const activeRequestControllerRef = (0, import_react.useRef)(null);
     const shouldAutoScrollRef = (0, import_react.useRef)(true);
     const pendingInitialScrollRef = (0, import_react.useRef)(false);
     const lastScrollTopRef = (0, import_react.useRef)(0);
     const skipNextWorkspaceRestoreRef = (0, import_react.useRef)(false);
+    (0, import_react.useEffect)(() => {
+      window.localStorage.setItem(USAGE_PROFILE_STORAGE_KEY, usageProfile);
+    }, [usageProfile]);
+    (0, import_react.useEffect)(() => {
+      if (!isComposerSettingsOpen) return;
+      const closeSettings = (event) => {
+        if (event instanceof globalThis.KeyboardEvent && event.key !== "Escape") return;
+        if (event instanceof MouseEvent && composerSettingsRef.current?.contains(event.target)) {
+          return;
+        }
+        setIsComposerSettingsOpen(false);
+      };
+      document.addEventListener("mousedown", closeSettings);
+      document.addEventListener("keydown", closeSettings);
+      return () => {
+        document.removeEventListener("mousedown", closeSettings);
+        document.removeEventListener("keydown", closeSettings);
+      };
+    }, [isComposerSettingsOpen]);
     (0, import_react.useEffect)(() => {
       if (!isSubmitting) {
         return;
@@ -22700,7 +22734,8 @@
           threadId: activeThreadId,
           modelId,
           roleId,
-          reasoningEffort,
+          reasoningEffort: reasoningEffortForProfile(usageProfile),
+          usageProfile,
           question
         })
       });
@@ -22738,7 +22773,8 @@
           threadId: activeThreadId,
           modelId,
           roleId,
-          reasoningEffort,
+          reasoningEffort: reasoningEffortForProfile(usageProfile),
+          usageProfile,
           question
         }),
         signal
@@ -22775,6 +22811,7 @@
     }
     async function handleSubmit(event, messageOverride, options) {
       event?.preventDefault();
+      setIsComposerSettingsOpen(false);
       const trimmedMessage = messageOverride?.trim() || message.trim();
       const outgoingMessage = trimmedMessage || (attachment ? `I uploaded a file named ${attachment.name}.` : "");
       if (!outgoingMessage || !modelId || !roleId || !userId.trim() || !activeThreadId) {
@@ -22889,7 +22926,8 @@
         formData.append("userId", userId.trim());
         formData.append("turnId", turnId);
         formData.append("message", outgoingMessage);
-        formData.append("reasoningEffort", reasoningEffort);
+        formData.append("reasoningEffort", reasoningEffortForProfile(usageProfile));
+        formData.append("usageProfile", usageProfile);
         if (attachment) {
           formData.append("attachment", attachment);
           formData.append("attachmentName", attachment.name);
@@ -23697,7 +23735,10 @@
             className: "composer-plus-button",
             "aria-label": "\u6DFB\u52A0\u5185\u5BB9\u6216\u6269\u5C55",
             "aria-expanded": isAddMenuOpen,
-            onClick: () => setIsAddMenuOpen((current) => !current),
+            onClick: () => {
+              setIsComposerSettingsOpen(false);
+              setIsAddMenuOpen((current) => !current);
+            },
             disabled: isSubmitting || isThreadLoading
           },
           "+"
@@ -23713,45 +23754,71 @@
             setExtensionMessage("");
             setExtensionDialog("mcp");
           }
-        } }, /* @__PURE__ */ import_react.default.createElement("span", null, "\u2318"), /* @__PURE__ */ import_react.default.createElement("span", null, /* @__PURE__ */ import_react.default.createElement("b", null, "\u6DFB\u52A0 MCP Server"), /* @__PURE__ */ import_react.default.createElement("small", null, "\u8FDE\u63A5\u5916\u90E8\u5DE5\u5177\u4E0E\u670D\u52A1"))), /* @__PURE__ */ import_react.default.createElement("div", { className: "composer-add-heading" }, "\u5BF9\u8BDD"), /* @__PURE__ */ import_react.default.createElement("button", { type: "button", onClick: () => void clearCurrentThreadContext() }, /* @__PURE__ */ import_react.default.createElement("span", null, "\u21BA"), /* @__PURE__ */ import_react.default.createElement("span", null, /* @__PURE__ */ import_react.default.createElement("b", null, "\u6E05\u9664\u4E0A\u4E0B\u6587"), /* @__PURE__ */ import_react.default.createElement("small", null, "\u4FDD\u7559\u5BF9\u8BDD\u4E0E\u5DF2\u5B89\u88C5\u6269\u5C55")))) : null), /* @__PURE__ */ import_react.default.createElement("label", { className: "composer-role-picker", htmlFor: "composer-model-select" }, /* @__PURE__ */ import_react.default.createElement("span", null, "\u6A21\u578B"), /* @__PURE__ */ import_react.default.createElement(
+        } }, /* @__PURE__ */ import_react.default.createElement("span", null, "\u2318"), /* @__PURE__ */ import_react.default.createElement("span", null, /* @__PURE__ */ import_react.default.createElement("b", null, "\u6DFB\u52A0 MCP Server"), /* @__PURE__ */ import_react.default.createElement("small", null, "\u8FDE\u63A5\u5916\u90E8\u5DE5\u5177\u4E0E\u670D\u52A1"))), /* @__PURE__ */ import_react.default.createElement("div", { className: "composer-add-heading" }, "\u5BF9\u8BDD"), /* @__PURE__ */ import_react.default.createElement("button", { type: "button", onClick: () => void clearCurrentThreadContext() }, /* @__PURE__ */ import_react.default.createElement("span", null, "\u21BA"), /* @__PURE__ */ import_react.default.createElement("span", null, /* @__PURE__ */ import_react.default.createElement("b", null, "\u6E05\u9664\u4E0A\u4E0B\u6587"), /* @__PURE__ */ import_react.default.createElement("small", null, "\u4FDD\u7559\u5BF9\u8BDD\u4E0E\u5DF2\u5B89\u88C5\u6269\u5C55")))) : null), /* @__PURE__ */ import_react.default.createElement("div", { className: "composer-settings-control", ref: composerSettingsRef }, /* @__PURE__ */ import_react.default.createElement(
+          "button",
+          {
+            type: "button",
+            className: "composer-settings-trigger",
+            "aria-label": "\u9009\u62E9\u6A21\u578B\u3001\u89D2\u8272\u548C\u63A8\u7406\u5F3A\u5EA6",
+            "aria-expanded": isComposerSettingsOpen,
+            onClick: () => {
+              setIsAddMenuOpen(false);
+              setIsComposerSettingsOpen((current) => !current);
+            },
+            disabled: isSubmitting || isThreadLoading
+          },
+          /* @__PURE__ */ import_react.default.createElement("span", null, usageProfile === "economy" ? "\u8F7B\u5EA6" : usageProfile === "performance" ? "\u6DF1\u5EA6" : "\u5747\u8861"),
+          /* @__PURE__ */ import_react.default.createElement("span", { "aria-hidden": "true" }, "\u2304")
+        ), isComposerSettingsOpen ? /* @__PURE__ */ import_react.default.createElement("div", { className: "composer-settings-menu" }, /* @__PURE__ */ import_react.default.createElement("label", { htmlFor: "composer-model-select" }, /* @__PURE__ */ import_react.default.createElement("span", null, "\u6A21\u578B"), /* @__PURE__ */ import_react.default.createElement(
           "select",
           {
             id: "composer-model-select",
             value: modelId,
             onChange: (event) => setModelId(event.target.value),
-            disabled: !models.length || isSubmitting || isThreadLoading
+            disabled: !models.length
           },
           models.map((model) => /* @__PURE__ */ import_react.default.createElement("option", { key: model.id, value: model.id }, model.label))
-        )), /* @__PURE__ */ import_react.default.createElement("label", { className: "composer-role-picker", htmlFor: "composer-role-select" }, /* @__PURE__ */ import_react.default.createElement("span", null, "\u89D2\u8272"), /* @__PURE__ */ import_react.default.createElement(
+        )), /* @__PURE__ */ import_react.default.createElement("label", { htmlFor: "composer-role-select" }, /* @__PURE__ */ import_react.default.createElement("span", null, "\u89D2\u8272"), /* @__PURE__ */ import_react.default.createElement(
           "select",
           {
             id: "composer-role-select",
             value: roleId,
             onChange: (event) => setRoleId(event.target.value),
-            disabled: !roles.length || isSubmitting || isThreadLoading
+            disabled: !roles.length
           },
           roles.map((role) => /* @__PURE__ */ import_react.default.createElement("option", { key: role.id, value: role.id }, role.label))
-        )), currentModel?.provider === "openai" ? /* @__PURE__ */ import_react.default.createElement(
+        )), /* @__PURE__ */ import_react.default.createElement(
           "label",
           {
-            className: "composer-role-picker",
-            htmlFor: "composer-reasoning-effort"
+            htmlFor: "composer-reasoning-effort",
+            title: "\u63A8\u7406\u5F3A\u5EA6\u540C\u65F6\u63A7\u5236\u6A21\u578B\u63A8\u7406\u7EA7\u522B\u548C\u5355\u8F6E\u8F93\u51FA Token \u9884\u7B97"
           },
-          /* @__PURE__ */ import_react.default.createElement("span", null, "\u63A8\u7406"),
+          /* @__PURE__ */ import_react.default.createElement("span", null, "\u63A8\u7406\u5F3A\u5EA6"),
           /* @__PURE__ */ import_react.default.createElement(
             "select",
             {
               id: "composer-reasoning-effort",
-              value: reasoningEffort,
-              onChange: (event) => setReasoningEffort(event.target.value),
-              disabled: isSubmitting || isThreadLoading
+              value: usageProfile,
+              onChange: (event) => {
+                const profile = event.target.value;
+                setUsageProfile(profile);
+                setReasoningEffort(reasoningEffortForProfile(profile));
+              },
+              "aria-label": "\u63A8\u7406\u5F3A\u5EA6\u4E0E Token \u4F7F\u7528\u91CF"
             },
-            /* @__PURE__ */ import_react.default.createElement("option", { value: "minimal" }, "minimal"),
-            /* @__PURE__ */ import_react.default.createElement("option", { value: "low" }, "low"),
-            /* @__PURE__ */ import_react.default.createElement("option", { value: "medium" }, "medium"),
-            /* @__PURE__ */ import_react.default.createElement("option", { value: "high" }, "high")
+            /* @__PURE__ */ import_react.default.createElement("option", { value: "economy" }, "\u8F7B\u5EA6"),
+            /* @__PURE__ */ import_react.default.createElement("option", { value: "balanced" }, "\u5747\u8861"),
+            /* @__PURE__ */ import_react.default.createElement("option", { value: "performance" }, "\u6DF1\u5EA6")
           )
-        ) : null, isSubmitting ? /* @__PURE__ */ import_react.default.createElement(
+        ), /* @__PURE__ */ import_react.default.createElement(
+          "button",
+          {
+            type: "button",
+            className: "composer-settings-done",
+            onClick: () => setIsComposerSettingsOpen(false)
+          },
+          "\u5B8C\u6210"
+        )) : null), isSubmitting ? /* @__PURE__ */ import_react.default.createElement(
           "button",
           {
             className: "send-button",

@@ -17,7 +17,7 @@ import {
 import { Command } from "@langchain/langgraph";
 import { sqliteCheckpointer } from "../db/sqlite";
 import { langChainTools } from "../tools/langchain";
-import { AgentProgress, ProviderId, ReasoningEffort } from "../types";
+import { AgentProgress, ProviderId, ReasoningEffort, UsageProfile } from "../types";
 import type { RoleWorkflowAgent } from "../workflows-agents";
 import { AgentContext, AgentContextSchema } from "./agentContext";
 import { createAgentWorkflowGraph } from "./agentWorkflowGraph";
@@ -71,6 +71,7 @@ export interface LangChainToolAgentOptions {
   systemPrompt: string;
   roleWorkflow?: RoleWorkflowAgent;
   reasoningEffort?: ReasoningEffort;
+  usageProfile?: UsageProfile;
   mode: McpToolMode;
   threadId: string;
   // Chat 与 Work 使用不同 SQLite，因此各自使用对应的 LangGraph checkpointer。
@@ -83,8 +84,14 @@ export class LangChainToolAgent {
   private readonly checkpointer;
   private readonly roleWorkflow?: RoleWorkflowAgent;
   private readonly migratedThreads = new Set<string>();
+  private readonly providerId: ProviderId;
+  private readonly modelId: string;
+  private readonly usageProfile: UsageProfile;
 
   constructor(options: LangChainToolAgentOptions) {
+    this.providerId = options.providerId;
+    this.modelId = options.modelId;
+    this.usageProfile = options.usageProfile ?? "balanced";
     this.roleWorkflow = options.roleWorkflow;
     this.checkpointer = options.checkpointer ?? sqliteCheckpointer;
     // 学习点：ChatOpenAI 也可以连接 DeepSeek/SiliconFlow 这类 OpenAI-compatible 接口。
@@ -95,6 +102,15 @@ export class LangChainToolAgent {
       temperature: options.providerId === "moonshot" ? 1 : 0,
       streaming: true,
       streamUsage: false,
+      // 资源档位直接约束模型最大输出，避免前端选择只停留在视觉层。
+      maxTokens:
+        this.usageProfile === "economy"
+          ? 2_048
+          : this.usageProfile === "performance"
+            ? 8_192
+            : 4_096,
+      // 统一由应用中间件控制最多 5 次和总时长，防止 SDK 内部重试与应用重试相乘。
+      maxRetries: 0,
       reasoning:
         options.providerId === "openai"
           ? { effort: options.reasoningEffort }
@@ -762,7 +778,10 @@ export class LangChainToolAgent {
     return AgentContextSchema.parse({
       userId: userId.trim(),
       threadId: threadId.trim(),
-      turnId
+      turnId,
+      providerId: this.providerId,
+      modelId: this.modelId,
+      usageProfile: this.usageProfile
     });
   }
 

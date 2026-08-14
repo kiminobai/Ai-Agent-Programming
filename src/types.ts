@@ -7,6 +7,9 @@ export type ProviderId = "deepseek" | "openai" | "siliconflow" | "moonshot";
 // 学习点：reasoningEffort 主要给支持推理强度的模型使用。
 export type ReasoningEffort = "minimal" | "low" | "medium" | "high";
 
+// 学习点：usageProfile 是用户可见的资源档位，不把 RPM、TPM 等开发参数暴露到前端。
+export type UsageProfile = "economy" | "balanced" | "performance";
+
 // 学习点：前端模型下拉框展示的就是 ModelOption。
 export interface ModelOption {
   id: string;
@@ -46,6 +49,7 @@ export interface ChatRequestPayload {
   userId: string;
   turnId?: string;
   reasoningEffort?: ReasoningEffort;
+  usageProfile?: UsageProfile;
   attachmentName?: string;
 }
 
@@ -110,7 +114,8 @@ export interface ChatProvider {
     reasoningEffort?: ReasoningEffort,
     threadId?: string,
     userId?: string,
-    turnId?: string
+    turnId?: string,
+    usageProfile?: UsageProfile
   ): Promise<string>;
   streamChat(
     modelId: string,
@@ -123,6 +128,7 @@ export interface ChatProvider {
     userId?: string,
     signal?: AbortSignal,
     turnId?: string,
-    onProgress?: (progress: AgentProgress) => void
+    onProgress?: (progress: AgentProgress) => void,
+    usageProfile?: UsageProfile
   ): Promise<string>;
 }

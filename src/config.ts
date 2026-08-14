@@ -72,6 +72,17 @@ export const appConfig = {
     extractorProvider:
       (process.env.GRAPH_RAG_EXTRACTOR_PROVIDER as ProviderId | undefined) || "deepseek",
     extractorModel: process.env.GRAPH_RAG_EXTRACTOR_MODEL || "deepseek-v4-flash"
+  },
+  modelUsage: {
+    // 这些是应用自身的保护上限，不代表供应商账户的真实档位；应按控制台额度调整。
+    requestsPerMinute: Number(process.env.MODEL_RATE_LIMIT_RPM || 60),
+    tokensPerMinute: Number(process.env.MODEL_RATE_LIMIT_TPM || 60_000),
+    maxConcurrent: Number(process.env.MODEL_MAX_CONCURRENT || 4),
+    userDailyTokens: Number(process.env.MODEL_USER_DAILY_TOKENS || 500_000),
+    monthlyCostUsd: Number(process.env.MODEL_MONTHLY_COST_USD || 10),
+    reservedOutputTokens: Number(process.env.MODEL_RESERVED_OUTPUT_TOKENS || 4_096),
+    retryTimeBudgetMs: Number(process.env.MODEL_RETRY_TIME_BUDGET_MS || 120_000),
+    pricingJson: process.env.MODEL_PRICING_JSON || "{}"
   }
 };
 

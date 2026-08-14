@@ -11,6 +11,18 @@ import { createRoot } from "react-dom/client";
 
 type ProviderId = "deepseek" | "openai" | "siliconflow" | "moonshot";
 type ReasoningEffort = "minimal" | "low" | "medium" | "high";
+type UsageProfile = "economy" | "balanced" | "performance";
+
+const USAGE_PROFILE_STORAGE_KEY = "chat-demo-usage-profile";
+
+function getStoredUsageProfile(): UsageProfile {
+  const stored = window.localStorage.getItem(USAGE_PROFILE_STORAGE_KEY);
+  return stored === "economy" || stored === "performance" ? stored : "balanced";
+}
+
+function reasoningEffortForProfile(profile: UsageProfile): ReasoningEffort {
+  return profile === "economy" ? "low" : profile === "performance" ? "high" : "medium";
+}
 
 type ModelOption = {
   id: string;
@@ -611,7 +623,12 @@ function App() {
   const [activeThreadId, setActiveThreadId] = useState("");
   const [modelId, setModelId] = useState("");
   const [roleId, setRoleId] = useState("");
-  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("low");
+  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>(() =>
+    reasoningEffortForProfile(getStoredUsageProfile())
+  );
+  const [usageProfile, setUsageProfile] = useState<UsageProfile>(() =>
+    getStoredUsageProfile()
+  );
   const [message, setMessage] = useState("");
   const [entries, setEntries] = useState<ChatEntry[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -656,6 +673,7 @@ function App() {
   >({});
   const [attachment, setAttachment] = useState<File | null>(null);
   const [isAddMenuOpen, setIsAddMenuOpen] = useState(false);
+  const [isComposerSettingsOpen, setIsComposerSettingsOpen] = useState(false);
   const [extensionDialog, setExtensionDialog] = useState<"skill" | "mcp" | null>(null);
   const [skillSourcePath, setSkillSourcePath] = useState("");
   const [extensionMessage, setExtensionMessage] = useState("");
@@ -671,12 +689,38 @@ function App() {
   const [activeDocumentName, setActiveDocumentName] = useState("");
   const chatLayoutRef = useRef<HTMLElement | null>(null);
   const composerShellRef = useRef<HTMLElement | null>(null);
+  const composerSettingsRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const activeRequestControllerRef = useRef<AbortController | null>(null);
   const shouldAutoScrollRef = useRef(true);
   const pendingInitialScrollRef = useRef(false);
   const lastScrollTopRef = useRef(0);
   const skipNextWorkspaceRestoreRef = useRef(false);
+
+  useEffect(() => {
+    // 资源档位属于本机使用偏好，刷新或重启桌面端后继续沿用。
+    window.localStorage.setItem(USAGE_PROFILE_STORAGE_KEY, usageProfile);
+  }, [usageProfile]);
+
+  useEffect(() => {
+    if (!isComposerSettingsOpen) return;
+    const closeSettings = (event: MouseEvent | globalThis.KeyboardEvent) => {
+      if (event instanceof globalThis.KeyboardEvent && event.key !== "Escape") return;
+      if (
+        event instanceof MouseEvent &&
+        composerSettingsRef.current?.contains(event.target as Node)
+      ) {
+        return;
+      }
+      setIsComposerSettingsOpen(false);
+    };
+    document.addEventListener("mousedown", closeSettings);
+    document.addEventListener("keydown", closeSettings);
+    return () => {
+      document.removeEventListener("mousedown", closeSettings);
+      document.removeEventListener("keydown", closeSettings);
+    };
+  }, [isComposerSettingsOpen]);
 
   useEffect(() => {
     if (!isSubmitting) {
@@ -1835,7 +1879,8 @@ function App() {
         threadId: activeThreadId,
         modelId,
         roleId,
-        reasoningEffort,
+        reasoningEffort: reasoningEffortForProfile(usageProfile),
+        usageProfile,
         question
       })
     });
@@ -1880,7 +1925,8 @@ function App() {
         threadId: activeThreadId,
         modelId,
         roleId,
-        reasoningEffort,
+        reasoningEffort: reasoningEffortForProfile(usageProfile),
+        usageProfile,
         question
       }),
       signal
@@ -1929,6 +1975,7 @@ function App() {
     options?: { hideUserMessage?: boolean }
   ) {
     event?.preventDefault();
+    setIsComposerSettingsOpen(false);
 
     const trimmedMessage = messageOverride?.trim() || message.trim();
     const outgoingMessage =
@@ -2085,7 +2132,8 @@ function App() {
       formData.append("turnId", turnId);
       // 即使用户只上传文件不输入文字，也给后端一条明确消息，保证本轮会进入 Agent。
       formData.append("message", outgoingMessage);
-      formData.append("reasoningEffort", reasoningEffort);
+      formData.append("reasoningEffort", reasoningEffortForProfile(usageProfile));
+      formData.append("usageProfile", usageProfile);
 
       if (attachment) {
         formData.append("attachment", attachment);
@@ -3446,7 +3494,10 @@ function App() {
                     className="composer-plus-button"
                     aria-label="添加内容或扩展"
                     aria-expanded={isAddMenuOpen}
-                    onClick={() => setIsAddMenuOpen((current) => !current)}
+                    onClick={() => {
+                      setIsComposerSettingsOpen(false);
+                      setIsAddMenuOpen((current) => !current);
+                    }}
                     disabled={isSubmitting || isThreadLoading}
                   >
                     +
@@ -3474,57 +3525,90 @@ function App() {
                     </div>
                   ) : null}
                 </div>
-                <label className="composer-role-picker" htmlFor="composer-model-select">
-                  <span>模型</span>
-                  <select
-                    id="composer-model-select"
-                    value={modelId}
-                    onChange={(event) => setModelId(event.target.value)}
-                    disabled={!models.length || isSubmitting || isThreadLoading}
+                <div className="composer-settings-control" ref={composerSettingsRef}>
+                  <button
+                    type="button"
+                    className="composer-settings-trigger"
+                    aria-label="选择模型、角色和推理强度"
+                    aria-expanded={isComposerSettingsOpen}
+                    onClick={() => {
+                      setIsAddMenuOpen(false);
+                      setIsComposerSettingsOpen((current) => !current);
+                    }}
+                    disabled={isSubmitting || isThreadLoading}
                   >
-                    {models.map((model) => (
-                      <option key={model.id} value={model.id}>
-                        {model.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="composer-role-picker" htmlFor="composer-role-select">
-                  <span>角色</span>
-                  <select
-                    id="composer-role-select"
-                    value={roleId}
-                    onChange={(event) => setRoleId(event.target.value)}
-                    disabled={!roles.length || isSubmitting || isThreadLoading}
-                  >
-                    {roles.map((role) => (
-                      <option key={role.id} value={role.id}>
-                        {role.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                {currentModel?.provider === "openai" ? (
-                  <label
-                    className="composer-role-picker"
-                    htmlFor="composer-reasoning-effort"
-                  >
-                    <span>推理</span>
-                    <select
-                      id="composer-reasoning-effort"
-                      value={reasoningEffort}
-                      onChange={(event) =>
-                        setReasoningEffort(event.target.value as ReasoningEffort)
-                      }
-                      disabled={isSubmitting || isThreadLoading}
-                    >
-                      <option value="minimal">minimal</option>
-                      <option value="low">low</option>
-                      <option value="medium">medium</option>
-                      <option value="high">high</option>
-                    </select>
-                  </label>
-                ) : null}
+                    <span>
+                      {usageProfile === "economy"
+                        ? "轻度"
+                        : usageProfile === "performance"
+                          ? "深度"
+                          : "均衡"}
+                    </span>
+                    <span aria-hidden="true">⌄</span>
+                  </button>
+                  {isComposerSettingsOpen ? (
+                    <div className="composer-settings-menu">
+                      <label htmlFor="composer-model-select">
+                        <span>模型</span>
+                        <select
+                          id="composer-model-select"
+                          value={modelId}
+                          onChange={(event) => setModelId(event.target.value)}
+                          disabled={!models.length}
+                        >
+                          {models.map((model) => (
+                            <option key={model.id} value={model.id}>
+                              {model.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label htmlFor="composer-role-select">
+                        <span>角色</span>
+                        <select
+                          id="composer-role-select"
+                          value={roleId}
+                          onChange={(event) => setRoleId(event.target.value)}
+                          disabled={!roles.length}
+                        >
+                          {roles.map((role) => (
+                            <option key={role.id} value={role.id}>
+                              {role.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label
+                        htmlFor="composer-reasoning-effort"
+                        title="推理强度同时控制模型推理级别和单轮输出 Token 预算"
+                      >
+                        <span>推理强度</span>
+                        <select
+                          id="composer-reasoning-effort"
+                          value={usageProfile}
+                          onChange={(event) => {
+                            const profile = event.target.value as UsageProfile;
+                            setUsageProfile(profile);
+                            setReasoningEffort(reasoningEffortForProfile(profile));
+                          }}
+                          aria-label="推理强度与 Token 使用量"
+                        >
+                          <option value="economy">轻度</option>
+                          <option value="balanced">均衡</option>
+                          <option value="performance">深度</option>
+                        </select>
+                        {/* <span>更快使用消耗额度</span> */}
+                      </label>
+                      <button
+                        type="button"
+                        className="composer-settings-done"
+                        onClick={() => setIsComposerSettingsOpen(false)}
+                      >
+                        完成
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
                 {isSubmitting ? (
                   <button
                     className="send-button"

@@ -66,6 +66,7 @@ import {
   getAgentTurnObservability,
   recordAgentEvent
 } from "./agents/agentTelemetryRepository";
+import { getModelUsageSummary } from "./agents/modelUsageController";
 import {
   listDocumentQaMessages,
   saveDocumentQaExchange
@@ -74,7 +75,8 @@ import {
   ChatProvider,
   ChatRequestPayload,
   PromptRole,
-  ReasoningEffort
+  ReasoningEffort,
+  UsageProfile
 } from "./types";
 import type {
   PendingUploadFile,
@@ -248,6 +250,15 @@ app.get("/api/observability/turn", (req, res) => {
     return;
   }
   res.json(getAgentTurnObservability(threadId, userId, turnId));
+});
+
+app.get("/api/observability/model-usage", (req, res) => {
+  const userId = String(req.query.userId || "").trim();
+  if (!userId || !getUserById(userId)) {
+    res.status(404).json({ error: "用户不存在。" });
+    return;
+  }
+  res.json(getModelUsageSummary(userId));
 });
 
 app.get("/api/task-plans", (req, res) => {
@@ -945,6 +956,7 @@ app.post(
         roleId?: string;
         question: string;
         reasoningEffort?: ReasoningEffort;
+        usageProfile?: UsageProfile;
       }
     >,
     res: Response
@@ -956,6 +968,10 @@ app.post(
     const roleId = req.body?.roleId?.trim() || appConfig.defaultRoleId;
     const question = req.body?.question?.trim();
     const reasoningEffort = req.body?.reasoningEffort;
+    const usageProfile: UsageProfile =
+      req.body?.usageProfile === "economy" || req.body?.usageProfile === "performance"
+        ? req.body.usageProfile
+        : "balanced";
     const wantsStream = req.headers.accept?.includes("text/event-stream") ?? false;
     const documentTaskController = new AbortController();
     res.once("close", () => {
@@ -1029,7 +1045,8 @@ app.post(
                 imagePath: resolveUploadStorageKey(document.storageKey),
                 mimeType: document.mimeType,
                 question,
-                systemPrompt: role.systemPrompt
+                systemPrompt: role.systemPrompt,
+                usageProfile
               })
             : "\u5f53\u524d\u6a21\u5f0f\u4e0d\u652f\u6301\u76f4\u63a5\u7406\u89e3\u56fe\u7247\u5185\u5bb9\uff0c\u6240\u4ee5\u65e0\u6cd5\u53ef\u9760\u5206\u6790\u8fd9\u5f20\u56fe\u7247\u3002\u8bf7\u5207\u6362\u5230\u652f\u6301\u56fe\u7247\u6216\u591a\u6a21\u6001\u7406\u89e3\u7684\u6a21\u5f0f\u540e\u518d\u4f7f\u7528\uff1b\u5982\u679c\u53ea\u9700\u8981\u6587\u7ae0\u4fee\u6539\u3001\u77e5\u8bc6\u95ee\u7b54\u6216\u666e\u901a\u6587\u672c\u5206\u6790\uff0c\u53ef\u4ee5\u7ee7\u7eed\u4f7f\u7528\u5f53\u524d\u6a21\u5f0f\u3002";
         const meta = {
@@ -1149,7 +1166,10 @@ app.post(
             model.provider === "openai" ? reasoningEffort : undefined,
             threadId,
             userId,
-            documentTaskController.signal
+            documentTaskController.signal,
+            undefined,
+            undefined,
+            usageProfile
           );
         } else {
           answer = await agentProvider.sendChat(
@@ -1159,7 +1179,9 @@ app.post(
             role.fewShotExamples,
             model.provider === "openai" ? reasoningEffort : undefined,
             threadId,
-            userId
+            userId,
+            undefined,
+            usageProfile
           );
         }
 
@@ -1324,7 +1346,10 @@ app.post(
           model.provider === "openai" ? reasoningEffort : undefined,
           `${threadId}:document-qa`,
           userId,
-          documentTaskController.signal
+          documentTaskController.signal,
+          undefined,
+          undefined,
+          usageProfile
         );
       } else {
         answer = await provider.sendChat(
@@ -1334,7 +1359,9 @@ app.post(
           role.fewShotExamples,
           model.provider === "openai" ? reasoningEffort : undefined,
           `${threadId}:document-qa`,
-          userId
+          userId,
+          undefined,
+          usageProfile
         );
       }
       // 2-Step 只做一次检索和一次生成；Hybrid / GraphRAG 会额外做答案校验。
@@ -1565,6 +1592,10 @@ const chatHandler: RequestHandler = async (
   const userId = body?.userId?.trim();
   const turnId = body?.turnId?.trim();
   const reasoningEffort = body?.reasoningEffort;
+  const usageProfile: UsageProfile =
+    body?.usageProfile === "economy" || body?.usageProfile === "performance"
+      ? body.usageProfile
+      : "balanced";
   const decodedAttachmentName = attachment
     ? decodeUploadedFileName(attachment.originalname)
     : "";
@@ -1707,7 +1738,8 @@ const chatHandler: RequestHandler = async (
       turnId,
       (progress) => {
         res.write(`data: ${JSON.stringify({ type: "status", ...progress })}\n\n`);
-      }
+      },
+      usageProfile
     );
 
     // 审批决定是控制信号，不是用户对话内容，不能污染标题和消息预览。

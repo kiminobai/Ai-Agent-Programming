@@ -11,6 +11,7 @@ async function main() {
     { estimateTokensFromChars },
     dispatcher,
     errorHandling,
+    modelUsage,
     snapshots,
     workspaceTools,
     database
@@ -19,6 +20,7 @@ async function main() {
       import("../src/agents/agentTelemetryRepository"),
       import("../src/agents/dynamicSubAgentDispatcher"),
       import("../src/agents/agentErrorHandlingMiddleware"),
+      import("../src/agents/modelUsageController"),
       import("../src/workspace/workspaceTurnSnapshotRepository"),
       import("../src/tools/langchain/workspaceTools"),
       import("../src/db/sqlite")
@@ -123,6 +125,19 @@ async function main() {
   assert(
     retryAfterDelay >= 2_000 && retryAfterDelay < 2_150,
     "429 应优先遵守 Retry-After Header"
+  );
+  assert.equal(
+    modelUsage.estimateModelInputTokens([{ content: "12345678" }]),
+    2,
+    "模型输入应转换为 Token 预算"
+  );
+  assert.deepEqual(
+    modelUsage.extractModelUsage({
+      content: "fallback",
+      usage_metadata: { input_tokens: 12, output_tokens: 7 }
+    }),
+    { inputTokens: 12, outputTokens: 7 },
+    "供应商 usage 应优先于字符估算"
   );
 
   const baseTask = {

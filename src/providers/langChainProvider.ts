@@ -14,7 +14,8 @@ import {
   FewShotExample,
   ProviderConfig,
   ProviderId,
-  ReasoningEffort
+  ReasoningEffort,
+  UsageProfile
 } from "../types";
 import {
   findRoleWorkflowBySystemPrompt
@@ -53,7 +54,8 @@ export class LangChainProvider implements ChatProvider {
     reasoningEffort?: ReasoningEffort,
     threadId: string = crypto.randomUUID(),
     userId: string = "default-user",
-    turnId?: string
+    turnId?: string,
+    usageProfile: UsageProfile = "balanced"
   ): Promise<string> {
     this.requireApiKey();
     await initializeMcpTools(threadId);
@@ -64,7 +66,8 @@ export class LangChainProvider implements ChatProvider {
       systemPrompt,
       fewShotExamples,
       reasoningEffort,
-      threadId
+      threadId,
+      usageProfile
     );
 
     return agent.invoke(
@@ -86,7 +89,8 @@ export class LangChainProvider implements ChatProvider {
     userId: string = "default-user",
     signal?: AbortSignal,
     turnId?: string,
-    onProgress?: (progress: AgentProgress) => void
+    onProgress?: (progress: AgentProgress) => void,
+    usageProfile: UsageProfile = "balanced"
   ): Promise<string> {
     this.requireApiKey();
     await initializeMcpTools(threadId);
@@ -97,7 +101,8 @@ export class LangChainProvider implements ChatProvider {
       systemPrompt,
       fewShotExamples,
       reasoningEffort,
-      threadId
+      threadId,
+      usageProfile
     );
 
     return agent.stream(
@@ -136,7 +141,8 @@ export class LangChainProvider implements ChatProvider {
     systemPrompt: string,
     fewShotExamples: FewShotExample[] = [],
     reasoningEffort?: ReasoningEffort,
-    threadId?: string
+    threadId?: string,
+    usageProfile: UsageProfile = "balanced"
   ) {
     // 学习点：Agent 的缓存 key 必须包含 provider/model/prompt。
     // 因为不同角色 prompt 或不同模型，行为都可能不一样。
@@ -159,6 +165,7 @@ export class LangChainProvider implements ChatProvider {
       roleWorkflow?.workflowId ?? "base-agent-workflow",
       effectiveSystemPrompt,
       effectiveReasoningEffort ?? "",
+      usageProfile,
       storageMode,
       threadId ?? ""
     ].join("\u0000");
@@ -175,6 +182,7 @@ export class LangChainProvider implements ChatProvider {
       systemPrompt: effectiveSystemPrompt,
       roleWorkflow,
       reasoningEffort: effectiveReasoningEffort,
+      usageProfile,
       mode: storageMode,
       threadId: threadId ?? "",
       checkpointer: isWorkThread
