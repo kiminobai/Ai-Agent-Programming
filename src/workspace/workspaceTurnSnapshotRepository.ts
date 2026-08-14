@@ -8,6 +8,7 @@ import {
   getThreadWorkspace,
   resolveWorkspacePath
 } from "./workspaceSecurity";
+import { recordAgentEvent } from "../agents/agentTelemetryRepository";
 
 export type WorkspaceTurnDiff = {
   snapshotId: string;
@@ -86,6 +87,14 @@ export function saveWorkspaceTurnConflict(input: {
     input.message,
     new Date().toISOString()
   );
+  recordAgentEvent({
+    threadId: input.threadId,
+    userId: input.userId,
+    turnId: input.turnId,
+    eventType: "workspace_conflict",
+    status: "detected",
+    metadata: { filePath: input.filePath, conflictType: input.conflictType }
+  });
 }
 
 export function resolveWorkspaceTurnConflicts(input: {
@@ -154,6 +163,25 @@ export function listWorkspaceConflicts(
   `).all(threadId, userId) as WorkspaceTurnConflict[];
 }
 
+export function resolveWorkspaceConflict(input: {
+  threadId: string;
+  userId: string;
+  conflictId: string;
+}): boolean {
+  const result = getDatabaseForThread(input.threadId).prepare(`
+    UPDATE workspace_turn_conflicts
+    SET status = 'resolved', resolved_at = ?
+    WHERE conflict_id = ? AND thread_id = ? AND user_id = ?
+      AND status = 'unresolved'
+  `).run(
+    new Date().toISOString(),
+    input.conflictId,
+    input.threadId,
+    input.userId
+  );
+  return result.changes > 0;
+}
+
 /**
  * 学习点：expectedHash 是读取文件时取得的版本令牌。
  * 写入前再次比较，能避免审批等待期间用户修改的内容被 Agent 静默覆盖。
@@ -217,6 +245,34 @@ export async function ensureWorkspaceTurnSnapshot(input: {
   }
 
   const before = await fs.readFile(input.absolutePath).catch(() => null);
+  await ensureWorkspaceTurnSnapshotFromBuffer({
+    threadId: input.threadId,
+    userId: input.userId,
+    turnId: input.turnId,
+    filePath: input.filePath,
+    before
+  });
+}
+
+export async function ensureWorkspaceTurnSnapshotFromBuffer(input: {
+  threadId: string;
+  userId: string;
+  turnId?: string;
+  filePath: string;
+  before: Buffer | null;
+}): Promise<void> {
+  if (!input.turnId) {
+    throw new Error("当前文件修改缺少 turnId，无法创建安全回退点。");
+  }
+  const database = getDatabaseForThread(input.threadId);
+  const existing = database.prepare(`
+    SELECT snapshot_id
+    FROM workspace_turn_snapshots
+    WHERE thread_id = ? AND turn_id = ? AND file_path = ?
+  `).get(input.threadId, input.turnId, input.filePath);
+  if (existing) return;
+
+  const before = input.before;
   const snapshotId = crypto.randomUUID();
   const snapshotKey = before ? `${snapshotId}.snapshot` : null;
   if (before && snapshotKey) {
@@ -251,7 +307,8 @@ export async function finalizeWorkspaceTurnSnapshot(input: {
   if (!input.turnId) {
     return;
   }
-  const after = await fs.readFile(input.absolutePath);
+  // 命令可能删除文件；空 Buffer 是“文件不存在”的稳定 after 版本令牌。
+  const after = await fs.readFile(input.absolutePath).catch(() => Buffer.alloc(0));
   getDatabaseForThread(input.threadId).prepare(`
     UPDATE workspace_turn_snapshots
     SET after_hash = ?

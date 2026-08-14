@@ -18,11 +18,13 @@ import { executeDurableTask } from "../../agents/durableTaskExecution";
 import {
   assertWorkspaceVersion,
   ensureWorkspaceTurnSnapshot,
+  ensureWorkspaceTurnSnapshotFromBuffer,
   finalizeWorkspaceTurnSnapshot,
   hashWorkspaceContent,
   resolveWorkspaceTurnConflicts
 } from "../../workspace/workspaceTurnSnapshotRepository";
 import { isWorkspaceWritePathAllowed } from "../../workspace/workspaceDelegationPolicy";
+import { recordAgentEvent } from "../../agents/agentTelemetryRepository";
 
 function getWorkspace(runtime: ToolMemoryRuntime) {
   const context = (runtime.context ?? {}) as AgentContext;
@@ -171,6 +173,14 @@ export const writeWorkspaceFileTool = tool(
           additions: Math.max(0, nextLines - previousLines),
           deletions: Math.max(0, previousLines - nextLines)
         });
+        recordAgentEvent({
+          threadId: context.threadId,
+          userId: context.userId,
+          turnId: context.turnId,
+          eventType: "workspace_file_write",
+          status: "succeeded",
+          metadata: { filePath, operation: "write" }
+        });
         return {
           filePath,
           bytesWritten: Buffer.byteLength(content, "utf8")
@@ -275,6 +285,14 @@ export const replaceWorkspaceTextTool = tool(
               nextContent.split(/\r?\n/).length
           )
         });
+        recordAgentEvent({
+          threadId: context.threadId,
+          userId: context.userId,
+          turnId: context.turnId,
+          eventType: "workspace_file_write",
+          status: "succeeded",
+          metadata: { filePath, operation: "replace", replacementCount }
+        });
         return {
           filePath,
           replacementCount,
@@ -350,6 +368,43 @@ const ALLOWED_EXECUTABLES = new Set([
   "npm", "npm.cmd", "npx", "npx.cmd", "node", "git"
 ]);
 
+const COMMAND_SNAPSHOT_IGNORES = new Set([
+  ".git", ".env", "node_modules", "dist", "data", ".next", "coverage"
+]);
+const MAX_COMMAND_SNAPSHOT_FILE_BYTES = 2 * 1024 * 1024;
+const MAX_COMMAND_SNAPSHOT_TOTAL_BYTES = 50 * 1024 * 1024;
+
+export async function captureWorkspaceFiles(rootPath: string): Promise<Map<string, Buffer>> {
+  const files = new Map<string, Buffer>();
+  let totalBytes = 0;
+  const visit = async (directory: string): Promise<void> => {
+    const entries = await fs.readdir(directory, { withFileTypes: true });
+    for (const entry of entries) {
+      if (COMMAND_SNAPSHOT_IGNORES.has(entry.name.toLowerCase())) continue;
+      const absolutePath = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        await visit(absolutePath);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      const stat = await fs.stat(absolutePath);
+      if (stat.size > MAX_COMMAND_SNAPSHOT_FILE_BYTES) continue;
+      totalBytes += stat.size;
+      if (totalBytes > MAX_COMMAND_SNAPSHOT_TOTAL_BYTES) {
+        throw new Error("命令快照超过 50MB 安全预算，请缩小命令影响范围。 ");
+      }
+      const relativePath = path.relative(rootPath, absolutePath).replace(/\\/g, "/");
+      files.set(relativePath, await fs.readFile(absolutePath));
+    }
+  };
+  await visit(rootPath);
+  return files;
+}
+
+export function buffersEqual(left: Buffer | undefined, right: Buffer | undefined): boolean {
+  return Boolean(left && right) ? left!.equals(right!) : left === right;
+}
+
 export async function executeWorkspaceCommand(input: {
   threadId: string;
   userId: string;
@@ -367,6 +422,7 @@ export async function executeWorkspaceCommand(input: {
     assertReadOnlyGitCommand(input.args);
   }
   const workspace = getThreadWorkspace(input.threadId, input.userId);
+  const beforeFiles = await captureWorkspaceFiles(workspace.rootPath);
   const executable =
     process.platform === "win32" && ["npm", "npx"].includes(input.executable)
       ? `${input.executable}.cmd`
@@ -393,6 +449,37 @@ export async function executeWorkspaceCommand(input: {
       );
     }
   );
+  const afterFiles = await captureWorkspaceFiles(workspace.rootPath);
+  const changedPaths = new Set([...beforeFiles.keys(), ...afterFiles.keys()]);
+  for (const filePath of changedPaths) {
+    const before = beforeFiles.get(filePath);
+    const after = afterFiles.get(filePath);
+    if (buffersEqual(before, after)) continue;
+    const absolutePath = resolveWorkspacePath(workspace.rootPath, filePath);
+    await ensureWorkspaceTurnSnapshotFromBuffer({
+      threadId: input.threadId,
+      userId: input.userId,
+      turnId: input.turnId,
+      filePath,
+      before: before ?? null
+    });
+    await finalizeWorkspaceTurnSnapshot({
+      threadId: input.threadId,
+      turnId: input.turnId,
+      filePath,
+      absolutePath
+    });
+    saveWorkspaceActivity({
+      threadId: input.threadId,
+      userId: input.userId,
+      turnId: input.turnId,
+      idempotencyKey: input.idempotencyKey,
+      activityType: "file_write",
+      filePath,
+      additions: after ? after.toString("utf8").split(/\r?\n/).length : 0,
+      deletions: before ? before.toString("utf8").split(/\r?\n/).length : 0
+    });
+  }
   saveWorkspaceActivity({
     threadId: input.threadId,
     userId: input.userId,
@@ -403,6 +490,20 @@ export async function executeWorkspaceCommand(input: {
     exitCode: result.exitCode,
     stdout: result.stdout,
     stderr: result.stderr
+  });
+  recordAgentEvent({
+    threadId: input.threadId,
+    userId: input.userId,
+    turnId: input.turnId,
+    eventType: "workspace_command",
+    status: result.exitCode === 0 ? "succeeded" : "failed",
+    metadata: {
+      executable: input.executable,
+      exitCode: result.exitCode,
+      changedFiles: [...changedPaths].filter((filePath) =>
+        !buffersEqual(beforeFiles.get(filePath), afterFiles.get(filePath))
+      ).length
+    }
   });
   return result;
 }

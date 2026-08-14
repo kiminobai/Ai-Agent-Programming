@@ -57,10 +57,15 @@ import {
   listWorkspaceConflicts,
   listWorkspaceTurnConflicts,
   listWorkspaceTurnDiffs,
+  resolveWorkspaceConflict,
   rollbackWorkspaceTurn
 } from "./workspace/workspaceTurnSnapshotRepository";
 import { listSubAgentRuns } from "./agents/subAgentRunRepository";
 import { listTaskPlans } from "./agents/taskPlanRepository";
+import {
+  getAgentTurnObservability,
+  recordAgentEvent
+} from "./agents/agentTelemetryRepository";
 import {
   listDocumentQaMessages,
   saveDocumentQaExchange
@@ -181,12 +186,47 @@ app.post("/api/workspace/rollback", express.json(), async (req, res) => {
       userId,
       turnId
     });
+    recordAgentEvent({
+      threadId,
+      userId,
+      turnId,
+      eventType: "workspace_rollback",
+      status: "succeeded",
+      metadata: { restoredFiles }
+    });
     res.json({ restoredFiles });
   } catch (error) {
+    recordAgentEvent({
+      threadId,
+      userId,
+      turnId,
+      eventType: "workspace_rollback",
+      status: "conflicted",
+      metadata: {
+        error: error instanceof Error ? error.message.slice(0, 300) : String(error).slice(0, 300)
+      }
+    });
     res.status(409).json({
       error: error instanceof Error ? error.message : "回退本轮失败。"
     });
   }
+});
+
+app.post("/api/workspace/conflicts/:conflictId/resolve", express.json(), (req, res) => {
+  const conflictId = String(req.params.conflictId || "").trim();
+  const threadId = String(req.body?.threadId || "").trim();
+  const userId = String(req.body?.userId || "").trim();
+  const thread = getThreadById(threadId, userId);
+  if (!thread || thread.mode !== "work" || !conflictId) {
+    res.status(404).json({ error: "工作任务或冲突记录不存在。" });
+    return;
+  }
+  const resolved = resolveWorkspaceConflict({ threadId, userId, conflictId });
+  if (!resolved) {
+    res.status(409).json({ error: "冲突已经解决或不存在。" });
+    return;
+  }
+  res.json({ resolved: true });
 });
 
 app.get("/api/subagents/runs", (req, res) => {
@@ -197,6 +237,17 @@ app.get("/api/subagents/runs", (req, res) => {
     return;
   }
   res.json({ runs: listSubAgentRuns(threadId, userId) });
+});
+
+app.get("/api/observability/turn", (req, res) => {
+  const threadId = String(req.query.threadId || "").trim();
+  const userId = String(req.query.userId || "").trim();
+  const turnId = String(req.query.turnId || "").trim();
+  if (!turnId || !getThreadById(threadId, userId)) {
+    res.status(404).json({ error: "对话或任务轮次不存在。" });
+    return;
+  }
+  res.json(getAgentTurnObservability(threadId, userId, turnId));
 });
 
 app.get("/api/task-plans", (req, res) => {

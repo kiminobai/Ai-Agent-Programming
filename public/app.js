@@ -22615,6 +22615,31 @@
         );
       }
     }
+    async function keepCurrentWorkspaceFile(conflict) {
+      try {
+        const response = await fetch(
+          `/api/workspace/conflicts/${encodeURIComponent(conflict.conflictId)}/resolve`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              threadId: activeThreadId,
+              userId: userId.trim()
+            })
+          }
+        );
+        const data = await readJsonResponse(response, "/api/workspace/conflicts/:id/resolve");
+        if (!response.ok) throw new Error(data.error || "\u89E3\u51B3\u51B2\u7A81\u5931\u8D25\u3002");
+        await loadWorkspaceActivities();
+      } catch (conflictError) {
+        setError(conflictError instanceof Error ? conflictError.message : "\u89E3\u51B3\u51B2\u7A81\u5931\u8D25\u3002");
+      }
+    }
+    function retryWorkspaceConflict(conflict) {
+      const target = conflict.filePath === "*" ? "\u76F8\u5173\u6587\u4EF6" : conflict.filePath;
+      setMessage(`\u8BF7\u91CD\u65B0\u8BFB\u53D6 ${target} \u7684\u6700\u65B0\u5185\u5BB9\uFF0C\u5408\u5E76\u6211\u5DF2\u6709\u7684\u4FEE\u6539\u540E\u518D\u7EE7\u7EED\uFF1B\u4E0D\u8981\u8986\u76D6\u7528\u6237\u521A\u521A\u7684\u6539\u52A8\u3002`);
+      setTimeout(() => textareaRef.current?.focus(), 0);
+    }
     async function loadSubAgentRuns() {
       const response = await fetch(
         `/api/subagents/runs?threadId=${encodeURIComponent(activeThreadId)}&userId=${encodeURIComponent(userId.trim())}`
@@ -23520,7 +23545,24 @@
                 key: conflict.conflictId
               },
               /* @__PURE__ */ import_react.default.createElement("strong", null, conflict.status === "unresolved" ? "\u68C0\u6D4B\u5230\u6587\u4EF6\u51B2\u7A81" : "\u51B2\u7A81\u5DF2\u89E3\u51B3", conflict.filePath !== "*" ? ` \xB7 ${conflict.filePath}` : ""),
-              /* @__PURE__ */ import_react.default.createElement("p", { className: "mt-1" }, conflict.message)
+              /* @__PURE__ */ import_react.default.createElement("p", { className: "mt-1" }, conflict.message),
+              conflict.status === "unresolved" ? /* @__PURE__ */ import_react.default.createElement("div", { className: "mt-2 flex flex-wrap gap-2" }, /* @__PURE__ */ import_react.default.createElement(
+                "button",
+                {
+                  className: "rounded-lg border border-amber-300 bg-white px-2 py-1 text-xs hover:bg-amber-100",
+                  onClick: () => void keepCurrentWorkspaceFile(conflict),
+                  type: "button"
+                },
+                "\u4FDD\u7559\u5F53\u524D\u6587\u4EF6"
+              ), conflict.conflictType === "write_changed" ? /* @__PURE__ */ import_react.default.createElement(
+                "button",
+                {
+                  className: "rounded-lg border border-zinc-300 bg-white px-2 py-1 text-xs hover:bg-zinc-100",
+                  onClick: () => retryWorkspaceConflict(conflict),
+                  type: "button"
+                },
+                "\u91CD\u65B0\u8BFB\u53D6\u540E\u7EE7\u7EED"
+              ) : null) : null
             )), changedFiles.map((filePath) => /* @__PURE__ */ import_react.default.createElement("div", { className: "work-file-row", key: filePath }, /* @__PURE__ */ import_react.default.createElement("span", null, filePath), /* @__PURE__ */ import_react.default.createElement("span", { className: "work-file-status" }, "+", turnActivities.filter((item) => item.filePath === filePath).reduce((total, item) => total + (item.additions || 0), 0), " ", "-", turnActivities.filter((item) => item.filePath === filePath).reduce((total, item) => total + (item.deletions || 0), 0)))), turnDiffs ? /* @__PURE__ */ import_react.default.createElement("div", { className: "workspace-diff-list" }, turnDiffs.map((diff) => /* @__PURE__ */ import_react.default.createElement("section", { className: "workspace-diff", key: diff.snapshotId }, /* @__PURE__ */ import_react.default.createElement("div", { className: "workspace-diff-heading" }, /* @__PURE__ */ import_react.default.createElement("strong", null, diff.filePath), /* @__PURE__ */ import_react.default.createElement("span", null, /* @__PURE__ */ import_react.default.createElement("b", null, "+", diff.additions), " ", /* @__PURE__ */ import_react.default.createElement("i", null, "-", diff.deletions), diff.changedAfterSnapshot ? " \xB7 \u6587\u4EF6\u4E4B\u540E\u53C8\u6709\u53D8\u5316" : "")), /* @__PURE__ */ import_react.default.createElement("pre", null, diff.patch.split(/\r?\n/).map((line, index) => /* @__PURE__ */ import_react.default.createElement(
               "code",
               {

@@ -35,7 +35,14 @@ import {
   normalizeWorkspaceScopePath,
   workspaceScopesOverlap
 } from "../workspace/workspaceDelegationPolicy";
-import { createDynamicSubAgentTools } from "./dynamicSubAgentDispatcher";
+import {
+  createDynamicSubAgentTools,
+  runWithControlledRetry
+} from "./dynamicSubAgentDispatcher";
+import {
+  recordAgentEvent,
+  saveAgentTaskMetrics
+} from "./agentTelemetryRepository";
 
 const INTERNAL_SUB_AGENT_TAG = "internal-role-sub-agent";
 const FORBIDDEN_SUB_AGENT_TOOLS = new Set([
@@ -333,6 +340,8 @@ function createRoleSubAgentTool(
             })
           : () => undefined;
       let run: ReturnType<typeof startSubAgentRun> | undefined;
+      const startedAt = Date.now();
+      let attempts = 0;
       try {
         run = startSubAgentRun({
           threadId: agentContext.threadId,
@@ -358,7 +367,9 @@ function createRoleSubAgentTool(
             allowedPaths: scopedAllowedPaths
           },
           async () => {
-            const result = await activeSubAgent.invoke(
+            const invokeSubAgent = async () => {
+              attempts += 1;
+              return activeSubAgent.invoke(
               {
                 messages: [
                   new HumanMessage(
@@ -395,6 +406,37 @@ function createRoleSubAgentTool(
                 signal: runtime.signal
               }
             );
+            };
+
+            // 只读咨询失败后可以安全重试；执行型子代理可能已经产生文件或命令副作用，
+            // 因此只执行一次，并依靠 Durable Execution 处理相同任务的重放。
+            const result =
+              mode === "consult"
+                ? (
+                    await runWithControlledRetry({
+                    execute: invokeSubAgent,
+                    // 首次执行加 4 次重试，总共连续失败 5 次后中断。
+                    maxRetries: 4,
+                    signal: runtime.signal,
+                    onRetry: (attempt, error) => {
+                      recordAgentEvent({
+                        threadId: agentContext.threadId,
+                        userId: agentContext.userId,
+                        turnId: agentContext.turnId,
+                        taskId: run?.runId,
+                        eventType: "fixed_subagent_retry",
+                        status: "retrying",
+                        metadata: {
+                          agentId: runAgentId,
+                          attempt,
+                          error:
+                            error instanceof Error ? error.message : String(error)
+                        }
+                      });
+                    }
+                  })
+                  ).value
+                : await invokeSubAgent();
 
           // 子代理只返回主管完成任务所需的结论，限制长度可避免多个分析结果
           // 挤占主管的最终回答和工具调用上下文。
@@ -403,6 +445,19 @@ function createRoleSubAgentTool(
         );
         finishSubAgentRun(run.runId, "succeeded", {
           replayed: durable.replayed
+        });
+        saveAgentTaskMetrics({
+          threadId: agentContext.threadId,
+          turnId: agentContext.turnId,
+          taskId: run.runId,
+          inputChars:
+            normalizedTask.length +
+            scopedContext.length +
+            scopedExpectedOutput.length,
+          outputChars: durable.result.length,
+          attempts: Math.max(attempts, 1),
+          elapsedMs: Date.now() - startedAt,
+          status: "succeeded"
         });
 
         return JSON.stringify({
@@ -416,6 +471,19 @@ function createRoleSubAgentTool(
         if (run) {
           finishSubAgentRun(run.runId, "failed", {
             errorText: error instanceof Error ? error.message : String(error)
+          });
+          saveAgentTaskMetrics({
+            threadId: agentContext.threadId,
+            turnId: agentContext.turnId,
+            taskId: run.runId,
+            inputChars:
+              normalizedTask.length +
+              scopedContext.length +
+              scopedExpectedOutput.length,
+            outputChars: 0,
+            attempts: Math.max(attempts, 1),
+            elapsedMs: Date.now() - startedAt,
+            status: "failed"
           });
         }
         throw error;

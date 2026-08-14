@@ -1736,6 +1736,33 @@ function App() {
     }
   }
 
+  async function keepCurrentWorkspaceFile(conflict: WorkspaceTurnConflict) {
+    try {
+      const response = await fetch(
+        `/api/workspace/conflicts/${encodeURIComponent(conflict.conflictId)}/resolve`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            threadId: activeThreadId,
+            userId: userId.trim()
+          })
+        }
+      );
+      const data = await readJsonResponse(response, "/api/workspace/conflicts/:id/resolve");
+      if (!response.ok) throw new Error(data.error || "解决冲突失败。");
+      await loadWorkspaceActivities();
+    } catch (conflictError) {
+      setError(conflictError instanceof Error ? conflictError.message : "解决冲突失败。");
+    }
+  }
+
+  function retryWorkspaceConflict(conflict: WorkspaceTurnConflict) {
+    const target = conflict.filePath === "*" ? "相关文件" : conflict.filePath;
+    setMessage(`请重新读取 ${target} 的最新内容，合并我已有的修改后再继续；不要覆盖用户刚刚的改动。`);
+    setTimeout(() => textareaRef.current?.focus(), 0);
+  }
+
   async function loadSubAgentRuns() {
     const response = await fetch(
       `/api/subagents/runs?threadId=${encodeURIComponent(activeThreadId)}&userId=${encodeURIComponent(userId.trim())}`
@@ -3126,6 +3153,26 @@ function App() {
                                   {conflict.filePath !== "*" ? ` · ${conflict.filePath}` : ""}
                                 </strong>
                                 <p className="mt-1">{conflict.message}</p>
+                                {conflict.status === "unresolved" ? (
+                                  <div className="mt-2 flex flex-wrap gap-2">
+                                    <button
+                                      className="rounded-lg border border-amber-300 bg-white px-2 py-1 text-xs hover:bg-amber-100"
+                                      onClick={() => void keepCurrentWorkspaceFile(conflict)}
+                                      type="button"
+                                    >
+                                      保留当前文件
+                                    </button>
+                                    {conflict.conflictType === "write_changed" ? (
+                                      <button
+                                        className="rounded-lg border border-zinc-300 bg-white px-2 py-1 text-xs hover:bg-zinc-100"
+                                        onClick={() => retryWorkspaceConflict(conflict)}
+                                        type="button"
+                                      >
+                                        重新读取后继续
+                                      </button>
+                                    ) : null}
+                                  </div>
+                                ) : null}
                               </div>
                             ))}
                             {changedFiles.map((filePath) => (

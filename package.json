@@ -22,6 +22,7 @@
     "skills:verify": "tsx scripts/verifySkills.ts",
     "mcp:verify": "tsx scripts/verifyMcp.ts",
     "context:verify": "tsx scripts/verifyContextCompaction.ts",
+    "agent-team:verify": "tsx scripts/verifyAgentTeamEngineering.ts",
     "kb:index": "tsx scripts/indexKnowledgeBase.ts ai-agent-learning-manual",
     "start": "tsx src/server.ts",
     "dev": "tsc --watch",

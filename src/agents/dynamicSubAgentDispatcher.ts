@@ -29,6 +29,10 @@ import {
   normalizeWorkspaceScopePath,
   workspaceScopesOverlap
 } from "../workspace/workspaceDelegationPolicy";
+import {
+  recordAgentEvent,
+  saveAgentTaskMetrics
+} from "./agentTelemetryRepository";
 
 const INTERNAL_SUB_AGENT_TAG = "internal-role-sub-agent";
 const MAX_TASKS = 6;
@@ -42,6 +46,10 @@ const DEFAULT_BATCH_RESULT_CHARS = 12_000;
 const MAX_BATCH_RESULT_CHARS = 20_000;
 const DEFAULT_TIMEOUT_MS = 90_000;
 const MAX_TIMEOUT_MS = 180_000;
+// 学习点：总尝试次数包含首次执行。这里采用“首次 1 次 + 最多重试 4 次”，
+// 连续失败 5 次后必须中断，避免瞬时错误演变成无限重试和 Token 浪费。
+const DEFAULT_MAX_RETRIES = 4;
+const MAX_RETRIES = 4;
 
 type AgentTool = NonNullable<Parameters<typeof createAgent>[0]["tools"]>[number] & {
   name: string;
@@ -72,6 +80,7 @@ type DispatchInput = {
   maxConcurrency?: number;
   timeoutMs?: number;
   resultBudgetChars?: number;
+  maxRetries?: number;
 };
 type DispatchResult = {
   id: string;
@@ -105,7 +114,7 @@ function latestText(result: unknown, maxChars: number): string {
   throw new Error("子代理没有返回有效结果。");
 }
 
-function validateTaskGraph(tasks: DispatchTask[]): void {
+export function validateTaskGraph(tasks: DispatchTask[]): void {
   const ids = new Set<string>();
   for (const task of tasks) {
     if (ids.has(task.id)) throw new Error(`子任务 id 重复：${task.id}。`);
@@ -133,6 +142,60 @@ function validateTaskGraph(tasks: DispatchTask[]): void {
     visited.add(taskId);
   };
   for (const task of tasks) visit(task.id);
+}
+
+export function isRetryableSubAgentError(error: unknown): boolean {
+  const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
+  if (
+    /auth|401|403|approval|批准|拒绝|conflict|冲突|changed after|发生了变化|abort|cancel|停止|timeout|超时/.test(
+      message
+    )
+  ) return false;
+  return /429|rate.?limit|too many requests|5\d\d|econnreset|econnrefused|etimedout|network|socket|fetch failed|temporar/.test(
+    message
+  );
+}
+
+export class AgentRetryExhaustedError extends Error {
+  readonly attempts: number;
+
+  constructor(attempts: number, cause: unknown) {
+    super(`任务连续失败 ${attempts} 次，已自动中断，避免继续重复执行。`, {
+      cause
+    });
+    this.name = "AgentRetryExhaustedError";
+    this.attempts = attempts;
+  }
+}
+
+export async function runWithControlledRetry<T>(input: {
+  execute: () => Promise<T>;
+  maxRetries: number;
+  signal?: AbortSignal;
+  onRetry?: (attempt: number, error: unknown) => void;
+}): Promise<{ value: T; attempts: number }> {
+  let attempts = 0;
+  while (true) {
+    input.signal?.throwIfAborted();
+    attempts += 1;
+    try {
+      return { value: await input.execute(), attempts };
+    } catch (error) {
+      if (!isRetryableSubAgentError(error)) throw error;
+      if (attempts > input.maxRetries) {
+        throw new AgentRetryExhaustedError(attempts, error);
+      }
+      input.onRetry?.(attempts, error);
+      const delayMs = 400 * 2 ** (attempts - 1) + Math.floor(Math.random() * 150);
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(resolve, delayMs);
+        input.signal?.addEventListener("abort", () => {
+          clearTimeout(timer);
+          reject(new Error("主任务已停止。"));
+        }, { once: true });
+      });
+    }
+  }
 }
 
 function transitivelyDependsOn(
@@ -227,6 +290,7 @@ export function createDynamicSubAgentTools(
 
         const concurrency = Math.max(1, Math.min(maxConcurrency ?? DEFAULT_CONCURRENCY, MAX_CONCURRENCY));
         const taskTimeout = Math.max(5_000, Math.min(timeoutMs ?? DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS));
+        const retryLimit = Math.max(0, Math.min(input.maxRetries ?? DEFAULT_MAX_RETRIES, MAX_RETRIES));
         const batchResultBudget = Math.max(
           2_000,
           Math.min(resultBudgetChars ?? DEFAULT_BATCH_RESULT_CHARS, MAX_BATCH_RESULT_CHARS)
@@ -252,6 +316,8 @@ export function createDynamicSubAgentTools(
         });
 
         const executeTask = async (task: DispatchTask): Promise<DispatchResult> => {
+          const taskStartedAt = Date.now();
+          let attempts = 0;
           runtime.signal?.throwIfAborted();
           const definition = workflow.subAgents.find((item) => item.id === task.specialistId);
           if (!definition) {
@@ -261,6 +327,16 @@ export function createDynamicSubAgentTools(
               taskId: task.id,
               status: "failed",
               errorText: "未授权的子代理类型。"
+            });
+            saveAgentTaskMetrics({
+              threadId: context.threadId,
+              turnId: context.turnId!,
+              taskId: task.id,
+              inputChars: task.task.length + (task.context?.length ?? 0),
+              outputChars: 0,
+              attempts: 0,
+              elapsedMs: Date.now() - taskStartedAt,
+              status: "failed"
             });
             return {
               id: task.id,
@@ -305,6 +381,15 @@ export function createDynamicSubAgentTools(
             turnId: context.turnId!,
             taskIds: task.dependsOn
           });
+          const childPrompt = [
+            `任务：${task.task}`,
+            task.context ? `必要上下文：${task.context}` : "",
+            dependencyResults.length
+              ? `已确认的依赖结果（共享 Blackboard）：\n${JSON.stringify(dependencyResults)}`
+              : "",
+            task.expectedOutput ? `期望结果：${task.expectedOutput}` : "",
+            mode === "execute" ? `允许写入：${(task.allowedPaths ?? []).join("、")}` : ""
+          ].filter(Boolean).join("\n");
           appendAgentMessage({
             threadId: context.threadId,
             turnId: context.turnId!,
@@ -326,6 +411,15 @@ export function createDynamicSubAgentTools(
             taskId: task.id,
             status: "running"
           });
+          recordAgentEvent({
+            threadId: context.threadId,
+            userId: context.userId,
+            turnId: context.turnId,
+            taskId: task.id,
+            eventType: "subagent_task",
+            status: "started",
+            metadata: { mode, kind: task.kind, specialistId: task.specialistId }
+          });
           const run = startSubAgentRun({
             threadId: context.threadId,
             userId: context.userId,
@@ -342,29 +436,40 @@ export function createDynamicSubAgentTools(
           const onAbort = () => timeoutController.abort();
           runtime.signal?.addEventListener("abort", onAbort, { once: true });
           try {
-            const result = await child.invoke(
-              {
-                messages: [new HumanMessage([
-                  `任务：${task.task}`,
-                  task.context ? `必要上下文：${task.context}` : "",
-                  dependencyResults.length
-                    ? `已确认的依赖结果（共享 Blackboard）：\n${JSON.stringify(dependencyResults)}`
-                    : "",
-                  task.expectedOutput ? `期望结果：${task.expectedOutput}` : "",
-                  mode === "execute" ? `允许写入：${(task.allowedPaths ?? []).join("、")}` : ""
-                ].filter(Boolean).join("\n"))]
-              },
-              {
-                tags: [INTERNAL_SUB_AGENT_TAG],
-                context: {
-                  ...context,
-                  workspaceWritePathPrefixes: mode === "execute"
-                    ? (task.allowedPaths ?? []).map(normalizeWorkspaceScopePath)
-                    : undefined
-                },
-                signal: timeoutController.signal
+            const invocation = await runWithControlledRetry({
+              maxRetries: retryLimit,
+              signal: timeoutController.signal,
+              onRetry: (attempt, error) => recordAgentEvent({
+                threadId: context.threadId,
+                userId: context.userId,
+                turnId: context.turnId,
+                taskId: task.id,
+                eventType: "subagent_retry",
+                status: "scheduled",
+                metadata: {
+                  attempt,
+                  reason: error instanceof Error ? error.message.slice(0, 300) : String(error).slice(0, 300)
+                }
+              }),
+              execute: () => {
+                attempts += 1;
+                return child.invoke(
+                  { messages: [new HumanMessage(childPrompt)] },
+                  {
+                    tags: [INTERNAL_SUB_AGENT_TAG],
+                    context: {
+                      ...context,
+                      workspaceWritePathPrefixes: mode === "execute"
+                        ? (task.allowedPaths ?? []).map(normalizeWorkspaceScopePath)
+                        : undefined
+                    },
+                    signal: timeoutController.signal
+                  }
+                );
               }
-            );
+            });
+            attempts = invocation.attempts;
+            const result = invocation.value;
             const output = latestText(result, resultLimit);
             finishSubAgentRun(run.runId, "succeeded");
             const sharedResult = {
@@ -396,6 +501,27 @@ export function createDynamicSubAgentTools(
               status: "succeeded",
               resultSummary: output
             });
+            const elapsedMs = Date.now() - taskStartedAt;
+            saveAgentTaskMetrics({
+              threadId: context.threadId,
+              turnId: context.turnId!,
+              taskId: task.id,
+              inputChars: childPrompt.length * attempts,
+              outputChars: output.length,
+              attempts,
+              elapsedMs,
+              status: "succeeded"
+            });
+            recordAgentEvent({
+              threadId: context.threadId,
+              userId: context.userId,
+              turnId: context.turnId,
+              taskId: task.id,
+              eventType: "subagent_task",
+              status: "succeeded",
+              durationMs: elapsedMs,
+              metadata: { attempts, outputChars: output.length }
+            });
             return { id: task.id, specialistId: task.specialistId, status: "succeeded" as const, output };
           } catch (error) {
             const cancelled = runtime.signal?.aborted;
@@ -412,6 +538,27 @@ export function createDynamicSubAgentTools(
               taskId: task.id,
               status: cancelled ? "cancelled" : timedOut ? "timed_out" : "failed",
               errorText: message
+            });
+            const elapsedMs = Date.now() - taskStartedAt;
+            saveAgentTaskMetrics({
+              threadId: context.threadId,
+              turnId: context.turnId!,
+              taskId: task.id,
+              inputChars: childPrompt.length * Math.max(1, attempts),
+              outputChars: 0,
+              attempts: Math.max(1, attempts),
+              elapsedMs,
+              status: cancelled ? "cancelled" : timedOut ? "timed_out" : "failed"
+            });
+            recordAgentEvent({
+              threadId: context.threadId,
+              userId: context.userId,
+              turnId: context.turnId,
+              taskId: task.id,
+              eventType: "subagent_task",
+              status: cancelled ? "cancelled" : timedOut ? "timed_out" : "failed",
+              durationMs: elapsedMs,
+              metadata: { attempts: Math.max(1, attempts), error: message.slice(0, 300) }
             });
             return {
               id: task.id,
@@ -451,6 +598,16 @@ export function createDynamicSubAgentTools(
               taskId: task.id,
               status: "blocked",
               errorText: blocked.error
+            });
+            saveAgentTaskMetrics({
+              threadId: context.threadId,
+              turnId: context.turnId!,
+              taskId: task.id,
+              inputChars: task.task.length + (task.context?.length ?? 0),
+              outputChars: 0,
+              attempts: 0,
+              elapsedMs: 0,
+              status: "blocked"
             });
           }
 
@@ -495,7 +652,16 @@ export function createDynamicSubAgentTools(
             .min(2_000)
             .max(MAX_BATCH_RESULT_CHARS)
             .optional()
-            .describe("整批子任务可返回给主管的最大字符预算。")
+            .describe("整批子任务可返回给主管的最大字符预算。"),
+          maxRetries: z
+            .number()
+            .int()
+            .min(0)
+            .max(MAX_RETRIES)
+            .optional()
+            .describe(
+              "瞬时网络、限流或 5xx 错误的最大自动重试次数；默认 4，加上首次执行总共最多尝试 5 次。"
+            )
         })
       }
     ) as AgentTool;

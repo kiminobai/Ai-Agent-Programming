@@ -218,6 +218,39 @@ sqliteDb.exec(`
   CREATE INDEX IF NOT EXISTS idx_agent_blackboard_turn
   ON agent_blackboard_entries(thread_id, turn_id, created_at ASC);
 
+  -- 每个子任务的预算与实际消耗。字符数同时换算为近似 Token，避免依赖特定模型字段。
+  CREATE TABLE IF NOT EXISTS agent_task_metrics (
+    thread_id TEXT NOT NULL,
+    turn_id TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    input_chars INTEGER NOT NULL DEFAULT 0,
+    output_chars INTEGER NOT NULL DEFAULT 0,
+    estimated_input_tokens INTEGER NOT NULL DEFAULT 0,
+    estimated_output_tokens INTEGER NOT NULL DEFAULT 0,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    elapsed_ms INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (thread_id, turn_id, task_id)
+  );
+
+  -- 结构化可观测事件。只记录阶段、耗时和状态，不记录私有推理。
+  CREATE TABLE IF NOT EXISTS agent_observability_events (
+    event_id TEXT PRIMARY KEY,
+    thread_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    turn_id TEXT,
+    task_id TEXT,
+    event_type TEXT NOT NULL,
+    status TEXT NOT NULL,
+    duration_ms INTEGER,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_agent_observability_turn
+  ON agent_observability_events(thread_id, turn_id, created_at ASC);
+
   -- Work Agent 的结构化任务计划。计划与聊天文本分离，刷新后仍能恢复。
   CREATE TABLE IF NOT EXISTS agent_task_plans (
     thread_id TEXT NOT NULL,
