@@ -1,21 +1,15 @@
-# Multi-Model Chat Demo
+# KimiBai AI Agent
 
-这是一个适合学习的 LangChain.js 多模型 AI Assistant 项目，使用
-`React + TypeScript + Node.js + Express` 搭建。
+这是一个用于学习和实践 AI Agent 工程化的桌面项目，技术栈为
+`Electron + React + TypeScript + Express + LangChain.js + LangGraph`。
 
-它解决了两个很常见的问题：
+项目包含两种彼此隔离的使用模式：
 
-- 前端页面如何安全地调用大模型，而不把 `API Key` 暴露到浏览器里
-- 如何把“只支持一个模型”的 Demo，整理成“可扩展的多模型架构”
-- 如何用 LangChain 统一管理模型、消息、工具调用和短期上下文
+- **Chat 模式**：普通对话、角色 Prompt、工具调用、长期记忆、文件问答和知识库 RAG。
+- **Work 模式**：绑定本机工作目录，由 Agent 在审批、Diff、快照和 Sandbox 边界内完成编码任务。
 
-当前项目已经支持：
-
-- DeepSeek
-- OpenAI
-- SiliconFlow
-
-并且前端可以直接切换模型，页面也会明确显示“当前实际调用的是哪个模型”。
+模型密钥只在后端读取，不会发送到 React 页面。聊天正文、Work 数据、向量索引、队列和
+追踪数据也按各自职责持久化，不把所有状态塞进同一个数据库或当前进程内存。
 
 ## 项目适合谁
 
@@ -27,6 +21,9 @@
 - 环境变量 `.env` 的使用
 - 大模型 API 的基本调用方式
 - 多模型 provider 抽象思路
+- LangGraph 状态、节点、边、持久化与人工介入
+- RAG、GraphRAG、Multi-Agent、Subagents 和异步任务
+- 桌面 Agent 的文件权限、执行隔离与可观测性
 
 ## 你能学到什么
 
@@ -47,8 +44,11 @@
 - `LangChain.js`
 - `LangGraph`
 - `Docker Compose`
+- `Redis + BullMQ`
 - `Chroma`
 - `Docling`
+- `OpenTelemetry + Phoenix`
+- `SQLite`
 - `Zod`
 - `dotenv`
 
@@ -68,6 +68,14 @@
 - 基于 `thread_id` 的对话短期记忆
 - 对话过长时自动摘要
 - 基于消息和工具状态的动态 System Prompt
+- LangGraph 工作流、Checkpoint、审批、拒绝、中止和恢复
+- 2-Step / Agentic / Hybrid RAG 与 GraphRAG 路由
+- Chroma 向量检索、SQLite FTS5、融合、重排和答案验证
+- 多 Agent 协作、并行 Subagents、失败隔离、预算和最多 5 次重试
+- Redis/BullMQ 长任务、进度、取消、重试与重启恢复
+- Chat/Work 独立存储、工作区 Diff、快照和安全回退
+- Docker Sandbox 隔离执行
+- 每轮 Token、模型/工具调用和耗时的对话内运行详情
 
 ## 当前支持的模型
 
@@ -76,6 +84,7 @@
 - DeepSeek: `deepseek-v4-flash`
 - DeepSeek: `deepseek-v4-pro`
 - OpenAI: `gpt-4o-mini`
+- Moonshot: `kimi-k2.6`
 - SiliconFlow: `Qwen/Qwen2.5-7B-Instruct`
 
 注意：
@@ -87,27 +96,30 @@
 
 ```text
 .
+├── electron/                 # Electron 主进程与安全 IPC
+├── client/                   # React 前端源码
+│   ├── main.tsx
+│   └── tailwind.css
 ├── public/
 │   ├── index.html
 │   ├── app.js
-│   └── styles.css
-├── client/
-│   └── main.tsx
+│   ├── styles.css
+│   └── tailwind.css
 ├── src/
-│   ├── agents/
-│   │   ├── langChainToolAgent.ts
-│   │   ├── toolMemoryState.ts
-│   │   └── dynamicMemoryPromptMiddleware.ts
-│   ├── providers/
-│   │   ├── langChainProvider.ts
-│   │   └── openaiCompatibleProvider.ts
-│   ├── tools/
-│   │   └── langchain/
-│   ├── config.ts
-│   ├── modelRegistry.ts
-│   ├── providerRegistry.ts
-│   ├── server.ts
-│   └── types.ts
+│   ├── agents/               # Agent、子代理、动态 Prompt 与协作
+│   ├── graph/                # LangGraph 工作流
+│   ├── rag/                  # 文档解析、切分、检索与 GraphRAG
+│   ├── tools/                # LangChain、工作区与 Sandbox 工具
+│   ├── observability/        # OTel 追踪与 Token 账本
+│   ├── queue/                # BullMQ 队列与 Worker
+│   ├── providers/            # 模型 Provider
+│   ├── db/                   # SQLite 初始化与迁移
+│   ├── server.ts             # Express API
+│   └── worker.ts             # 后台任务 Worker
+├── docs/                     # 项目知识文档与流程图
+├── deploy/                   # Sandbox、OTel 等部署配置
+├── data/                     # 容器和服务端持久数据
+├── compose.yaml              # 全部基础服务的统一入口
 ├── .env
 ├── .env.example
 ├── package.json
@@ -181,23 +193,14 @@
 - 写接口时更不容易出错
 - 方便你理解“前端传什么，后端回什么”
 
+### `client/main.tsx`
+
+这是 React 前端入口，负责 Chat/Work 模式、流式消息、附件、审批弹窗、任务卡片、
+运行详情、设置页以及 Electron IPC 交互。`public/app.js` 是构建产物，不应手工修改。
+
 ### `public/index.html`
 
-这是页面结构，负责：
-
-- 聊天界面布局
-- 模型下拉框
-- 输入框和发送按钮
-
-### `public/script.js`
-
-这是前端交互逻辑，负责：
-
-- 页面加载时请求 `/api/models`
-- 渲染模型列表
-- 提交聊天消息到 `/api/chat`
-- 把服务端返回的回复显示到页面上
-- 显示“当前调用模型”和“实际调用模型”
+这是 React 挂载页面，只保留基础 HTML 容器和静态资源引用。
 
 ### `public/styles.css`
 
@@ -221,7 +224,25 @@ npm install
 cp .env.example .env
 ```
 
-然后编辑 `.env`，按需填入你的 key。
+Windows PowerShell 可以使用：
+
+```powershell
+Copy-Item .env.example .env
+```
+
+然后编辑 `.env`，按需填入模型 Key，并设置 Sandbox 内部令牌与宿主机存储目录。
+
+本机 Compose 部署时，Sandbox 地址应为：
+
+```env
+SANDBOX_PROVIDER=orchestrator
+SANDBOX_ORCHESTRATOR_URL=http://127.0.0.1:3010
+SANDBOX_SERVICE_TOKEN=至少32字符的随机内部令牌
+SANDBOX_DOCKER_STORAGE_ROOT=F:/studydata/agent/ChatDemo/data/sandboxes
+```
+
+`SANDBOX_DOCKER_STORAGE_ROOT` 必须替换为当前电脑上的真实绝对路径；Kubernetes Service
+域名只用于正式集群部署。
 
 例如你只想用 DeepSeek：
 
@@ -248,13 +269,14 @@ docker compose up -d
 
 - Chroma：`http://127.0.0.1:8000`
 - Docling：`http://127.0.0.1:5001`
+- Redis：`127.0.0.1:6379`
 - Sandbox Orchestrator：`http://127.0.0.1:3010`（仅后端访问）
 - Phoenix：`http://127.0.0.1:6006`
 - OpenTelemetry Collector：`http://127.0.0.1:4318`
 
 第一次启动需要下载镜像，Docling CPU 镜像体积较大，需要等待下载完成。
-Chroma 数据保存在 `data/chroma`，Docling 模型缓存保存在
-`data/docling-cache`，重建容器不会清空这些目录。
+Chroma、Redis、Docling、Phoenix 和 Sandbox 临时数据都挂载在项目的 `data/`
+目录下，重建容器不会自动清空这些目录。
 
 检查服务状态：
 
@@ -287,14 +309,20 @@ http://127.0.0.1:3000
 ### Docker 服务管理
 
 ```bash
-# 查看 Chroma 和 Docling 日志
+# 查看全部服务日志
 npm run services:logs
 
 # 停止容器，但保留 data 目录中的数据
 npm run services:down
 
-# 更新两个服务镜像
+# 拉取可直接下载的服务镜像
 npm run services:pull
+```
+
+修改了 Sandbox Orchestrator 源码后，重新构建该服务：
+
+```bash
+docker compose up -d --build sandbox-orchestrator
 ```
 
 ## 开发模式
@@ -344,6 +372,19 @@ OpenAI 的 API Key。
 SiliconFlow 的 API Key。
 
 如果你配置了它，前端会显示 SiliconFlow 对应模型。
+
+### `MOONSHOT_API_KEY`
+
+Moonshot / Kimi API Key。配置后前端会显示支持图片理解的 Kimi 模型。
+
+### `AUTH_TOKEN_SECRET`
+
+登录 Token 的签名密钥。正式环境必须改为足够长的随机字符串。
+
+### `SANDBOX_SERVICE_TOKEN`
+
+Agent 后端与 Sandbox Orchestrator 的内部认证令牌，至少 32 个随机字符。它不会发送给
+前端，也不能提交到 Git。
 
 ### `PORT`
 
@@ -395,7 +436,7 @@ GET /api/models
 - 输入一段内容
 - 点击发送
 
-前端会把数据提交到：
+前端通过 SSE 接口提交消息；普通兼容接口仍保留为：
 
 ```text
 POST /api/chat
@@ -440,13 +481,14 @@ POST /api/chat
 
 ### 第 5 步：服务端返回结果给前端
 
-服务端拿到模型回复后，再把结果返回给浏览器。
+服务端把模型增量事件通过 SSE 返回给前端，并把最终消息、LangGraph 状态、Token
+用量和运行事件写入对应存储。
 
-同时还会附带本次调用的元信息，比如：
+每条完成的助手消息可展开“运行详情”，查看：
 
-- `provider`
-- `modelId`
-- `modelLabel`
+- 模型和工具调用次数
+- 输入、输出和总 Token
+- 任务耗时、状态、重试和安全运行事件
 
 所以你在页面上可以明确知道，这一轮消息到底调用了哪个模型。
 
@@ -470,7 +512,7 @@ POST /api/chat
 
 如果你只是想在现有 provider 下增加模型，最简单。
 
-直接修改 [src/config.ts](/home/lsq/project/stduy/chatDemo/src/config.ts) 里的 `modelCatalog`，新增一项：
+直接修改 `src/config.ts` 里的 `modelCatalog`，新增一项：
 
 ```ts
 {
@@ -503,7 +545,7 @@ npm run build
 
 如果它兼容 OpenAI 风格接口，可以继续复用：
 
-[src/providers/openaiCompatibleProvider.ts](/home/lsq/project/stduy/chatDemo/src/providers/openaiCompatibleProvider.ts)
+`src/providers/openaiCompatibleProvider.ts`
 
 如果它不兼容，就新建一个自己的 provider 文件。
 
@@ -527,7 +569,7 @@ npm run build
 
 也就是说，页面显示什么名字，取决于：
 
-[src/config.ts](/home/lsq/project/stduy/chatDemo/src/config.ts)
+`src/config.ts`
 
 里的 `modelCatalog` 写了什么。
 
@@ -548,20 +590,38 @@ npm run build
 http://127.0.0.1:3000
 ```
 
-## 后续可以继续练习什么
+## 数据与隐私边界
 
-如果你想继续拿这个项目练手，推荐按下面顺序往下做：
+| 数据 | 存储位置 | 说明 |
+|---|---|---|
+| Chat 用户、对话、记忆、附件元数据 | 服务端 SQLite 与上传目录 | 面向普通聊天与知识库 |
+| Work 对话、Checkpoint、审批、任务附件 | 系统“文档/KimiBai” | 只属于当前电脑 |
+| 向量索引 | Chroma `data/chroma` | SQLite 仍负责 FTS5 和元数据 |
+| 队列状态 | Redis `data/redis` | 不保存对话正文和用户文件 |
+| Token 账本 | SQLite | 设置页与对话运行详情的数据来源 |
+| Trace | Phoenix `data/observability/phoenix` | 默认不采集 Prompt 或文件正文 |
+| Sandbox 临时副本 | `data/sandboxes` | 任务完成或超时后清理 |
 
-1. 做多轮上下文对话
-2. 做流式输出
-3. 给每个平台增加独立的系统提示词
-4. 做聊天记录持久化
-5. 加一个“查看原始请求参数”的调试面板
-6. 给模型配置做单独的管理页面
+删除 Work 对话会清理该任务的本地状态和托管附件，但不会删除用户主动选择的项目目录。
+
+## 知识文档
+
+- [Chat 与 Work 存储边界](docs/chat-work-storage.md)
+- [LangChain AI Assistant](docs/langchain-ai-assistant.md)
+- [LangChain 与 LangGraph 的关系](docs/langchain-langgraph-relationship.md)
+- [LangGraph 学习指南](docs/langgraph-learning-guide.md)
+- [RAG 完整知识汇总](docs/rag-summary.md)
+- [Subagents 与并行调度](docs/subagents-learning-guide.md)
+- [AI 团队可靠性](docs/ai-team-reliability-guide.md)
+- [异步任务、Queue 与 Worker](docs/async-task-queue-worker-guide.md)
+- [Skill 学习指南](docs/skills-learning-guide.md)
+- [MCP 学习指南](docs/mcp-learning-guide.md)
+- [远程 Sandbox 与执行隔离](docs/remote-sandbox-execution-isolation.md)
+- [可观测性、追踪与 Token 用量](docs/observability-and-token-usage.md)
 
 ## 总结
 
-这个项目虽然不大，但已经覆盖了一个真实 AI Web Demo 的核心结构：
+这个项目已经从基础聊天 Demo 扩展为桌面 AI Agent 工程：
 
 - 前端界面
 - 后端代理
@@ -569,18 +629,16 @@ http://127.0.0.1:3000
 - 多模型切换
 - provider 抽象
 - TypeScript 分层
+- LangGraph 持久工作流与人工控制
+- RAG、Multi-Agent、队列、Sandbox 和可观测性
 
-如果你能把这个项目读明白、改明白、再自己扩展 1 到 2 个功能，基础就会扎实很多。
-# Electron 桌面版
+如果你能把 Chat/Work 存储边界、LangGraph 状态流转、RAG 检索链路和 Sandbox
+审批回写流程读明白，这个项目就可以继续作为后续 Agent 能力的基础资产。
 
-桌面版保留现有 React、LangChain、LangGraph、RAG 和 SQLite 能力，并增加系统原生工作目录选择。
+## Electron 注意事项
 
-```powershell
-npm install
-npm run desktop
-```
-
-`docker compose up -d` 统一启动 Redis、Chroma、Docling、Sandbox Orchestrator、Phoenix 和 OpenTelemetry Collector。Sandbox Orchestrator 在服务端通过 Docker Socket 创建一次性隔离执行容器，不直接在用户桌面进程中执行命令。项目业务数据继续使用 SQLite，不依赖 PostgreSQL。`npm run desktop` 只构建服务端和 React 并启动 Electron，不再隐式管理 Docker。进入顶部“工作”模式后，点击“选择工作目录”即可使用 Windows 原生文件夹选择器。工作区按用户保存在 Electron 用户数据目录中，重启应用后会自动恢复。
+`npm run desktop` 只构建服务端和 React 并启动 Electron，不隐式启停 Docker。
+进入顶部“工作”模式后，可以用系统文件夹选择器绑定项目目录。
 
 如果国内网络无法从默认源下载 Electron 运行时，可以执行：
 

@@ -110,7 +110,11 @@ Sandbox Job 默认由 `NetworkPolicy` 禁止全部入站和出站。需要下载
 - `deploy/kubernetes/sandbox-platform.yaml`：Namespace、RBAC、PVC、Deployment、Service、NetworkPolicy、ResourceQuota 和 RuntimeClass；
 - `sandbox-platform.yaml` 只引用名为 `sandbox-service-token` 的 Secret，不在仓库保存 Token 文件；部署系统负责创建并注入真实密钥。
 
-`deploy` 不是另一套 Docker 环境或数据目录。根目录的 `compose.yaml` 用于本地启动 Redis、Chroma 和 Docling；`deploy/sandbox-orchestrator.Dockerfile` 只负责把 Orchestrator 构建成生产镜像，`deploy/kubernetes` 则描述该镜像如何在生产集群运行。它们共用标准 OCI/Docker 镜像体系，但职责和生命周期不同。
+`deploy` 不是另一套 Docker 环境或数据目录。根目录的 `compose.yaml` 统一启动 Redis、
+Chroma、Docling、Phoenix、OpenTelemetry Collector 和 Sandbox Orchestrator；
+`deploy/sandbox-orchestrator.Dockerfile` 负责构建 Orchestrator 镜像，`deploy/kubernetes`
+则描述该镜像如何在多服务器生产集群运行。它们共用标准 OCI/Docker 镜像体系，但职责和
+生命周期不同。
 
 部署前必须调整镜像地址、RWX StorageClass、gVisor/Kata handler、资源配额和镜像允许列表。服务 Token 必须通过环境变量或 Secret 管理系统创建，不能提交到 Git。
 
@@ -120,28 +124,40 @@ Sandbox Job 默认由 `NetworkPolicy` 禁止全部入站和出站。需要下载
 
 根目录 `compose.yaml` 已包含 `sandbox-orchestrator`。执行 `docker compose up -d` 后，后端通过 Bearer Token 调用 Orchestrator；Orchestrator 再通过服务器 Docker Socket 创建一次性执行容器。`SANDBOX_DOCKER_STORAGE_ROOT` 必须填写服务器宿主机上的绝对路径，因为 Docker daemon 不会把 Orchestrator 容器内路径当作宿主机路径。
 
+本机 Electron / Web 后端运行在宿主机，因此本地 `.env` 使用
+`SANDBOX_ORCHESTRATOR_URL=http://127.0.0.1:3010`。只有部署在 Kubernetes 集群内的后端，
+才使用后文的 Service DNS 地址。
+
 该方案适合单服务器正式部署。3010 端口只绑定 `127.0.0.1`，不应直接暴露公网。多服务器调度或需要 gVisor/Kata 时，再迁移到 Kubernetes 部署方案。
 
 ### 本地一键测试
 
-开发时只需启动 Docker Desktop，然后执行：
+开发时先启动 Docker Desktop，再统一启动 Compose：
 
 ```powershell
+docker compose up -d
 npm run desktop
 ```
 
-Electron 会自动启动独立 Sandbox Orchestrator，生成本机内部 Token，并通过 Docker Engine 为每次命令创建受限容器。命令不会在 Agent/Express 进程中直接执行。容器使用断网、非 root、只读根文件系统、能力删除、PID/CPU/内存限制，任务结束后自动销毁。
+正常情况下，后端连接 Compose 中的 Sandbox Orchestrator，并通过 Docker Engine 为每次命令
+创建受限容器。Electron 只在检测不到可用 Orchestrator 时启动本机进程作为开发故障回退，
+不会再创建第二套长期服务。命令不会在 Agent/Express 进程中直接执行。容器使用断网、
+非 root、只读根文件系统、能力删除、PID/CPU/内存限制，任务结束后自动销毁。
 
 Token 读取顺序如下：
 
 1. 优先读取 `SANDBOX_SERVICE_TOKEN` 环境变量，适合开发环境和自动化部署；
-2. 未配置时由 Electron 生成，并通过 `safeStorage` 使用 Windows DPAPI、macOS Keychain 或 Linux 系统密钥服务加密保存；
+2. 仅在 Electron 本机回退模式且未配置时，才由 Electron 生成，并通过 `safeStorage` 使用 Windows DPAPI、macOS Keychain 或 Linux 系统密钥服务加密保存；
 3. 系统密钥服务不可用时只在当前进程内使用，不允许降级为明文文件；
 4. 旧版 `sandbox-service.token` 明文文件会在首次启动时迁移并删除。
 
 `.env` 也是明文文件，只适合本地开发且必须被 Git 忽略；生产环境应使用 Kubernetes Secret 或部署平台的 Secret 管理能力。
 
 本地 Docker backend 用于开发和集成测试；正式多租户部署仍使用 Kubernetes + gVisor/Kata。
+
+Compose 使用 Docker Socket 管理任务容器，因此 Orchestrator 等同于高权限内部服务：3010
+端口只能绑定回环或内网，必须校验 `SANDBOX_SERVICE_TOKEN`，不能直接暴露公网，也不能让
+Renderer 或用户输入决定任意镜像、挂载路径和 Docker 参数。
 
 ### 正式部署
 
