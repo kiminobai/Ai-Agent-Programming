@@ -21500,6 +21500,45 @@
       cancelled: "\u5DF2\u505C\u6B62"
     }[status];
   }
+  function BackgroundTaskStatusCard(props) {
+    const { task } = props;
+    const isActive = ["queued", "running", "retrying"].includes(task.status);
+    const completedSteps = props.plan?.steps.filter(
+      (step) => step.status === "completed"
+    ).length || 0;
+    const totalSteps = props.plan?.steps.length || 0;
+    const fileActivities = props.activities.filter(
+      (activity) => activity.activityType === "file_write" && activity.filePath
+    );
+    const changedFiles = Array.from(
+      new Set(fileActivities.map((activity) => activity.filePath))
+    );
+    const additions = fileActivities.reduce(
+      (total, activity) => total + (activity.additions || 0),
+      0
+    );
+    const deletions = fileActivities.reduce(
+      (total, activity) => total + (activity.deletions || 0),
+      0
+    );
+    const startTime = new Date(task.startedAt || task.createdAt || "").getTime();
+    const endTime = task.completedAt ? new Date(task.completedAt).getTime() : props.progressClock;
+    const elapsedText = Number.isFinite(startTime) ? formatElapsedTime(Math.max(0, endTime - startTime)) : "";
+    const rolledBack = Boolean(
+      props.diffs?.length && props.diffs.every((diff) => diff.status === "rolled_back")
+    );
+    return /* @__PURE__ */ import_react.default.createElement(
+      "details",
+      {
+        className: `background-task-card status-${task.status}`,
+        "aria-label": "\u540E\u53F0\u4EFB\u52A1\u72B6\u6001",
+        open: isActive
+      },
+      /* @__PURE__ */ import_react.default.createElement("summary", { className: "background-task-heading" }, /* @__PURE__ */ import_react.default.createElement("span", null, /* @__PURE__ */ import_react.default.createElement("strong", null, isActive ? task.statusMessage : task.title), /* @__PURE__ */ import_react.default.createElement("small", null, task.status === "completed" ? "\u5DF2\u5904\u7406" : task.statusMessage, elapsedText ? ` ${elapsedText}` : "")), /* @__PURE__ */ import_react.default.createElement("b", null, isActive ? `${Math.max(0, Math.min(100, task.progress))}%` : "\u203A")),
+      /* @__PURE__ */ import_react.default.createElement("div", { className: "background-task-body" }, isActive ? /* @__PURE__ */ import_react.default.createElement("div", { className: "background-task-progress", "aria-hidden": "true" }, /* @__PURE__ */ import_react.default.createElement("span", { style: { width: `${task.progress}%` } })) : null, props.plan?.steps.length ? /* @__PURE__ */ import_react.default.createElement("ol", { className: "background-task-timeline" }, props.plan.steps.map((step) => /* @__PURE__ */ import_react.default.createElement("li", { className: `status-${step.status}`, key: step.id }, /* @__PURE__ */ import_react.default.createElement("i", { "aria-hidden": "true" }, getTaskPlanStepIcon(step.status)), /* @__PURE__ */ import_react.default.createElement("span", null, step.title)))) : null, props.activities.length ? /* @__PURE__ */ import_react.default.createElement("ol", { className: "background-task-timeline operational-events" }, props.activities.map((activity) => /* @__PURE__ */ import_react.default.createElement("li", { key: activity.activityId }, /* @__PURE__ */ import_react.default.createElement("i", { "aria-hidden": "true" }, activity.activityType === "command" ? "\u203A_" : "\u2197"), /* @__PURE__ */ import_react.default.createElement("span", null, activity.activityType === "command" ? `\u8FD0\u884C\u4E86\u547D\u4EE4 ${activity.commandText || ""}` : `\u7F16\u8F91\u4E86 ${activity.filePath || "\u6587\u4EF6"}`), activity.activityType === "command" && activity.exitCode !== void 0 ? /* @__PURE__ */ import_react.default.createElement("small", null, "\u9000\u51FA\u7801 ", activity.exitCode) : null))) : null, /* @__PURE__ */ import_react.default.createElement("div", { className: "background-task-actions" }, isActive ? /* @__PURE__ */ import_react.default.createElement("button", { type: "button", onClick: () => props.onCancel(task.taskId) }, "\u505C\u6B62") : null, task.status === "failed" ? /* @__PURE__ */ import_react.default.createElement("button", { type: "button", onClick: () => props.onRetry(task.taskId) }, "\u91CD\u8BD5") : null, changedFiles.length ? /* @__PURE__ */ import_react.default.createElement("button", { type: "button", disabled: props.loadingDiff, onClick: props.onToggleDiff }, props.loadingDiff ? "\u8BFB\u53D6\u4E2D\u2026" : props.diffs ? "\u6536\u8D77 Diff" : "\u67E5\u770B Diff") : null, changedFiles.length ? /* @__PURE__ */ import_react.default.createElement("button", { type: "button", disabled: rolledBack, onClick: props.onRollback }, rolledBack ? "\u5DF2\u56DE\u9000" : "\u56DE\u9000\u672C\u8F6E") : null)),
+      /* @__PURE__ */ import_react.default.createElement("footer", { className: "background-task-summary" }, /* @__PURE__ */ import_react.default.createElement("span", null, totalSteps ? `\u7B2C ${completedSteps}/${totalSteps} \u6B65` : task.statusMessage, changedFiles.length ? ` \xB7 ${changedFiles.length} \u4E2A\u6587\u4EF6\u5DF2\u66F4\u6539` : ""), changedFiles.length ? /* @__PURE__ */ import_react.default.createElement("span", null, /* @__PURE__ */ import_react.default.createElement("b", null, "+", additions), " ", /* @__PURE__ */ import_react.default.createElement("i", null, "-", deletions)) : null)
+    );
+  }
   async function readJsonResponse(response, apiName) {
     const text = await response.text();
     try {
@@ -21743,6 +21782,7 @@
     const [loadingDiffTurnId, setLoadingDiffTurnId] = (0, import_react.useState)("");
     const [subAgentRuns, setSubAgentRuns] = (0, import_react.useState)([]);
     const [taskPlans, setTaskPlans] = (0, import_react.useState)([]);
+    const [backgroundTasks, setBackgroundTasks] = (0, import_react.useState)([]);
     const [generatedFiles, setGeneratedFiles] = (0, import_react.useState)([]);
     const [isLoginOpen, setIsLoginOpen] = (0, import_react.useState)(false);
     const [loginName, setLoginName] = (0, import_react.useState)("admin");
@@ -21773,6 +21813,7 @@
     const composerSettingsRef = (0, import_react.useRef)(null);
     const fileInputRef = (0, import_react.useRef)(null);
     const activeRequestControllerRef = (0, import_react.useRef)(null);
+    const activeBackgroundTaskIdRef = (0, import_react.useRef)("");
     const shouldAutoScrollRef = (0, import_react.useRef)(true);
     const pendingInitialScrollRef = (0, import_react.useRef)(false);
     const lastScrollTopRef = (0, import_react.useRef)(0);
@@ -21921,6 +21962,23 @@
       setWorkspaceDiffs({});
       void loadWorkspaceActivities();
     }, [appMode, activeThreadId, userId]);
+    (0, import_react.useEffect)(() => {
+      if (!activeThreadId || !userId.trim()) {
+        setBackgroundTasks([]);
+        return;
+      }
+      void loadBackgroundTasks();
+      const timer = window.setInterval(() => {
+        if (backgroundTasks.some((task) => ["queued", "running", "retrying"].includes(task.status))) {
+          void loadBackgroundTasks();
+          if (appMode === "work") {
+            void loadWorkspaceActivities();
+            void loadTaskPlans();
+          }
+        }
+      }, 1e3);
+      return () => window.clearInterval(timer);
+    }, [appMode, activeThreadId, userId, backgroundTasks.some((task) => ["queued", "running", "retrying"].includes(task.status))]);
     (0, import_react.useEffect)(() => {
       if (!activeThreadId || !userId.trim()) {
         setGeneratedFiles([]);
@@ -22695,6 +22753,33 @@
       }
       setTaskPlans(data.plans || []);
     }
+    async function loadBackgroundTasks() {
+      const response = await fetch(
+        `/api/background-tasks?threadId=${encodeURIComponent(activeThreadId)}&userId=${encodeURIComponent(userId.trim())}`
+      );
+      const data = await readJsonResponse(response, "/api/background-tasks");
+      if (!response.ok) throw new Error(data.error || "\u8BFB\u53D6\u540E\u53F0\u4EFB\u52A1\u5931\u8D25\u3002");
+      setBackgroundTasks(data.tasks || []);
+    }
+    async function cancelBackgroundTask(taskId) {
+      await fetch(`/api/background-tasks/${encodeURIComponent(taskId)}/cancel`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ threadId: activeThreadId, userId: userId.trim() })
+      });
+      if (activeBackgroundTaskIdRef.current === taskId) {
+        activeRequestControllerRef.current?.abort();
+      }
+      await loadBackgroundTasks();
+    }
+    async function retryBackgroundTask(taskId) {
+      await fetch(`/api/background-tasks/${encodeURIComponent(taskId)}/retry`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ threadId: activeThreadId, userId: userId.trim() })
+      });
+      await loadBackgroundTasks();
+    }
     async function loadGeneratedFiles() {
       const response = await fetch(
         `/api/generated-files?threadId=${encodeURIComponent(activeThreadId)}&userId=${encodeURIComponent(userId.trim())}`
@@ -22954,7 +23039,24 @@
         let buffer = "";
         let finalReply = "";
         const handleEvent = (streamEvent) => {
+          if (streamEvent.type === "task") {
+            activeBackgroundTaskIdRef.current = streamEvent.task.taskId;
+            setBackgroundTasks((current) => [
+              ...current.filter((task) => task.taskId !== streamEvent.task.taskId),
+              streamEvent.task
+            ]);
+            updateAssistantEntry((entry) => ({
+              ...entry,
+              statusMessage: streamEvent.task.statusMessage,
+              completed: streamEvent.task.status === "completed" || streamEvent.task.status === "failed" || streamEvent.task.status === "cancelled" ? true : entry.completed,
+              stopped: streamEvent.task.status === "cancelled" || entry.stopped
+            }));
+            return;
+          }
           if (streamEvent.type === "meta") {
+            if (streamEvent.meta.taskId) {
+              activeBackgroundTaskIdRef.current = streamEvent.meta.taskId;
+            }
             updateAssistantEntry((entry) => ({
               ...entry,
               meta: `${currentRole?.label || streamEvent.meta.roleId} | ${streamEvent.meta.modelId} | ${streamEvent.meta.userId}`
@@ -23078,6 +23180,7 @@
         );
       } finally {
         activeRequestControllerRef.current = null;
+        activeBackgroundTaskIdRef.current = "";
         setIsSubmitting(false);
       }
     }
@@ -23401,10 +23504,16 @@
         const changedFiles = Array.from(
           new Set(turnActivities.map((activity) => activity.filePath))
         );
+        const turnTimelineActivities = entry.turnId ? workspaceActivities.filter(
+          (activity) => activity.turnId === entry.turnId
+        ) : [];
         const turnSubAgentRoots = entry.role === "assistant" && entry.turnId ? subAgentRuns.filter(
           (run) => run.turnId === entry.turnId && run.depth === 1
         ) : [];
         const turnPlan = entry.role === "assistant" && entry.turnId && isLastAssistantForTurn ? taskPlans.find((plan) => plan.turnId === entry.turnId) : void 0;
+        const turnBackgroundTask = entry.turnId && (entry.role === "assistant" && isLastAssistantForTurn || entry.role === "user" && !entries.some(
+          (candidate) => candidate.role === "assistant" && candidate.turnId === entry.turnId
+        )) ? [...backgroundTasks].reverse().find((task) => task.turnId === entry.turnId) : void 0;
         const turnGeneratedFiles = entry.role === "assistant" && entry.turnId && isLastAssistantForTurn ? generatedFiles.filter(
           (file) => file.turnId === entry.turnId
         ) : [];
@@ -23455,7 +23564,35 @@
                 }
               ) : /* @__PURE__ */ import_react.default.createElement(import_react.default.Fragment, null, /* @__PURE__ */ import_react.default.createElement("div", { className: "message-attachment-icon" }, getAttachmentKind(entry.attachmentName)), /* @__PURE__ */ import_react.default.createElement("div", { className: "message-attachment-info" }, /* @__PURE__ */ import_react.default.createElement("div", { className: "message-attachment-name" }, entry.attachmentName), /* @__PURE__ */ import_react.default.createElement("div", { className: "message-attachment-copy" }, getAttachmentKind(entry.attachmentName))))
             ) : null,
-            entry.role === "assistant" ? /* @__PURE__ */ import_react.default.createElement(import_react.default.Fragment, null, turnPlan ? /* @__PURE__ */ import_react.default.createElement(
+            turnBackgroundTask ? /* @__PURE__ */ import_react.default.createElement(
+              BackgroundTaskStatusCard,
+              {
+                task: turnBackgroundTask,
+                plan: turnPlan,
+                activities: turnTimelineActivities,
+                diffs: turnDiffs,
+                progressClock,
+                loadingDiff: loadingDiffTurnId === entry.turnId,
+                onCancel: (taskId) => void cancelBackgroundTask(taskId),
+                onRetry: (taskId) => void retryBackgroundTask(taskId),
+                onToggleDiff: () => {
+                  if (!entry.turnId) return;
+                  if (turnDiffs) {
+                    setWorkspaceDiffs((current) => {
+                      const next = { ...current };
+                      delete next[entry.turnId];
+                      return next;
+                    });
+                  } else {
+                    void loadWorkspaceDiff(entry.turnId);
+                  }
+                },
+                onRollback: () => {
+                  if (entry.turnId) void rollbackWorkspaceTurn(entry.turnId);
+                }
+              }
+            ) : null,
+            entry.role === "assistant" ? /* @__PURE__ */ import_react.default.createElement(import_react.default.Fragment, null, turnPlan && !turnBackgroundTask ? /* @__PURE__ */ import_react.default.createElement(
               "details",
               {
                 className: `task-plan-card status-${turnPlan.status}`,
@@ -23538,7 +23675,7 @@
                   "\u2193"
                 )
               ))
-            ) : null, changedFiles.length || turnConflicts.length ? /* @__PURE__ */ import_react.default.createElement("section", { className: "work-activity-card work-activity-inline" }, /* @__PURE__ */ import_react.default.createElement("header", null, /* @__PURE__ */ import_react.default.createElement("strong", null, changedFiles.length ? `\u5DF2\u7F16\u8F91 ${changedFiles.length} \u4E2A\u6587\u4EF6` : "\u6587\u4EF6\u4FEE\u6539\u5DF2\u505C\u6B62"), /* @__PURE__ */ import_react.default.createElement("span", { className: "flex items-center gap-2" }, changedFiles.length ? /* @__PURE__ */ import_react.default.createElement(
+            ) : null, !turnBackgroundTask && changedFiles.length || turnConflicts.length ? /* @__PURE__ */ import_react.default.createElement("section", { className: "work-activity-card work-activity-inline" }, /* @__PURE__ */ import_react.default.createElement("header", null, /* @__PURE__ */ import_react.default.createElement("strong", null, changedFiles.length ? `\u5DF2\u7F16\u8F91 ${changedFiles.length} \u4E2A\u6587\u4EF6` : "\u6587\u4EF6\u4FEE\u6539\u5DF2\u505C\u6B62"), /* @__PURE__ */ import_react.default.createElement("span", { className: "flex items-center gap-2" }, changedFiles.length ? /* @__PURE__ */ import_react.default.createElement(
               "button",
               {
                 className: "rounded-lg border border-zinc-200 px-2 py-1 text-xs hover:bg-zinc-50",
@@ -23810,20 +23947,19 @@
             /* @__PURE__ */ import_react.default.createElement("option", { value: "balanced" }, "\u5747\u8861"),
             /* @__PURE__ */ import_react.default.createElement("option", { value: "performance" }, "\u6DF1\u5EA6")
           )
-        ), /* @__PURE__ */ import_react.default.createElement(
-          "button",
-          {
-            type: "button",
-            className: "composer-settings-done",
-            onClick: () => setIsComposerSettingsOpen(false)
-          },
-          "\u5B8C\u6210"
         )) : null), isSubmitting ? /* @__PURE__ */ import_react.default.createElement(
           "button",
           {
             className: "send-button",
             type: "button",
-            onClick: () => activeRequestControllerRef.current?.abort()
+            onClick: () => {
+              const taskId = activeBackgroundTaskIdRef.current;
+              if (taskId) {
+                void cancelBackgroundTask(taskId);
+              } else {
+                activeRequestControllerRef.current?.abort();
+              }
+            }
           },
           "\u505C\u6B62"
         ) : /* @__PURE__ */ import_react.default.createElement("button", { className: "send-button", type: "submit", disabled: !canSubmit }, "\u53D1\u9001"))))

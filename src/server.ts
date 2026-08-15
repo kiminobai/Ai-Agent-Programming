@@ -104,6 +104,22 @@ import {
 import { installSkillFromPath } from "./skills/skillInstaller";
 import { clearSkillRegistryCache, listAgentSkills } from "./skills/skillRegistry";
 import { deleteThreadExtensions } from "./extensions/threadExtensionStorage";
+import {
+  enqueueBackgroundTask,
+  getBackgroundTask,
+  listBackgroundTaskEvents,
+  listBackgroundTasks,
+  requestBackgroundTaskCancellation,
+  retryBackgroundTask,
+  updateBackgroundTask
+} from "./tasks/backgroundTaskRepository";
+import {
+  cancelQueuedBackgroundTask,
+  closeBackgroundTaskQueue,
+  retryQueuedBackgroundTask,
+  scheduleBackgroundTask
+} from "./tasks/backgroundTaskQueue";
+import type { AgentChatTaskPayload } from "./tasks/agentChatTaskHandler";
 
 type MulterRequest = Request & {
   file?: Express.Multer.File;
@@ -132,6 +148,50 @@ const upload = multer({
     fileSize: 50 * 1024 * 1024
   }
 });
+
+function streamBackgroundTaskEvents(
+  taskId: string,
+  threadId: string,
+  res: Response,
+  afterEventId = 0
+): void {
+  res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  res.flushHeaders();
+  let cursor = afterEventId;
+  let closed = false;
+  const flush = () => {
+    if (closed) return;
+    for (const event of listBackgroundTaskEvents(taskId, threadId, cursor)) {
+      cursor = event.eventId;
+      res.write(`id: ${event.eventId}\ndata: ${event.eventJson}\n\n`);
+    }
+    const task = getBackgroundTask(taskId, threadId);
+    if (!task || ["completed", "failed", "cancelled"].includes(task.status)) {
+      closed = true;
+      clearInterval(timer);
+      res.end();
+    }
+  };
+  const timer = setInterval(flush, 250);
+  res.once("close", () => {
+    closed = true;
+    clearInterval(timer);
+  });
+  flush();
+}
+
+function shouldUseBackgroundQueue(input: {
+  mode: ThreadMode;
+  hasAttachment: boolean;
+  message: string;
+}): boolean {
+  if (input.hasAttachment) return true;
+  const longTaskIntent = /(批量|建立.*索引|重新索引|知识库|分析.*文件|处理.*文档|运行.*测试|执行.*构建|修改.*文件|创建.*文件|生成.*文件|多代理|子代理|调研|抓取|导入|导出)/i;
+  return longTaskIntent.test(input.message) ||
+    (input.mode === "work" && /(创建|修改|实现|修复|运行|执行|检查)/i.test(input.message));
+}
 
 app.get("/api/mcp/status", (_req, res) => {
   // 只返回连接状态和 Tool 名称，不返回 command、headers、环境变量或令牌。
@@ -270,6 +330,60 @@ app.get("/api/task-plans", (req, res) => {
     return;
   }
   res.json({ plans: listTaskPlans(threadId, userId) });
+});
+
+app.get("/api/background-tasks", (req, res) => {
+  const threadId = String(req.query.threadId || "").trim();
+  const userId = String(req.query.userId || "").trim();
+  if (!getThreadById(threadId, userId)) {
+    res.status(404).json({ error: "对话不存在。" });
+    return;
+  }
+  res.json({ tasks: listBackgroundTasks(threadId, userId) });
+});
+
+app.get("/api/background-tasks/:taskId/events", (req, res) => {
+  const taskId = String(req.params.taskId || "").trim();
+  const threadId = String(req.query.threadId || "").trim();
+  const userId = String(req.query.userId || "").trim();
+  const task = getBackgroundTask(taskId, threadId);
+  if (!task || task.userId !== userId) {
+    res.status(404).json({ error: "后台任务不存在。" });
+    return;
+  }
+  const after = Number(req.query.after || req.header("Last-Event-ID") || 0);
+  streamBackgroundTaskEvents(taskId, threadId, res, Number.isFinite(after) ? after : 0);
+});
+
+app.post("/api/background-tasks/:taskId/cancel", async (req, res) => {
+  const taskId = String(req.params.taskId || "").trim();
+  const threadId = String(req.body?.threadId || "").trim();
+  const userId = String(req.body?.userId || "").trim();
+  const task = getBackgroundTask(taskId, threadId);
+  if (!task || task.userId !== userId) {
+    res.status(404).json({ error: "后台任务不存在。" });
+    return;
+  }
+  const changed = requestBackgroundTaskCancellation(taskId, threadId);
+  if (changed) await cancelQueuedBackgroundTask(taskId);
+  res.json({ cancelled: changed });
+});
+
+app.post("/api/background-tasks/:taskId/retry", async (req, res) => {
+  const taskId = String(req.params.taskId || "").trim();
+  const threadId = String(req.body?.threadId || "").trim();
+  const userId = String(req.body?.userId || "").trim();
+  const task = getBackgroundTask(taskId, threadId);
+  if (!task || task.userId !== userId) {
+    res.status(404).json({ error: "后台任务不存在。" });
+    return;
+  }
+  const retried = retryBackgroundTask(taskId, threadId);
+  if (retried) {
+    const queuedTask = getBackgroundTask(taskId, threadId);
+    if (queuedTask) await retryQueuedBackgroundTask(queuedTask);
+  }
+  res.json({ retried });
 });
 
 app.get("/api/generated-files", (req, res) => {
@@ -1688,24 +1802,7 @@ const chatHandler: RequestHandler = async (
       committedUpload = undefined;
     }
 
-    res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
-    res.setHeader("Cache-Control", "no-cache, no-transform");
-    res.setHeader("Connection", "keep-alive");
-    res.flushHeaders();
-
-    const meta = {
-      provider: model.provider,
-      modelId: model.id,
-      modelLabel: model.label,
-      roleId: role.id,
-      userId,
-      threadId
-    };
-
-    res.write(`data: ${JSON.stringify({ type: "meta", meta })}\n\n`);
-
-    /**
-     * 鎶娾€滄湰杞‘瀹炲甫浜嗛檮浠垛€濇樉寮忓啓杩涘彂缁欐ā鍨嬬殑鐢ㄦ埛娑堟伅閲屻€?     * 杩欐牱妯″瀷鍦ㄥ綋鍓嶅洖鍚堝氨鑳芥劅鐭ラ檮浠跺瓨鍦紝鑰屼笉鏄彧渚濊禆涓棿浠堕噷鐨勯€氱敤鑳屾櫙鎻愮ず銆?     */
+    // 附件已经完成校验并绑定到 thread；后台 Worker 只保存引用，不把二进制写入队列。
     const messageForModel = attachmentName
       ? [
           effectiveUserMessage,
@@ -1714,49 +1811,88 @@ const chatHandler: RequestHandler = async (
           "If the user asks to use the file content, call retrieve_uploaded_document_chunks to retrieve only relevant chunks before answering."
         ].join("\n")
       : effectiveUserMessage;
-
-    // 浏览器断开连接或主动停止时，中止 LangGraph 本轮执行。
-    const taskController = new AbortController();
-    res.once("close", () => {
-      if (!res.writableEnded) {
-        taskController.abort();
-      }
-    });
-
-    const reply = await provider.streamChat(
-      model.id,
-      messageForModel,
-      role.systemPrompt,
-      (chunk) => {
-        res.write(`data: ${JSON.stringify({ type: "delta", chunk })}\n\n`);
-      },
-      role.fewShotExamples,
-      model.provider === "openai" ? reasoningEffort : undefined,
-      threadId,
-      userId,
-      taskController.signal,
-      turnId,
-      (progress) => {
-        res.write(`data: ${JSON.stringify({ type: "status", ...progress })}\n\n`);
-      },
-      usageProfile
-    );
-
-    // 审批决定是控制信号，不是用户对话内容，不能污染标题和消息预览。
-    if (!isApprovalControlMessage) {
-      updateThreadAfterMessage({
+    if (!shouldUseBackgroundQueue({
+      mode: thread.mode,
+      hasAttachment: Boolean(attachmentName),
+      message: effectiveUserMessage
+    })) {
+      res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+      res.setHeader("Cache-Control", "no-cache, no-transform");
+      res.setHeader("Connection", "keep-alive");
+      res.flushHeaders();
+      const meta = {
+        provider: model.provider,
+        modelId: model.id,
+        modelLabel: model.label,
+        roleId: role.id,
+        userId,
+        threadId
+      };
+      res.write(`data: ${JSON.stringify({ type: "meta", meta })}\n\n`);
+      const controller = new AbortController();
+      res.once("close", () => {
+        if (!res.writableEnded) controller.abort();
+      });
+      const reply = await provider.streamChat(
+        model.id,
+        messageForModel,
+        role.systemPrompt,
+        (chunk) => res.write(`data: ${JSON.stringify({ type: "delta", chunk })}\n\n`),
+        role.fewShotExamples,
+        model.provider === "openai" ? reasoningEffort : undefined,
         threadId,
         userId,
-        providerId: model.provider,
+        controller.signal,
+        turnId,
+        (progress) =>
+          res.write(`data: ${JSON.stringify({ type: "status", ...progress })}\n\n`),
+        usageProfile
+      );
+      if (!isApprovalControlMessage) {
+        updateThreadAfterMessage({
+          threadId,
+          userId,
+          providerId: model.provider,
+          modelId: model.id,
+          roleId: role.id,
+          reasoningEffort: model.provider === "openai" ? reasoningEffort : undefined,
+          userMessage: effectiveUserMessage
+        });
+      }
+      res.write(`data: ${JSON.stringify({ type: "done", reply, meta })}\n\n`);
+      res.end();
+      return;
+    }
+    const queuedTask = enqueueBackgroundTask<AgentChatTaskPayload>({
+      threadId,
+      turnId: turnId || crypto.randomUUID(),
+      userId,
+      taskType: "agent-chat",
+      title: attachmentName ? `处理 ${attachmentName}` : "生成回答",
+      payload: {
         modelId: model.id,
         roleId: role.id,
+        userMessage: effectiveUserMessage,
+        messageForModel,
         reasoningEffort: model.provider === "openai" ? reasoningEffort : undefined,
-        userMessage: effectiveUserMessage
+        usageProfile,
+        isApprovalControlMessage
+      }
+    });
+    try {
+      await scheduleBackgroundTask(queuedTask);
+    } catch (queueError) {
+      updateBackgroundTask({
+        taskId: queuedTask.taskId,
+        threadId,
+        status: "failed",
+        stage: "queue-error",
+        statusMessage: "任务队列不可用",
+        errorText: queueError instanceof Error ? queueError.message : "无法连接 Redis。"
       });
+      throw queueError;
     }
-
-    res.write(`data: ${JSON.stringify({ type: "done", reply, meta })}\n\n`);
-    res.end();
+    streamBackgroundTaskEvents(queuedTask.taskId, threadId, res);
   } catch (error) {
     await cleanupRejectedPendingUpload(pendingUpload);
     await cleanupRejectedCommittedUpload(committedUpload);
@@ -1793,7 +1929,8 @@ async function startServer(): Promise<void> {
 }
 
 process.once("SIGINT", () => {
-  void closeMcpConnections().finally(() => process.exit(0));
+  void Promise.all([closeBackgroundTaskQueue(), closeMcpConnections()])
+    .finally(() => process.exit(0));
 });
 
 app.post("/api/threads/:threadId/clear-context", async (req: Request, res: Response) => {
@@ -1828,7 +1965,8 @@ app.post("/api/threads/:threadId/clear-context", async (req: Request, res: Respo
   }
 });
 process.once("SIGTERM", () => {
-  void closeMcpConnections().finally(() => process.exit(0));
+  void Promise.all([closeBackgroundTaskQueue(), closeMcpConnections()])
+    .finally(() => process.exit(0));
 });
 
 void startServer().catch((error) => {

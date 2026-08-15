@@ -1,6 +1,18 @@
 name: chat-demo
 
 services:
+  redis:
+    # BullMQ 仅在 Redis 中保存队列、锁、进度和重试元数据。
+    # Work 对话、记忆和用户文件仍保存在用户电脑本地。
+    image: redis:7-alpine
+    container_name: chat-demo-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - ./data/redis:/data
+
   chroma:
     # Chroma 只负责向量检索；聊天、文件记录和 FTS5 仍保存在本机 SQLite。
     image: chromadb/chroma:latest

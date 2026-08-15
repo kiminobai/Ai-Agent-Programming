@@ -350,6 +350,9 @@ export function deleteThread(threadId: string, userId: string): boolean {
       .run(threadId);
     database.prepare("DELETE FROM subagent_runs WHERE thread_id = ?").run(threadId);
     database.prepare("DELETE FROM agent_task_plans WHERE thread_id = ?").run(threadId);
+    database.prepare(`DELETE FROM background_task_events WHERE task_id IN
+      (SELECT task_id FROM background_tasks WHERE thread_id = ?)` ).run(threadId);
+    database.prepare("DELETE FROM background_tasks WHERE thread_id = ?").run(threadId);
     database.prepare("DELETE FROM generated_files WHERE thread_id = ?").run(threadId);
     database.prepare("DELETE FROM agent_task_executions WHERE thread_id = ?").run(threadId);
     database.prepare("DELETE FROM document_qa_messages WHERE thread_id = ?").run(threadId);
@@ -406,6 +409,9 @@ export function clearThreadContext(
   database.transaction(() => {
     database.prepare("DELETE FROM agent_task_plan_steps WHERE thread_id = ?").run(threadId);
     database.prepare("DELETE FROM agent_task_plans WHERE thread_id = ?").run(threadId);
+    database.prepare(`DELETE FROM background_task_events WHERE task_id IN
+      (SELECT task_id FROM background_tasks WHERE thread_id = ?)` ).run(threadId);
+    database.prepare("DELETE FROM background_tasks WHERE thread_id = ?").run(threadId);
     database.prepare("DELETE FROM subagent_runs WHERE thread_id = ?").run(threadId);
     database.prepare("DELETE FROM agent_task_executions WHERE thread_id = ?").run(threadId);
     database.prepare("DELETE FROM document_qa_messages WHERE thread_id = ?").run(threadId);

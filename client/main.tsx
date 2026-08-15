@@ -128,10 +128,12 @@ type StreamMeta = {
   roleId: string;
   userId: string;
   threadId: string;
+  taskId?: string;
 };
 
 type StreamEvent =
   | { type: "meta"; meta: StreamMeta }
+  | { type: "task"; task: BackgroundTask }
   | {
       type: "status";
       stage:
@@ -280,6 +282,147 @@ type TaskPlan = {
   }>;
   updatedAt?: string;
 };
+
+type BackgroundTask = {
+  taskId: string;
+  threadId?: string;
+  turnId: string;
+  title: string;
+  status: "queued" | "running" | "retrying" | "completed" | "failed" | "cancelled";
+  progress: number;
+  stage: string;
+  statusMessage: string;
+  attempt?: number;
+  maxAttempts?: number;
+  errorText?: string;
+  createdAt?: string;
+  startedAt?: string;
+  completedAt?: string;
+};
+
+function BackgroundTaskStatusCard(props: {
+  task: BackgroundTask;
+  plan?: TaskPlan;
+  activities: WorkspaceActivity[];
+  diffs?: WorkspaceTurnDiff[];
+  progressClock: number;
+  loadingDiff?: boolean;
+  onCancel: (taskId: string) => void;
+  onRetry: (taskId: string) => void;
+  onToggleDiff: () => void;
+  onRollback: () => void;
+}) {
+  const { task } = props;
+  const isActive = ["queued", "running", "retrying"].includes(task.status);
+  const completedSteps = props.plan?.steps.filter(
+    (step) => step.status === "completed"
+  ).length || 0;
+  const totalSteps = props.plan?.steps.length || 0;
+  const fileActivities = props.activities.filter(
+    (activity) => activity.activityType === "file_write" && activity.filePath
+  );
+  const changedFiles = Array.from(
+    new Set(fileActivities.map((activity) => activity.filePath as string))
+  );
+  const additions = fileActivities.reduce(
+    (total, activity) => total + (activity.additions || 0),
+    0
+  );
+  const deletions = fileActivities.reduce(
+    (total, activity) => total + (activity.deletions || 0),
+    0
+  );
+  const startTime = new Date(task.startedAt || task.createdAt || "").getTime();
+  const endTime = task.completedAt
+    ? new Date(task.completedAt).getTime()
+    : props.progressClock;
+  const elapsedText = Number.isFinite(startTime)
+    ? formatElapsedTime(Math.max(0, endTime - startTime))
+    : "";
+  const rolledBack = Boolean(
+    props.diffs?.length && props.diffs.every((diff) => diff.status === "rolled_back")
+  );
+
+  return (
+    <details
+      className={`background-task-card status-${task.status}`}
+      aria-label="后台任务状态"
+      open={isActive}
+    >
+      <summary className="background-task-heading">
+        <span>
+          <strong>{isActive ? task.statusMessage : task.title}</strong>
+          <small>
+            {task.status === "completed" ? "已处理" : task.statusMessage}
+            {elapsedText ? ` ${elapsedText}` : ""}
+          </small>
+        </span>
+        <b>{isActive ? `${Math.max(0, Math.min(100, task.progress))}%` : "›"}</b>
+      </summary>
+      <div className="background-task-body">
+        {isActive ? (
+          <div className="background-task-progress" aria-hidden="true">
+            <span style={{ width: `${task.progress}%` }} />
+          </div>
+        ) : null}
+        {props.plan?.steps.length ? (
+          <ol className="background-task-timeline">
+            {props.plan.steps.map((step) => (
+              <li className={`status-${step.status}`} key={step.id}>
+                <i aria-hidden="true">{getTaskPlanStepIcon(step.status)}</i>
+                <span>{step.title}</span>
+              </li>
+            ))}
+          </ol>
+        ) : null}
+        {props.activities.length ? (
+          <ol className="background-task-timeline operational-events">
+            {props.activities.map((activity) => (
+              <li key={activity.activityId}>
+                <i aria-hidden="true">
+                  {activity.activityType === "command" ? "›_" : "↗"}
+                </i>
+                <span>
+                  {activity.activityType === "command"
+                    ? `运行了命令 ${activity.commandText || ""}`
+                    : `编辑了 ${activity.filePath || "文件"}`}
+                </span>
+                {activity.activityType === "command" && activity.exitCode !== undefined ? (
+                  <small>退出码 {activity.exitCode}</small>
+                ) : null}
+              </li>
+            ))}
+          </ol>
+        ) : null}
+        <div className="background-task-actions">
+          {isActive ? (
+            <button type="button" onClick={() => props.onCancel(task.taskId)}>停止</button>
+          ) : null}
+          {task.status === "failed" ? (
+            <button type="button" onClick={() => props.onRetry(task.taskId)}>重试</button>
+          ) : null}
+          {changedFiles.length ? (
+            <button type="button" disabled={props.loadingDiff} onClick={props.onToggleDiff}>
+              {props.loadingDiff ? "读取中…" : props.diffs ? "收起 Diff" : "查看 Diff"}
+            </button>
+          ) : null}
+          {changedFiles.length ? (
+            <button type="button" disabled={rolledBack} onClick={props.onRollback}>
+              {rolledBack ? "已回退" : "回退本轮"}
+            </button>
+          ) : null}
+        </div>
+      </div>
+      <footer className="background-task-summary">
+        <span>
+          {totalSteps ? `第 ${completedSteps}/${totalSteps} 步` : task.statusMessage}
+          {changedFiles.length ? ` · ${changedFiles.length} 个文件已更改` : ""}
+        </span>
+        {changedFiles.length ? <span><b>+{additions}</b> <i>-{deletions}</i></span> : null}
+      </footer>
+    </details>
+  );
+}
 
 type GeneratedFile = {
   fileId: string;
@@ -660,6 +803,7 @@ function App() {
   const [loadingDiffTurnId, setLoadingDiffTurnId] = useState("");
   const [subAgentRuns, setSubAgentRuns] = useState<SubAgentRun[]>([]);
   const [taskPlans, setTaskPlans] = useState<TaskPlan[]>([]);
+  const [backgroundTasks, setBackgroundTasks] = useState<BackgroundTask[]>([]);
   const [generatedFiles, setGeneratedFiles] = useState<GeneratedFile[]>([]);
   const [isLoginOpen, setIsLoginOpen] = useState(false);
   const [loginName, setLoginName] = useState("admin");
@@ -692,6 +836,7 @@ function App() {
   const composerSettingsRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const activeRequestControllerRef = useRef<AbortController | null>(null);
+  const activeBackgroundTaskIdRef = useRef("");
   const shouldAutoScrollRef = useRef(true);
   const pendingInitialScrollRef = useRef(false);
   const lastScrollTopRef = useRef(0);
@@ -891,6 +1036,27 @@ function App() {
     setWorkspaceDiffs({});
     void loadWorkspaceActivities();
   }, [appMode, activeThreadId, userId]);
+
+  useEffect(() => {
+    if (!activeThreadId || !userId.trim()) {
+      setBackgroundTasks([]);
+      return;
+    }
+    void loadBackgroundTasks();
+    const timer = window.setInterval(() => {
+      if (backgroundTasks.some((task) =>
+        ["queued", "running", "retrying"].includes(task.status))) {
+        void loadBackgroundTasks();
+        // 后台 Worker 与页面生命周期解耦；轮询时同步工作记录，刷新后时间线仍可恢复。
+        if (appMode === "work") {
+          void loadWorkspaceActivities();
+          void loadTaskPlans();
+        }
+      }
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [appMode, activeThreadId, userId, backgroundTasks.some((task) =>
+    ["queued", "running", "retrying"].includes(task.status))]);
 
   useEffect(() => {
     if (!activeThreadId || !userId.trim()) {
@@ -1830,6 +1996,36 @@ function App() {
     setTaskPlans((data.plans || []) as TaskPlan[]);
   }
 
+  async function loadBackgroundTasks() {
+    const response = await fetch(
+      `/api/background-tasks?threadId=${encodeURIComponent(activeThreadId)}&userId=${encodeURIComponent(userId.trim())}`
+    );
+    const data = await readJsonResponse(response, "/api/background-tasks");
+    if (!response.ok) throw new Error(data.error || "读取后台任务失败。");
+    setBackgroundTasks((data.tasks || []) as BackgroundTask[]);
+  }
+
+  async function cancelBackgroundTask(taskId: string) {
+    await fetch(`/api/background-tasks/${encodeURIComponent(taskId)}/cancel`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ threadId: activeThreadId, userId: userId.trim() })
+    });
+    if (activeBackgroundTaskIdRef.current === taskId) {
+      activeRequestControllerRef.current?.abort();
+    }
+    await loadBackgroundTasks();
+  }
+
+  async function retryBackgroundTask(taskId: string) {
+    await fetch(`/api/background-tasks/${encodeURIComponent(taskId)}/retry`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ threadId: activeThreadId, userId: userId.trim() })
+    });
+    await loadBackgroundTasks();
+  }
+
   async function loadGeneratedFiles() {
     const response = await fetch(
       `/api/generated-files?threadId=${encodeURIComponent(activeThreadId)}&userId=${encodeURIComponent(userId.trim())}`
@@ -2167,7 +2363,30 @@ function App() {
       let finalReply = "";
 
       const handleEvent = (streamEvent: StreamEvent) => {
+        if (streamEvent.type === "task") {
+          activeBackgroundTaskIdRef.current = streamEvent.task.taskId;
+          setBackgroundTasks((current) => [
+            ...current.filter((task) => task.taskId !== streamEvent.task.taskId),
+            streamEvent.task
+          ]);
+          updateAssistantEntry((entry) => ({
+            ...entry,
+            statusMessage: streamEvent.task.statusMessage,
+            completed:
+              streamEvent.task.status === "completed" ||
+              streamEvent.task.status === "failed" ||
+              streamEvent.task.status === "cancelled"
+                ? true
+                : entry.completed,
+            stopped: streamEvent.task.status === "cancelled" || entry.stopped
+          }));
+          return;
+        }
+
         if (streamEvent.type === "meta") {
+          if (streamEvent.meta.taskId) {
+            activeBackgroundTaskIdRef.current = streamEvent.meta.taskId;
+          }
           updateAssistantEntry((entry) => ({
             ...entry,
             meta: `${currentRole?.label || streamEvent.meta.roleId} | ${streamEvent.meta.modelId} | ${streamEvent.meta.userId}`
@@ -2326,6 +2545,7 @@ function App() {
       );
     } finally {
       activeRequestControllerRef.current = null;
+      activeBackgroundTaskIdRef.current = "";
       setIsSubmitting(false);
     }
   }
@@ -2898,6 +3118,11 @@ function App() {
               const changedFiles = Array.from(
                 new Set(turnActivities.map((activity) => activity.filePath as string))
               );
+              const turnTimelineActivities = entry.turnId
+                ? workspaceActivities.filter(
+                    (activity) => activity.turnId === entry.turnId
+                  )
+                : [];
               const turnSubAgentRoots =
                 entry.role === "assistant" && entry.turnId
                   ? subAgentRuns.filter(
@@ -2909,6 +3134,18 @@ function App() {
                 entry.turnId &&
                 isLastAssistantForTurn
                   ? taskPlans.find((plan) => plan.turnId === entry.turnId)
+                  : undefined;
+              const turnBackgroundTask =
+                entry.turnId &&
+                ((entry.role === "assistant" && isLastAssistantForTurn) ||
+                  (entry.role === "user" &&
+                    !entries.some(
+                      (candidate) =>
+                        candidate.role === "assistant" && candidate.turnId === entry.turnId
+                    )))
+                  ? [...backgroundTasks]
+                      .reverse()
+                      .find((task) => task.turnId === entry.turnId)
                   : undefined;
               const turnGeneratedFiles =
                 entry.role === "assistant" &&
@@ -2998,9 +3235,36 @@ function App() {
                         )}
                       </button>
                     ) : null}
+                    {turnBackgroundTask ? (
+                      <BackgroundTaskStatusCard
+                        task={turnBackgroundTask}
+                        plan={turnPlan}
+                        activities={turnTimelineActivities}
+                        diffs={turnDiffs}
+                        progressClock={progressClock}
+                        loadingDiff={loadingDiffTurnId === entry.turnId}
+                        onCancel={(taskId) => void cancelBackgroundTask(taskId)}
+                        onRetry={(taskId) => void retryBackgroundTask(taskId)}
+                        onToggleDiff={() => {
+                          if (!entry.turnId) return;
+                          if (turnDiffs) {
+                            setWorkspaceDiffs((current) => {
+                              const next = { ...current };
+                              delete next[entry.turnId!];
+                              return next;
+                            });
+                          } else {
+                            void loadWorkspaceDiff(entry.turnId);
+                          }
+                        }}
+                        onRollback={() => {
+                          if (entry.turnId) void rollbackWorkspaceTurn(entry.turnId);
+                        }}
+                      />
+                    ) : null}
                     {entry.role === "assistant" ? (
                       <>
-                        {turnPlan ? (
+                        {turnPlan && !turnBackgroundTask ? (
                           <details
                             className={`task-plan-card status-${turnPlan.status}`}
                             open={turnPlan.status === "running"}
@@ -3131,7 +3395,7 @@ function App() {
                             ))}
                           </section>
                         ) : null}
-                        {changedFiles.length || turnConflicts.length ? (
+                        {(!turnBackgroundTask && changedFiles.length) || turnConflicts.length ? (
                           <section className="work-activity-card work-activity-inline">
                             <header>
                               <strong>
@@ -3597,15 +3861,7 @@ function App() {
                           <option value="balanced">均衡</option>
                           <option value="performance">深度</option>
                         </select>
-                        {/* <span>更快使用消耗额度</span> */}
                       </label>
-                      <button
-                        type="button"
-                        className="composer-settings-done"
-                        onClick={() => setIsComposerSettingsOpen(false)}
-                      >
-                        完成
-                      </button>
                     </div>
                   ) : null}
                 </div>
@@ -3613,7 +3869,14 @@ function App() {
                   <button
                     className="send-button"
                     type="button"
-                    onClick={() => activeRequestControllerRef.current?.abort()}
+                    onClick={() => {
+                      const taskId = activeBackgroundTaskIdRef.current;
+                      if (taskId) {
+                        void cancelBackgroundTask(taskId);
+                      } else {
+                        activeRequestControllerRef.current?.abort();
+                      }
+                    }}
                   >
                     停止
                   </button>

@@ -62,6 +62,18 @@ export const appConfig = {
     describePictures:
       (process.env.DOCLING_DESCRIBE_PICTURES || "true").toLowerCase() === "true"
   },
+  queue: {
+    // Redis/BullMQ 只承担调度；业务正文仍根据 Chat/Work 模式写入各自持久存储。
+    redisUrl: process.env.REDIS_URL || "redis://127.0.0.1:6379",
+    workerConcurrency: Number(process.env.BULLMQ_WORKER_CONCURRENCY || 2),
+    retryDelayMs: Number(process.env.BULLMQ_RETRY_DELAY_MS || 1_000),
+    completedJobRetentionSeconds: Number(
+      process.env.BULLMQ_COMPLETED_RETENTION_SECONDS || 24 * 60 * 60
+    ),
+    failedJobRetentionSeconds: Number(
+      process.env.BULLMQ_FAILED_RETENTION_SECONDS || 7 * 24 * 60 * 60
+    )
+  },
   graphRag: {
     entityExtractor:
       (process.env.GRAPH_RAG_ENTITY_EXTRACTOR as

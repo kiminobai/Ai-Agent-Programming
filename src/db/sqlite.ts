@@ -303,6 +303,49 @@ sqliteDb.exec(`
   CREATE INDEX IF NOT EXISTS idx_agent_task_plans_thread_updated
   ON agent_task_plans(thread_id, updated_at ASC);
 
+  -- 异步长任务队列。任务状态与事件落 SQLite，关闭页面或重启服务后仍可恢复。
+  CREATE TABLE IF NOT EXISTS background_tasks (
+    task_id TEXT PRIMARY KEY,
+    thread_id TEXT NOT NULL,
+    turn_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    task_type TEXT NOT NULL,
+    title TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    status TEXT NOT NULL,
+    progress INTEGER NOT NULL DEFAULT 0,
+    stage TEXT NOT NULL DEFAULT 'queued',
+    status_message TEXT NOT NULL,
+    attempt INTEGER NOT NULL DEFAULT 0,
+    max_attempts INTEGER NOT NULL DEFAULT 5,
+    cancel_requested INTEGER NOT NULL DEFAULT 0,
+    error_text TEXT,
+    result_json TEXT,
+    available_at TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    started_at TEXT,
+    completed_at TEXT,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_background_tasks_queue
+  ON background_tasks(status, available_at, created_at);
+
+  CREATE INDEX IF NOT EXISTS idx_background_tasks_thread
+  ON background_tasks(thread_id, created_at ASC);
+
+  CREATE TABLE IF NOT EXISTS background_task_events (
+    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    event_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (task_id) REFERENCES background_tasks(task_id) ON DELETE CASCADE
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_background_task_events_task
+  ON background_task_events(task_id, event_id ASC);
+
   -- Chat 模式由 Agent 生成、供用户下载的文件。文件本体保存在 data/generated。
   CREATE TABLE IF NOT EXISTS generated_files (
     file_id TEXT PRIMARY KEY,

@@ -7,6 +7,7 @@ const path = require("path");
 const SERVER_URL = "http://127.0.0.1:3000";
 let mainWindow = null;
 let serverProcess = null;
+let workerProcess = null;
 let serverStartupError = null;
 
 function getWorkspaceStatePath() {
@@ -205,12 +206,34 @@ async function ensureLocalServer() {
     stdio: "inherit",
     windowsHide: true
   });
+  const workerEntry = path.join(app.getAppPath(), "dist", "worker.js");
+  if (!fs.existsSync(workerEntry)) {
+    throw new Error("缺少 dist/worker.js，请先执行 npm run build。");
+  }
+  workerProcess = spawn(nodeExecutable, [workerEntry], {
+    cwd: app.getAppPath(),
+    env: {
+      ...process.env,
+      KIMIBAI_WORK_DATA_ROOT: getKimiBaiDocumentsRoot(),
+      KIMIBAI_EXTENSIONS_ROOT: path.join(getKimiBaiDocumentsRoot(), "extensions")
+    },
+    stdio: "inherit",
+    windowsHide: true
+  });
   serverProcess.once("error", (error) => {
     serverStartupError = error;
   });
   serverProcess.once("exit", (code) => {
     if (code && code !== 0) {
       serverStartupError = new Error(`本地服务异常退出，退出码：${code}。`);
+    }
+  });
+  workerProcess.once("error", (error) => {
+    serverStartupError = error;
+  });
+  workerProcess.once("exit", (code) => {
+    if (code && code !== 0) {
+      serverStartupError = new Error(`本地 Worker 异常退出，退出码：${code}。`);
     }
   });
   await waitForServer();
@@ -262,5 +285,8 @@ app.on("window-all-closed", () => {
 app.on("before-quit", () => {
   if (serverProcess && !serverProcess.killed) {
     serverProcess.kill();
+  }
+  if (workerProcess && !workerProcess.killed) {
+    workerProcess.kill();
   }
 });
