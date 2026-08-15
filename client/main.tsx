@@ -8,6 +8,23 @@
   useState
 } from "react";
 import { createRoot } from "react-dom/client";
+import * as echarts from "echarts/core";
+import { LineChart, PieChart } from "echarts/charts";
+import {
+  GridComponent,
+  LegendComponent,
+  TooltipComponent
+} from "echarts/components";
+import { CanvasRenderer } from "echarts/renderers";
+
+echarts.use([
+  LineChart,
+  PieChart,
+  GridComponent,
+  LegendComponent,
+  TooltipComponent,
+  CanvasRenderer
+]);
 
 type ProviderId = "deepseek" | "openai" | "siliconflow" | "moonshot";
 type ReasoningEffort = "minimal" | "low" | "medium" | "high";
@@ -63,6 +80,46 @@ type ChatEntry = {
   attachmentFileId?: string;
   attachmentPreviewUrl?: string;
   sources?: DocumentSource[];
+};
+
+type TokenUsageBucket = {
+  requests: number;
+  inputTokens: number;
+  outputTokens: number;
+};
+
+type TurnTokenUsage = TokenUsageBucket & {
+  totalTokens: number;
+  failedRequests: number;
+};
+
+type TurnObservabilityEvent = {
+  eventId: string;
+  taskId?: string;
+  eventType: string;
+  status: string;
+  durationMs?: number;
+  metadata: { toolName?: string; attempts?: number };
+  createdAt: string;
+};
+
+type TurnObservability = {
+  metrics: Array<{
+    taskId: string;
+    attempts: number;
+    elapsedMs: number;
+    status: string;
+  }>;
+  events: TurnObservabilityEvent[];
+};
+
+type ModelUsageSummary = {
+  userDaily: TokenUsageBucket;
+  userMonthly: TokenUsageBucket;
+  dailyTrend: Array<TokenUsageBucket & { date: string }>;
+  byModel: Array<TokenUsageBucket & { providerId: string; modelId: string }>;
+  limits: { userDailyTokens: number };
+  telemetry: { enabled: boolean; serviceName: string; exporterCount: number };
 };
 
 type DocumentSource = {
@@ -173,6 +230,92 @@ function formatElapsedTime(elapsedMs: number): string {
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   return `${minutes} 分 ${seconds} 秒`;
+}
+
+function formatTokenCount(value: number): string {
+  return new Intl.NumberFormat("zh-CN").format(Math.max(0, Number(value) || 0));
+}
+
+function getTraceEventLabel(event: TurnObservabilityEvent): string {
+  const labels: Record<string, string> = {
+    model_call: "模型生成回答",
+    model_retry: "重试模型调用",
+    tool_retry: "重试工具调用",
+    subagent_task: "子代理处理任务",
+    subagent_retry: "重试子代理任务",
+    fixed_subagent_retry: "重试角色子代理",
+    workspace_file_write: "修改工作区文件",
+    workspace_command: "运行工作区命令"
+  };
+  if (event.eventType === "tool_call") {
+    return event.metadata.toolName
+      ? `调用工具：${event.metadata.toolName}`
+      : "调用工具";
+  }
+  return labels[event.eventType] || "处理任务阶段";
+}
+
+function getTraceStatusLabel(status: string): string {
+  if (["succeeded", "completed", "success"].includes(status)) return "已完成";
+  if (["failed", "error"].includes(status)) return "失败";
+  if (["interrupted", "cancelled", "stopped"].includes(status)) return "已停止";
+  return "处理中";
+}
+
+function TurnTraceDetails(props: {
+  elapsedMs?: number;
+  usage?: TurnTokenUsage;
+  trace?: TurnObservability;
+}) {
+  const events = props.trace?.events || [];
+  const modelCalls = events.filter((event) => event.eventType === "model_call").length;
+  const toolCalls = events.filter((event) => event.eventType === "tool_call").length;
+  const retries = events.filter((event) => event.eventType.includes("retry")).length;
+  const hasDetails = events.length > 0 || Boolean(props.usage?.totalTokens) || props.elapsedMs !== undefined;
+  if (!hasDetails) return null;
+
+  return (
+    <details className="turn-trace-details">
+      <summary>
+        <span>{props.elapsedMs !== undefined ? `已处理 ${formatElapsedTime(props.elapsedMs)}` : "运行详情"}</span>
+        <small>
+          {modelCalls ? `模型 ${modelCalls} 次` : ""}
+          {toolCalls ? `${modelCalls ? " · " : ""}工具 ${toolCalls} 次` : ""}
+          {props.usage?.totalTokens
+            ? `${modelCalls || toolCalls ? " · " : ""}${formatTokenCount(props.usage.totalTokens)} Token`
+            : ""}
+        </small>
+      </summary>
+      <div className="turn-trace-body">
+        {events.length ? (
+          <ol>
+            {events.map((event) => (
+              <li className={`status-${event.status}`} key={event.eventId}>
+                <span className="turn-trace-status" aria-hidden="true" />
+                <span>
+                  <strong>{getTraceEventLabel(event)}</strong>
+                  <small>{getTraceStatusLabel(event.status)}</small>
+                </span>
+                {event.durationMs !== undefined && event.durationMs !== null ? (
+                  <time>{formatElapsedTime(event.durationMs)}</time>
+                ) : null}
+              </li>
+            ))}
+          </ol>
+        ) : (
+          <p>本轮没有额外的工具或子任务调用。</p>
+        )}
+        <footer>
+          {props.usage?.totalTokens ? (
+            <span>
+              输入 {formatTokenCount(props.usage.inputTokens)} · 输出 {formatTokenCount(props.usage.outputTokens)} Token
+            </span>
+          ) : null}
+          {retries ? <span>重试 {retries} 次</span> : null}
+        </footer>
+      </div>
+    </details>
+  );
 }
 
 function formatFileSize(bytes: number): string {
@@ -759,6 +902,113 @@ function renderMarkdown(content: string): React.ReactNode[] {
   return blocks;
 }
 
+function UsageTrendChart({ data }: { data: ModelUsageSummary["dailyTrend"] }) {
+  const chartRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!chartRef.current || !data.length) return;
+    const chart = echarts.init(chartRef.current);
+    chart.setOption({
+      color: ["#10a37f", "#f59e0b"],
+      animationDuration: 650,
+      tooltip: {
+        trigger: "axis",
+        valueFormatter: (value: unknown) => `${formatTokenCount(Number(value))} Token`
+      },
+      legend: { top: 0, right: 0, data: ["输入 Token", "输出 Token"] },
+      grid: { left: 18, right: 18, top: 45, bottom: 20, containLabel: true },
+      xAxis: {
+        type: "category",
+        boundaryGap: false,
+        data: data.map((item) => item.date.slice(5)),
+        axisLine: { lineStyle: { color: "#d4d4d8" } },
+        axisLabel: { color: "#71717a" }
+      },
+      yAxis: {
+        type: "value",
+        axisLabel: {
+          color: "#71717a",
+          formatter: (value: number) => value >= 1000 ? `${(value / 1000).toFixed(0)}k` : String(value)
+        },
+        splitLine: { lineStyle: { color: "#eeeeef" } }
+      },
+      series: [
+        {
+          name: "输入 Token",
+          type: "line",
+          stack: "token",
+          smooth: 0.28,
+          symbol: "circle",
+          symbolSize: 6,
+          areaStyle: { opacity: 0.16 },
+          data: data.map((item) => item.inputTokens)
+        },
+        {
+          name: "输出 Token",
+          type: "line",
+          stack: "token",
+          smooth: 0.28,
+          symbol: "circle",
+          symbolSize: 6,
+          areaStyle: { opacity: 0.13 },
+          data: data.map((item) => item.outputTokens)
+        }
+      ]
+    });
+    const resize = () => chart.resize();
+    window.addEventListener("resize", resize);
+    return () => {
+      window.removeEventListener("resize", resize);
+      chart.dispose();
+    };
+  }, [data]);
+
+  return data.length
+    ? <div className="usage-echart" ref={chartRef} role="img" aria-label="最近 30 天 Token 用量趋势" />
+    : <p className="usage-empty">暂无模型调用记录</p>;
+}
+
+function ModelUsageChart({ data }: { data: ModelUsageSummary["byModel"] }) {
+  const chartRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!chartRef.current || !data.length) return;
+    const chart = echarts.init(chartRef.current);
+    chart.setOption({
+      color: ["#10a37f", "#0ea5e9", "#f59e0b", "#ef4444", "#64748b"],
+      tooltip: {
+        trigger: "item",
+        valueFormatter: (value: unknown) => `${formatTokenCount(Number(value))} Token`
+      },
+      legend: { type: "scroll", orient: "vertical", right: 0, top: "middle" },
+      series: [{
+        name: "模型 Token",
+        type: "pie",
+        radius: ["48%", "72%"],
+        center: ["36%", "50%"],
+        avoidLabelOverlap: true,
+        itemStyle: { borderColor: "#fff", borderWidth: 3, borderRadius: 5 },
+        label: { show: false },
+        emphasis: { label: { show: true, fontWeight: "bold" } },
+        data: data.map((item) => ({
+          name: item.modelId,
+          value: item.inputTokens + item.outputTokens
+        }))
+      }]
+    });
+    const resize = () => chart.resize();
+    window.addEventListener("resize", resize);
+    return () => {
+      window.removeEventListener("resize", resize);
+      chart.dispose();
+    };
+  }, [data]);
+
+  return data.length
+    ? <div className="usage-echart model-chart" ref={chartRef} role="img" aria-label="本月各模型 Token 用量占比" />
+    : <p className="usage-empty">暂无模型调用记录</p>;
+}
+
 function App() {
   const [models, setModels] = useState<ModelOption[]>([]);
   const [roles, setRoles] = useState<PromptRole[]>([]);
@@ -810,6 +1060,13 @@ function App() {
   const [loginPassword, setLoginPassword] = useState("admin123");
   const [loginError, setLoginError] = useState("");
   const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [usageSummary, setUsageSummary] = useState<ModelUsageSummary | null>(null);
+  const [isUsageLoading, setIsUsageLoading] = useState(false);
+  const [turnUsageById, setTurnUsageById] = useState<Record<string, TurnTokenUsage>>({});
+  const [turnObservabilityById, setTurnObservabilityById] = useState<
+    Record<string, TurnObservability>
+  >({});
   const [approvalRequest, setApprovalRequest] = useState<string | null>(null);
   const [approvalTurnId, setApprovalTurnId] = useState("");
   const [approvalDecisions, setApprovalDecisions] = useState<
@@ -1676,6 +1933,83 @@ function App() {
       setIsLoggingIn(false);
     }
   }
+
+  async function loadModelUsageSummary(): Promise<void> {
+    if (!userId.trim()) return;
+    setIsUsageLoading(true);
+    try {
+      const response = await fetch(
+        `/api/observability/model-usage?userId=${encodeURIComponent(userId.trim())}`,
+        authSession
+          ? { headers: { Authorization: `Bearer ${authSession.token}` } }
+          : undefined
+      );
+      if (!response.ok) throw new Error("读取 Token 用量失败。");
+      setUsageSummary((await response.json()) as ModelUsageSummary);
+    } catch (usageError) {
+      setError(usageError instanceof Error ? usageError.message : "读取 Token 用量失败。");
+    } finally {
+      setIsUsageLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (isSettingsOpen) void loadModelUsageSummary();
+  }, [isSettingsOpen, userId]);
+
+  useEffect(() => {
+    if (!activeThreadId || !userId.trim()) return;
+    const pendingTurnIds = Array.from(new Set(
+      entries
+        .filter((entry) =>
+          entry.role === "assistant" && entry.completed !== false && entry.turnId &&
+          !turnUsageById[entry.turnId]
+        )
+        .map((entry) => entry.turnId as string)
+    ));
+    for (const turnId of pendingTurnIds) {
+      void fetch(
+        `/api/observability/model-usage?userId=${encodeURIComponent(userId.trim())}` +
+          `&threadId=${encodeURIComponent(activeThreadId)}` +
+          `&turnId=${encodeURIComponent(turnId)}`
+      )
+        .then((response) => response.ok ? response.json() : null)
+        .then((data: { turn?: TurnTokenUsage } | null) => {
+          if (data?.turn) {
+            setTurnUsageById((current) => ({ ...current, [turnId]: data.turn! }));
+          }
+        })
+        .catch(() => undefined);
+    }
+  }, [entries, activeThreadId, userId, turnUsageById]);
+
+  useEffect(() => {
+    if (!activeThreadId || !userId.trim()) return;
+    const pendingTurnIds = Array.from(new Set(
+      entries
+        .filter((entry) =>
+          entry.role === "assistant" &&
+          entry.completed !== false &&
+          entry.turnId &&
+          turnObservabilityById[entry.turnId] === undefined
+        )
+        .map((entry) => entry.turnId as string)
+    ));
+    for (const turnId of pendingTurnIds) {
+      void fetch(
+        `/api/observability/turn?threadId=${encodeURIComponent(activeThreadId)}` +
+          `&userId=${encodeURIComponent(userId.trim())}` +
+          `&turnId=${encodeURIComponent(turnId)}`
+      )
+        .then((response) => response.ok ? response.json() : null)
+        .then((data: TurnObservability | null) => {
+          if (data) {
+            setTurnObservabilityById((current) => ({ ...current, [turnId]: data }));
+          }
+        })
+        .catch(() => undefined);
+    }
+  }, [entries, activeThreadId, userId, turnObservabilityById]);
 
   async function handleLogout() {
     const guestUserId = crypto.randomUUID();
@@ -2756,6 +3090,13 @@ function App() {
         <section className="sidebar-account">
           <button
             type="button"
+            className="sidebar-settings-button"
+            onClick={() => setIsSettingsOpen(true)}
+          >
+            <span>设置</span>
+          </button>
+          <button
+            type="button"
             className="account-button"
             onClick={() => {
               setLoginName((currentName) => currentName || "admin");
@@ -2783,6 +3124,65 @@ function App() {
           ) : null}
         </section>
       </aside>
+
+      {isSettingsOpen ? (
+        <section className="settings-page" aria-label="设置与用量">
+          <header className="settings-page-header">
+            <div>
+              <span>设置</span>
+              <h2>Token 用量</h2>
+              <p>统计来自本地持久化账本，按日期和模型汇总。</p>
+            </div>
+            <button type="button" onClick={() => setIsSettingsOpen(false)}>返回对话</button>
+          </header>
+          {isUsageLoading && !usageSummary ? (
+            <div className="settings-loading">正在读取用量…</div>
+          ) : usageSummary ? (
+            <div className="usage-dashboard">
+              <div className="usage-summary-grid">
+                <article>
+                  <span>今日 Token</span>
+                  <strong>{formatTokenCount(usageSummary.userDaily.inputTokens + usageSummary.userDaily.outputTokens)}</strong>
+                  <small>输入 {formatTokenCount(usageSummary.userDaily.inputTokens)} · 输出 {formatTokenCount(usageSummary.userDaily.outputTokens)}</small>
+                </article>
+                <article>
+                  <span>本月 Token</span>
+                  <strong>{formatTokenCount(usageSummary.userMonthly.inputTokens + usageSummary.userMonthly.outputTokens)}</strong>
+                  <small>{formatTokenCount(usageSummary.userMonthly.requests)} 次模型调用</small>
+                </article>
+                <article>
+                  <span>今日 Token 上限</span>
+                  <strong>{formatTokenCount(usageSummary.limits.userDailyTokens)}</strong>
+                  <small>
+                    已使用 {Math.min(100, Math.round(
+                      (usageSummary.userDaily.inputTokens + usageSummary.userDaily.outputTokens) /
+                      Math.max(1, usageSummary.limits.userDailyTokens) * 100
+                    ))}%
+                  </small>
+                </article>
+              </div>
+              <section className="usage-panel">
+                <header><h3>最近 30 天</h3><span>每日 Token</span></header>
+                <UsageTrendChart data={usageSummary.dailyTrend} />
+              </section>
+              <section className="usage-panel">
+                <header><h3>按模型统计</h3><span>本月</span></header>
+                <ModelUsageChart data={usageSummary.byModel} />
+                <div className="usage-model-list">
+                  {usageSummary.byModel.map((item) => (
+                    <div key={`${item.providerId}:${item.modelId}`}>
+                      <span><strong>{item.modelId}</strong><small>{item.providerId} · {item.requests} 次</small></span>
+                      <b>{formatTokenCount(item.inputTokens + item.outputTokens)} Token</b>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            </div>
+          ) : (
+            <div className="settings-loading">暂时无法读取用量。</div>
+          )}
+        </section>
+      ) : null}
 
       {extensionDialog ? (
         <div className="login-modal-backdrop" role="presentation">
@@ -3162,6 +3562,10 @@ function App() {
                 entry.role === "assistant" && entry.turnId && isLastAssistantForTurn
                   ? workspaceConflicts[entry.turnId] || []
                   : [];
+              const turnUsage = entry.turnId ? turnUsageById[entry.turnId] : undefined;
+              const turnTrace = entry.turnId
+                ? turnObservabilityById[entry.turnId]
+                : undefined;
               return (
               <div
                 key={entry.id}
@@ -3318,10 +3722,6 @@ function App() {
                                 : ""}
                             </span>
                           </div>
-                        ) : entry.elapsedMs !== undefined && !entry.stopped ? (
-                          <div className="agent-elapsed">
-                            已处理 {formatElapsedTime(entry.elapsedMs)}
-                          </div>
                         ) : null}
                         {turnSubAgentRoots.map((rootRun) => {
                           const children = subAgentRuns.filter(
@@ -3359,6 +3759,13 @@ function App() {
                         })}
                         {!PENDING_STATUS_TEXTS.has(entry.content) || entry.completed !== false ? (
                           <div className="markdown-body">{renderMarkdown(entry.content)}</div>
+                        ) : null}
+                        {entry.completed !== false ? (
+                          <TurnTraceDetails
+                            elapsedMs={entry.elapsedMs}
+                            usage={turnUsage}
+                            trace={turnTrace}
+                          />
                         ) : null}
                         {turnGeneratedFiles.length ? (
                           <section

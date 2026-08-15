@@ -111,10 +111,8 @@ export const appConfig = {
     tokensPerMinute: Number(process.env.MODEL_RATE_LIMIT_TPM || 60_000),
     maxConcurrent: Number(process.env.MODEL_MAX_CONCURRENT || 4),
     userDailyTokens: Number(process.env.MODEL_USER_DAILY_TOKENS || 500_000),
-    monthlyCostUsd: Number(process.env.MODEL_MONTHLY_COST_USD || 10),
     reservedOutputTokens: Number(process.env.MODEL_RESERVED_OUTPUT_TOKENS || 4_096),
-    retryTimeBudgetMs: Number(process.env.MODEL_RETRY_TIME_BUDGET_MS || 120_000),
-    pricingJson: process.env.MODEL_PRICING_JSON || "{}"
+    retryTimeBudgetMs: Number(process.env.MODEL_RETRY_TIME_BUDGET_MS || 120_000)
   }
 };
 

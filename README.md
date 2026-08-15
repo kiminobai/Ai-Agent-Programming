@@ -236,18 +236,21 @@ DEEPSEEK_API_KEY=你的_deepseek_api_key
 OPENAI_API_KEY=你的_openai_api_key
 ```
 
-### 3. 启动本地依赖服务
+### 3. 启动全部 Docker 服务
 
-先安装并启动 Docker Desktop，然后执行：
+先安装并启动 Docker Desktop，然后执行标准 Compose 命令：
 
 ```bash
-npm run services:up
+docker compose up -d
 ```
 
-这个命令会启动：
+该命令会从项目根目录的单个 `compose.yaml` 启动全部 Docker 服务，包括：
 
 - Chroma：`http://127.0.0.1:8000`
 - Docling：`http://127.0.0.1:5001`
+- Sandbox Orchestrator：`http://127.0.0.1:3010`（仅后端访问）
+- Phoenix：`http://127.0.0.1:6006`
+- OpenTelemetry Collector：`http://127.0.0.1:4318`
 
 第一次启动需要下载镜像，Docling CPU 镜像体积较大，需要等待下载完成。
 Chroma 数据保存在 `data/chroma`，Docling 模型缓存保存在
@@ -259,16 +262,12 @@ Chroma 数据保存在 `data/chroma`，Docling 模型缓存保存在
 npm run services:status
 ```
 
+容器管理统一使用 `docker compose ps`、`docker compose logs -f` 和 `docker compose down`，不需要逐个启动服务。
+
 ### 4. 启动桌面应用
 
 ```bash
 npm run desktop
-```
-
-也可以用一个命令启动 Docker 服务并打开桌面应用：
-
-```bash
-npm run desktop:full
 ```
 
 ### 5. 只启动 Web 服务
@@ -581,7 +580,7 @@ npm install
 npm run desktop
 ```
 
-`npm run desktop` 会先构建服务端和 React，再启动 Electron。进入顶部“工作”模式后，点击“选择工作目录”即可使用 Windows 原生文件夹选择器。工作区按用户保存在 Electron 用户数据目录中，重启应用后会自动恢复。
+`docker compose up -d` 统一启动 Redis、Chroma、Docling、Sandbox Orchestrator、Phoenix 和 OpenTelemetry Collector。Sandbox Orchestrator 在服务端通过 Docker Socket 创建一次性隔离执行容器，不直接在用户桌面进程中执行命令。项目业务数据继续使用 SQLite，不依赖 PostgreSQL。`npm run desktop` 只构建服务端和 React 并启动 Electron，不再隐式管理 Docker。进入顶部“工作”模式后，点击“选择工作目录”即可使用 Windows 原生文件夹选择器。工作区按用户保存在 Electron 用户数据目录中，重启应用后会自动恢复。
 
 如果国内网络无法从默认源下载 Electron 运行时，可以执行：
 

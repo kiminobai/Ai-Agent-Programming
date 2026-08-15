@@ -116,6 +116,12 @@ Sandbox Job 默认由 `NetworkPolicy` 禁止全部入站和出站。需要下载
 
 ## 七、应用配置
 
+### Docker Compose 单服务器部署
+
+根目录 `compose.yaml` 已包含 `sandbox-orchestrator`。执行 `docker compose up -d` 后，后端通过 Bearer Token 调用 Orchestrator；Orchestrator 再通过服务器 Docker Socket 创建一次性执行容器。`SANDBOX_DOCKER_STORAGE_ROOT` 必须填写服务器宿主机上的绝对路径，因为 Docker daemon 不会把 Orchestrator 容器内路径当作宿主机路径。
+
+该方案适合单服务器正式部署。3010 端口只绑定 `127.0.0.1`，不应直接暴露公网。多服务器调度或需要 gVisor/Kata 时，再迁移到 Kubernetes 部署方案。
+
 ### 本地一键测试
 
 开发时只需启动 Docker Desktop，然后执行：

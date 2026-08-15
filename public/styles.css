@@ -529,6 +529,323 @@ input {
   padding: 24px 0 calc(var(--composer-height) + 28px);
 }
 
+.sidebar-settings-button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  border: 0;
+  border-radius: 12px;
+  padding: 9px 10px;
+  background: transparent;
+  color: #e4e4e7;
+  cursor: pointer;
+  text-align: left;
+}
+
+.sidebar-settings-button:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.settings-page {
+  position: fixed;
+  inset: 0 0 0 290px;
+  z-index: 80;
+  overflow-y: auto;
+  background:
+    radial-gradient(circle at 88% 2%, rgba(16, 163, 127, 0.1), transparent 28%),
+    #f7f7f8;
+  padding: 44px clamp(24px, 6vw, 88px) 80px;
+}
+
+.settings-page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 24px;
+  max-width: 1080px;
+  margin: 0 auto 34px;
+}
+
+.settings-page-header span,
+.settings-page-header p,
+.usage-panel header span {
+  color: var(--muted);
+}
+
+.settings-page-header h2 {
+  margin: 5px 0 8px;
+  font-size: clamp(28px, 4vw, 44px);
+  letter-spacing: -0.04em;
+}
+
+.settings-page-header p {
+  margin: 0;
+}
+
+.settings-page-header button {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #fff;
+  padding: 10px 16px;
+  cursor: pointer;
+}
+
+.usage-dashboard,
+.settings-loading {
+  max-width: 1080px;
+  margin: 0 auto;
+}
+
+.usage-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.usage-summary-grid article,
+.usage-panel {
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 16px 50px rgba(15, 23, 42, 0.05);
+}
+
+.usage-summary-grid article {
+  display: grid;
+  gap: 7px;
+  min-height: 148px;
+  padding: 20px;
+}
+
+.usage-summary-grid article > span,
+.usage-summary-grid article small {
+  color: var(--muted);
+}
+
+.usage-summary-grid article strong {
+  font-size: 27px;
+  align-self: end;
+}
+
+.usage-panel {
+  margin-top: 16px;
+  padding: 22px;
+}
+
+.usage-panel header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.usage-panel h3 {
+  margin: 0;
+}
+
+.usage-echart {
+  width: 100%;
+  height: 300px;
+  margin-top: 16px;
+}
+
+.usage-echart.model-chart {
+  height: 280px;
+}
+
+.usage-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 7px;
+  height: 190px;
+  margin-top: 24px;
+  border-bottom: 1px solid var(--line);
+}
+
+.usage-bar-item {
+  display: flex;
+  flex: 1;
+  min-width: 9px;
+  height: 100%;
+  align-items: center;
+  justify-content: flex-end;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.usage-bar-item > span {
+  width: min(22px, 80%);
+  min-height: 4px;
+  border-radius: 8px 8px 2px 2px;
+  background: linear-gradient(180deg, #10a37f, #5fcdb2);
+}
+
+.usage-bar-item small {
+  color: var(--muted);
+  font-size: 9px;
+  writing-mode: vertical-rl;
+}
+
+.usage-empty {
+  color: var(--muted);
+  align-self: center;
+  margin: auto;
+}
+
+.usage-model-list {
+  display: grid;
+  gap: 0;
+  margin-top: 10px;
+}
+
+.usage-model-list > div {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 20px;
+  padding: 15px 2px;
+  border-bottom: 1px solid var(--line);
+}
+
+.usage-model-list > div:last-child {
+  border-bottom: 0;
+}
+
+.usage-model-list span {
+  display: grid;
+  gap: 3px;
+}
+
+.usage-model-list small {
+  color: var(--muted);
+}
+
+.turn-token-usage {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  width: fit-content;
+  margin: 4px 0 10px;
+  color: #52525b;
+  font-size: 12px;
+}
+
+.turn-token-usage span {
+  color: #a1a1aa;
+}
+
+.turn-trace-details {
+  margin-top: 18px;
+  width: 100%;
+  border-top: 1px solid #e4e4e7;
+  color: #52525b;
+}
+
+.turn-trace-details > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 2px;
+  cursor: pointer;
+  list-style: none;
+  font-size: 13px;
+  user-select: none;
+}
+
+.turn-trace-details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.turn-trace-details > summary::after {
+  content: "⌄";
+  color: #a1a1aa;
+  transition: transform 160ms ease;
+}
+
+.turn-trace-details[open] > summary::after {
+  transform: rotate(180deg);
+}
+
+.turn-trace-details > summary small {
+  margin-left: auto;
+  color: #a1a1aa;
+  font-size: 12px;
+}
+
+.turn-trace-body {
+  margin-bottom: 8px;
+  padding: 4px 2px 12px;
+}
+
+.turn-trace-body ol {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.turn-trace-body li {
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  min-height: 30px;
+  font-size: 13px;
+}
+
+.turn-trace-body li > span:nth-child(2) {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.turn-trace-body li strong {
+  overflow: hidden;
+  color: #27272a;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.turn-trace-body li small,
+.turn-trace-body li time,
+.turn-trace-body p,
+.turn-trace-body footer {
+  color: #a1a1aa;
+  font-size: 12px;
+}
+
+.turn-trace-status {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: #a1a1aa;
+}
+
+.turn-trace-body li.status-succeeded .turn-trace-status,
+.turn-trace-body li.status-completed .turn-trace-status,
+.turn-trace-body li.status-success .turn-trace-status {
+  background: #10a37f;
+}
+
+.turn-trace-body li.status-failed .turn-trace-status,
+.turn-trace-body li.status-error .turn-trace-status {
+  background: #e5484d;
+}
+
+.turn-trace-body footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px solid #f4f4f5;
+}
+
 .chat-row {
   width: min(860px, calc(100% - 32px));
   margin: 0 auto;
@@ -1998,6 +2315,15 @@ input {
 }
 
 @media (max-width: 900px) {
+  .settings-page {
+    left: 0;
+    padding: 28px 18px 60px;
+  }
+
+  .usage-summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .sidebar {
     position: fixed;
     inset: 0 auto 0 0;

@@ -1,3 +1,4 @@
+import "../observability/telemetry";
 import crypto from "crypto";
 import fs from "fs/promises";
 import path from "path";
@@ -9,6 +10,8 @@ const port = Number(process.env.SANDBOX_ORCHESTRATOR_PORT || 3010);
 const namespace = process.env.SANDBOX_NAMESPACE || "kimibai-sandbox";
 const serviceToken = process.env.SANDBOX_SERVICE_TOKEN || "";
 const storageRoot = process.env.SANDBOX_STORAGE_ROOT || "/var/lib/kimibai-sandboxes";
+// Docker daemon 解析 bind mount 的源路径时使用宿主机视角，而不是 Orchestrator 容器视角。
+const dockerStorageRoot = process.env.SANDBOX_DOCKER_STORAGE_ROOT || storageRoot;
 const pvcName = process.env.SANDBOX_WORKSPACE_PVC || "kimibai-sandbox-workspaces";
 const defaultRuntimeClass = process.env.SANDBOX_RUNTIME_CLASS || "gvisor";
 const allowedImages = new Set(
@@ -61,6 +64,10 @@ function sandboxDirectory(id: string): string {
 
 function sandboxWorkspaceDirectory(id: string): string {
   return path.join(sandboxDirectory(id), "workspace");
+}
+
+function dockerSandboxWorkspaceDirectory(id: string): string {
+  return path.join(dockerStorageRoot, assertSandboxId(id), "workspace").replace(/\\/g, "/");
 }
 
 function resolveSandboxFile(id: string, requestedPath: string): string {
@@ -212,7 +219,7 @@ async function executeWithDocker(input: {
     Env: ["HOME=/tmp", "TMPDIR=/tmp"],
     NetworkDisabled: true,
     HostConfig: {
-      Binds: [`${sandboxWorkspaceDirectory(input.sandboxId)}:/workspace:rw`],
+      Binds: [`${dockerSandboxWorkspaceDirectory(input.sandboxId)}:/workspace:rw`],
       NetworkMode: "none",
       ReadonlyRootfs: true,
       CapDrop: ["ALL"],

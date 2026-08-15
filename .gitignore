@@ -11,6 +11,8 @@ data/chroma/*
 !data/chroma/.gitkeep
 data/docling-cache/*
 !data/docling-cache/.gitkeep
+data/observability/*
+!data/observability/.gitkeep
 data/knowledge-bases/**/*
 !data/knowledge-bases/**/
 !data/knowledge-bases/**/.gitkeep

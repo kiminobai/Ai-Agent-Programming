@@ -2,24 +2,21 @@
  * 模型请求的本地限流与成本控制器。
  *
  * 供应商仍然拥有最终限额；本控制器在请求发出前削平并发、限制 RPM/TPM，
- * 并用 SQLite 账本阻止单用户或整套应用意外消耗过多 Token/费用。
+ * 并用 SQLite 账本阻止单用户意外消耗过多 Token。
  */
 import { randomUUID } from "node:crypto";
 import { appConfig } from "../config";
 import { sqliteDb } from "../db/sqlite";
 import { estimateTokensFromChars } from "./agentTelemetryRepository";
 import type { UsageProfile } from "../types";
-
-type ModelPrice = {
-  inputPerMillion: number;
-  outputPerMillion: number;
-};
+import { finishAppSpan, startAppSpan } from "../observability/telemetry";
+import type { Span } from "@opentelemetry/api";
 
 export type ModelUsageLease = {
   eventId: string;
   inputTokens: number;
   reservedTokens: number;
-  price?: ModelPrice;
+  span: Span;
   release: () => void;
 };
 
@@ -57,34 +54,8 @@ function usagePolicy(profile: UsageProfile = "balanced") {
     tpm: finitePositive(appConfig.modelUsage.tokensPerMinute, 60_000),
     concurrency: finitePositive(appConfig.modelUsage.maxConcurrent, 4),
     dailyTokens: finitePositive(appConfig.modelUsage.userDailyTokens, 500_000),
-    monthlyCostUsd: finitePositive(appConfig.modelUsage.monthlyCostUsd, 10),
     reservedOutputTokens: outputBudgetForProfile(profile)
   };
-}
-
-function parsePricing(): Record<string, ModelPrice> {
-  try {
-    const parsed = JSON.parse(appConfig.modelUsage.pricingJson) as Record<string, Partial<ModelPrice>>;
-    return Object.fromEntries(
-      Object.entries(parsed).flatMap(([key, price]) => {
-        const inputPerMillion = Number(price.inputPerMillion);
-        const outputPerMillion = Number(price.outputPerMillion);
-        return Number.isFinite(inputPerMillion) && inputPerMillion >= 0 &&
-          Number.isFinite(outputPerMillion) && outputPerMillion >= 0
-          ? [[key, { inputPerMillion, outputPerMillion }]]
-          : [];
-      })
-    );
-  } catch {
-    return {};
-  }
-}
-
-function estimateCost(inputTokens: number, outputTokens: number, price?: ModelPrice): number {
-  if (!price) return 0;
-  return (
-    inputTokens * price.inputPerMillion + outputTokens * price.outputPerMillion
-  ) / 1_000_000;
 }
 
 export function estimateModelInputTokens(messages: unknown): number {
@@ -143,8 +114,14 @@ export async function reserveModelCall(input: {
   const nowIso = now.toISOString();
   const minuteAgo = new Date(now.getTime() - 60_000).toISOString();
   const reservedTokens = Math.max(1, input.inputTokens) + policy.reservedOutputTokens;
-  const price = parsePricing()[key];
-  const projectedCost = estimateCost(input.inputTokens, policy.reservedOutputTokens, price);
+  const span = startAppSpan("llm.model_call", {
+    "gen_ai.provider.name": input.providerId,
+    "gen_ai.request.model": input.modelId,
+    "gen_ai.usage.input_tokens": input.inputTokens,
+    "kimibai.user.id": input.userId,
+    "kimibai.thread.id": input.threadId,
+    "kimibai.turn.id": input.turnId || ""
+  });
 
   try {
     const minuteUsage = sqliteDb.prepare(`
@@ -179,17 +156,6 @@ export async function reserveModelCall(input: {
       throw new ModelBudgetExceededError(`已达到当前用户每日 ${policy.dailyTokens} Token 的安全预算。`);
     }
 
-    if (price) {
-      const month = sqliteDb.prepare(`
-        SELECT COALESCE(SUM(estimated_cost_usd), 0) AS cost
-        FROM model_usage_events
-        WHERE pricing_configured = 1 AND created_at >= ?
-      `).get(startOfUtcMonth(now)) as { cost: number };
-      if (month.cost + projectedCost > policy.monthlyCostUsd) {
-        throw new ModelBudgetExceededError(`本次请求将超过每月 $${policy.monthlyCostUsd} 的模型费用预算。`);
-      }
-    }
-
     const eventId = randomUUID();
     sqliteDb.prepare(`
       INSERT INTO model_usage_events (
@@ -206,12 +172,13 @@ export async function reserveModelCall(input: {
       input.turnId ?? null,
       input.inputTokens,
       reservedTokens,
-      projectedCost,
-      price ? 1 : 0,
+      0,
+      0,
       nowIso
     );
-    return { eventId, inputTokens: input.inputTokens, reservedTokens, price, release };
+    return { eventId, inputTokens: input.inputTokens, reservedTokens, span, release };
   } catch (error) {
+    finishAppSpan(span, "failed");
     release();
     throw error;
   }
@@ -232,11 +199,16 @@ export function completeModelCall(
   `).run(
     inputTokens,
     outputTokens,
-    estimateCost(inputTokens, outputTokens, lease.price),
+    0,
     status,
     new Date().toISOString(),
     lease.eventId
   );
+  finishAppSpan(lease.span, status, {
+    "gen_ai.usage.input_tokens": inputTokens,
+    "gen_ai.usage.output_tokens": outputTokens,
+    "kimibai.usage.total_tokens": inputTokens + outputTokens
+  });
   lease.release();
 }
 
@@ -265,8 +237,7 @@ export function getModelUsageSummary(userId: string) {
     SELECT
       COUNT(*) AS requests,
       COALESCE(SUM(input_tokens), 0) AS inputTokens,
-      COALESCE(SUM(output_tokens), 0) AS outputTokens,
-      COALESCE(SUM(estimated_cost_usd), 0) AS estimatedCostUsd
+      COALESCE(SUM(output_tokens), 0) AS outputTokens
     FROM model_usage_events
     WHERE user_id = ? AND created_at >= ?
   `).get(userId, startOfUtcDay(now));
@@ -274,18 +245,52 @@ export function getModelUsageSummary(userId: string) {
     SELECT
       COUNT(*) AS requests,
       COALESCE(SUM(input_tokens), 0) AS inputTokens,
-      COALESCE(SUM(output_tokens), 0) AS outputTokens,
-      COALESCE(SUM(estimated_cost_usd), 0) AS estimatedCostUsd,
-      SUM(CASE WHEN pricing_configured = 0 THEN 1 ELSE 0 END) AS unpricedRequests
+      COALESCE(SUM(output_tokens), 0) AS outputTokens
     FROM model_usage_events
-    WHERE created_at >= ?
-  `).get(startOfUtcMonth(now));
+    WHERE user_id = ? AND created_at >= ?
+  `).get(userId, startOfUtcMonth(now));
+  const dailyTrend = sqliteDb.prepare(`
+    SELECT
+      substr(created_at, 1, 10) AS date,
+      COUNT(*) AS requests,
+      COALESCE(SUM(input_tokens), 0) AS inputTokens,
+      COALESCE(SUM(output_tokens), 0) AS outputTokens
+    FROM model_usage_events
+    WHERE user_id = ? AND created_at >= ?
+    GROUP BY substr(created_at, 1, 10)
+    ORDER BY date ASC
+  `).all(userId, new Date(now.getTime() - 29 * 24 * 60 * 60 * 1_000).toISOString());
+  const byModel = sqliteDb.prepare(`
+    SELECT
+      provider_id AS providerId, model_id AS modelId,
+      COUNT(*) AS requests,
+      COALESCE(SUM(input_tokens), 0) AS inputTokens,
+      COALESCE(SUM(output_tokens), 0) AS outputTokens
+    FROM model_usage_events
+    WHERE user_id = ? AND created_at >= ?
+    GROUP BY provider_id, model_id
+    ORDER BY inputTokens + outputTokens DESC
+  `).all(userId, startOfUtcMonth(now));
   return {
     userDaily: daily,
-    applicationMonthly: monthly,
+    userMonthly: monthly,
+    dailyTrend,
+    byModel,
     limits: {
-      userDailyTokens: usagePolicy().dailyTokens,
-      monthlyCostUsd: usagePolicy().monthlyCostUsd
+      userDailyTokens: usagePolicy().dailyTokens
     }
   };
+}
+
+export function getTurnModelUsage(userId: string, threadId: string, turnId: string) {
+  return sqliteDb.prepare(`
+    SELECT
+      COUNT(*) AS requests,
+      COALESCE(SUM(input_tokens), 0) AS inputTokens,
+      COALESCE(SUM(output_tokens), 0) AS outputTokens,
+      COALESCE(SUM(input_tokens + output_tokens), 0) AS totalTokens,
+      SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failedRequests
+    FROM model_usage_events
+    WHERE user_id = ? AND thread_id = ? AND turn_id = ?
+  `).get(userId, threadId, turnId);
 }

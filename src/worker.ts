@@ -1,3 +1,4 @@
+import "./observability/telemetry";
 import { closeMcpConnections, initializeMcpTools } from "./mcp/mcpManager";
 import { executeAgentChatTask } from "./tasks/agentChatTaskHandler";
 import { startBackgroundTaskWorker, stopBackgroundTaskWorker } from "./tasks/backgroundTaskWorker";

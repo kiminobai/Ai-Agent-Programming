@@ -5,6 +5,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { getDatabaseForThread } from "../db/sqlite";
+import { recordCompletedSpan } from "../observability/telemetry";
 
 export function estimateTokensFromChars(chars: number): number {
   // 中英文混合文本无法在不绑定模型 tokenizer 的情况下精确计算，4 字符约 1 Token 用于预算预警。
@@ -78,6 +79,18 @@ export function recordAgentEvent(input: {
     JSON.stringify(input.metadata ?? {}),
     new Date().toISOString()
   );
+  recordCompletedSpan({
+    name: `agent.${input.eventType}`,
+    status: input.status,
+    durationMs: input.durationMs,
+    attributes: {
+      "kimibai.user.id": input.userId,
+      "kimibai.thread.id": input.threadId,
+      "kimibai.turn.id": input.turnId || "",
+      "kimibai.task.id": input.taskId || "",
+      "kimibai.event.type": input.eventType
+    }
+  });
 }
 
 export function getAgentTurnObservability(

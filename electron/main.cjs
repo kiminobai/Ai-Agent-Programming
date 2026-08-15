@@ -15,6 +15,40 @@ let serverProcess = null;
 let workerProcess = null;
 let sandboxProcess = null;
 let serverStartupError = null;
+let isShuttingDown = false;
+
+function stopOwnedProcess(child) {
+  if (!child || child.exitCode !== null || !child.pid) return;
+  try {
+    if (process.platform === "win32") {
+      // child.kill() 在 Windows 只处理直接进程；/T 会清理它创建的整棵进程树。
+      execFileSync("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], {
+        windowsHide: true,
+        stdio: "ignore"
+      });
+    } else {
+      child.kill("SIGTERM");
+    }
+  } catch {
+    // 进程可能已经响应 Ctrl+C 自行退出，重复清理属于正常情况。
+  }
+}
+
+function cleanupOwnedProcesses() {
+  stopOwnedProcess(workerProcess);
+  stopOwnedProcess(serverProcess);
+  stopOwnedProcess(sandboxProcess);
+  workerProcess = null;
+  serverProcess = null;
+  sandboxProcess = null;
+}
+
+function shutdownFromSignal() {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+  cleanupOwnedProcesses();
+  app.exit(0);
+}
 
 function getWorkspaceStatePath() {
   return path.join(app.getPath("userData"), "workspaces.json");
@@ -277,28 +311,32 @@ async function ensureLocalServer() {
   if (!fs.existsSync(sandboxEntry)) {
     throw new Error("缺少 Sandbox Orchestrator，请先执行 npm run build。");
   }
-  sandboxProcess = spawn(nodeExecutable, [sandboxEntry], {
-    cwd: app.getAppPath(),
-    env: {
-      ...process.env,
-      SANDBOX_ORCHESTRATOR_BACKEND: "docker",
-      SANDBOX_ORCHESTRATOR_PORT: "3010",
-      SANDBOX_SERVICE_TOKEN: sandboxToken,
-      SANDBOX_STORAGE_ROOT: path.join(getKimiBaiDocumentsRoot(), "sandboxes"),
-      SANDBOX_RUNTIME_CLASS: "docker"
-    },
-    stdio: "inherit",
-    windowsHide: true
-  });
-  sandboxProcess.once("error", (error) => {
-    serverStartupError = error;
-  });
-  sandboxProcess.once("exit", (code) => {
-    if (code && code !== 0) {
-      serverStartupError = new Error(`Sandbox 服务异常退出，退出码：${code}。`);
-    }
-  });
-  await waitForSandbox();
+  if (!(await isSandboxReady())) {
+    // 开发回退：未运行 Compose 服务时才在本机启动 Orchestrator。
+    sandboxProcess = spawn(nodeExecutable, [sandboxEntry], {
+      cwd: app.getAppPath(),
+      env: {
+        ...process.env,
+        SANDBOX_ORCHESTRATOR_BACKEND: "docker",
+        SANDBOX_ORCHESTRATOR_PORT: "3010",
+        SANDBOX_SERVICE_TOKEN: sandboxToken,
+        SANDBOX_STORAGE_ROOT: path.join(getKimiBaiDocumentsRoot(), "sandboxes"),
+        SANDBOX_DOCKER_STORAGE_ROOT: path.join(getKimiBaiDocumentsRoot(), "sandboxes"),
+        SANDBOX_RUNTIME_CLASS: "docker"
+      },
+      stdio: "inherit",
+      windowsHide: true
+    });
+    sandboxProcess.once("error", (error) => {
+      serverStartupError = error;
+    });
+    sandboxProcess.once("exit", (code) => {
+      if (code && code !== 0) {
+        serverStartupError = new Error(`Sandbox 服务异常退出，退出码：${code}。`);
+      }
+    });
+    await waitForSandbox();
+  }
   const sharedEnvironment = {
     ...process.env,
     KIMIBAI_WORK_DATA_ROOT: getKimiBaiDocumentsRoot(),
@@ -363,7 +401,19 @@ async function createWindow() {
   await mainWindow.loadURL(SERVER_URL);
 }
 
-app.whenReady()
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+
+if (!hasSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    if (!mainWindow) return;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+  });
+
+  app.whenReady()
   .then(async () => {
     registerWorkspaceHandlers();
     await createWindow();
@@ -379,6 +429,7 @@ app.whenReady()
     dialog.showErrorBox("KimiBai 启动失败", message);
     app.quit();
   });
+}
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") {
@@ -387,13 +438,11 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", () => {
-  if (serverProcess && !serverProcess.killed) {
-    serverProcess.kill();
-  }
-  if (workerProcess && !workerProcess.killed) {
-    workerProcess.kill();
-  }
-  if (sandboxProcess && !sandboxProcess.killed) {
-    sandboxProcess.kill();
-  }
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+  cleanupOwnedProcesses();
 });
+
+// npm run desktop 被 Ctrl+C/终端关闭时，也必须走与窗口退出相同的清理流程。
+process.once("SIGINT", shutdownFromSignal);
+process.once("SIGTERM", shutdownFromSignal);

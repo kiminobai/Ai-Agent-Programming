@@ -195,7 +195,7 @@ npm run build
 | 数据库表 | `src/db/sqlite.ts` |
 | 专项验证 | `scripts/verifyAgentTeamEngineering.ts` |
 
-## 12. 模型限流与成本控制
+## 12. 模型限流与 Token 控制
 
 当前项目在供应商限流之前增加了一层应用保护，参考 [OpenAI Rate Limits](https://developers.openai.com/api/docs/guides/rate-limits) 的 RPM、TPM、并发、`Retry-After` 和用户周期额度策略。
 
@@ -204,16 +204,15 @@ npm run build
 - 按 `provider + model` 分别统计每分钟请求数（RPM）和 Token（TPM）。
 - 同一模型达到并发上限时排队，削平 Multi-Agent 突发流量。
 - 检查单用户每日 Token 预算。
-- 配置模型价格后，检查整套应用每月美元预算。
 - 输入预算包含历史消息、System Prompt、工具名称和工具描述。
-- 为输出预留 Token，防止请求虽然能发出但生成阶段超过 TPM 或成本上限。
+- 为输出预留 Token，防止请求虽然能发出但生成阶段超过 TPM 上限。
 
 ### 请求后记账
 
 - 响应包含 `usage_metadata` 时优先保存供应商返回的真实 Token。
 - 供应商不返回 usage 时，根据字符数保守估算。
 - 失败请求同样保留 RPM/TPM 记录，因为失败的限流请求也可能占用供应商额度。
-- 没有配置价格的模型只统计 Token，费用保持未定价状态，不生成虚假成本。
+- 项目不估算金额；实际账单以各模型平台控制台为准。
 
 ### 重试控制
 
@@ -231,9 +230,7 @@ npm run build
 | `MODEL_RATE_LIMIT_TPM` | 每个供应商模型每分钟 Token 上限 |
 | `MODEL_MAX_CONCURRENT` | 每个供应商模型最大并发数 |
 | `MODEL_USER_DAILY_TOKENS` | 单用户每日 Token 安全预算 |
-| `MODEL_MONTHLY_COST_USD` | 已定价模型的应用月度费用上限 |
 | `MODEL_RESERVED_OUTPUT_TOKENS` | 每次请求预留的输出 Token |
 | `MODEL_RETRY_TIME_BUDGET_MS` | 一轮请求允许用于重试的总时长 |
-| `MODEL_PRICING_JSON` | 各模型每百万输入/输出 Token 价格 |
 
-开发诊断可通过 `GET /api/observability/model-usage?userId=...` 查询用户当日用量和应用当月费用汇总。
+开发诊断可通过 `GET /api/observability/model-usage?userId=...` 查询用户当日、本月、按模型和按轮次的 Token 汇总。

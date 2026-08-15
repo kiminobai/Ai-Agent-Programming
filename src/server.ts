@@ -66,7 +66,8 @@ import {
   getAgentTurnObservability,
   recordAgentEvent
 } from "./agents/agentTelemetryRepository";
-import { getModelUsageSummary } from "./agents/modelUsageController";
+import { getModelUsageSummary, getTurnModelUsage } from "./agents/modelUsageController";
+import { getTelemetryStatus } from "./observability/telemetry";
 import {
   listDocumentQaMessages,
   saveDocumentQaExchange
@@ -319,7 +320,16 @@ app.get("/api/observability/model-usage", (req, res) => {
     res.status(404).json({ error: "用户不存在。" });
     return;
   }
-  res.json(getModelUsageSummary(userId));
+  const threadId = String(req.query.threadId || "").trim();
+  const turnId = String(req.query.turnId || "").trim();
+  const summary = getModelUsageSummary(userId);
+  res.json({
+    ...summary,
+    turn: threadId && turnId && getThreadById(threadId, userId)
+      ? getTurnModelUsage(userId, threadId, turnId)
+      : null,
+    telemetry: getTelemetryStatus()
+  });
 });
 
 app.get("/api/task-plans", (req, res) => {
@@ -417,6 +427,8 @@ app.get("/api/generated-files/:fileId/download", (req, res) => {
   );
   res.sendFile(resolveGeneratedFileStorageKey(file.storageKey));
 });
+
+import "./observability/telemetry";
 
 /**
  * Chat requests may arrive as JSON or multipart/form-data.

@@ -43,3 +43,59 @@ services:
     volumes:
       # 缓存 Docling/Hugging Face 模型，避免重建容器后重复下载。
       - ./data/docling-cache:/opt/app-root/src/.cache
+
+  phoenix:
+    image: arizephoenix/phoenix:latest
+    container_name: chat-demo-phoenix
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6006:6006"
+    environment:
+      PHOENIX_WORKING_DIR: /mnt/data
+      PHOENIX_TELEMETRY_ENABLED: "false"
+    volumes:
+      - ./data/observability/phoenix:/mnt/data
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    container_name: chat-demo-otel-collector
+    restart: unless-stopped
+    depends_on:
+      - phoenix
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    ports:
+      - "127.0.0.1:4318:4318"
+    volumes:
+      - ./deploy/observability/otel-collector.yaml:/etc/otelcol-contrib/config.yaml:ro
+
+  sandbox-orchestrator:
+    # Orchestrator 运行在服务端，通过 Docker Socket 创建一次性隔离执行容器。
+    build:
+      context: .
+      dockerfile: deploy/sandbox-orchestrator.Dockerfile
+    image: chat-demo/sandbox-orchestrator:local
+    container_name: chat-demo-sandbox-orchestrator
+    restart: unless-stopped
+    ports:
+      # 仅绑定回环地址；正式部署应由后端通过内网访问，禁止直接暴露公网。
+      - "127.0.0.1:3010:3010"
+    environment:
+      SANDBOX_ORCHESTRATOR_BACKEND: docker
+      SANDBOX_ORCHESTRATOR_PORT: "3010"
+      SANDBOX_SERVICE_TOKEN: ${SANDBOX_SERVICE_TOKEN:?请在 .env 配置 SANDBOX_SERVICE_TOKEN}
+      SANDBOX_STORAGE_ROOT: /var/lib/kimibai-sandboxes
+      SANDBOX_DOCKER_STORAGE_ROOT: ${SANDBOX_DOCKER_STORAGE_ROOT:?请在 .env 配置宿主机 Sandbox 绝对路径}
+      SANDBOX_RUNTIME_CLASS: docker
+      SANDBOX_ALLOWED_IMAGES: ${SANDBOX_ALLOWED_IMAGES:-node:22-bookworm-slim,python:3.12-slim}
+      SANDBOX_MAX_TRANSFER_BYTES: ${SANDBOX_MAX_TRANSFER_BYTES:-20971520}
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://otel-collector:4318/v1/traces
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./data/sandboxes:/var/lib/kimibai-sandboxes
+    depends_on:
+      - otel-collector
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3010/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
