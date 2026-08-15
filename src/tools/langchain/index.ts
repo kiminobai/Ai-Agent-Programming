@@ -28,6 +28,8 @@ import {
   runWorkspaceCommandTool,
   writeWorkspaceFileTool
 } from "./workspaceTools";
+import { remoteSandboxTools } from "./remoteSandboxTools";
+import { isRemoteSandboxEnabled } from "../../sandbox/sandboxManager";
 
 export { calculatorTool } from "./calculatorTool";
 export { currentTimeTool } from "./currentTimeTool";
@@ -85,3 +87,22 @@ export const langChainTools = [
   writeWorkspaceFileTool,
   runWorkspaceCommandTool
 ];
+
+// 远程执行能力只注入 Work Agent；Chat 对话不会看到这些工具，也不会误触发远程资源。
+export function getLangChainTools(mode: "chat" | "work") {
+  if (mode !== "work" || !isRemoteSandboxEnabled()) return langChainTools;
+
+  // 开启远程隔离后移除本机写入/命令工具，避免模型绕过 Sandbox。
+  // 本机读取仍保留，用于理解项目；最终回写只能走带审批和快照的 apply_sandbox_files。
+  const unsafeLocalToolNames = new Set([
+    "write_workspace_file",
+    "replace_workspace_text",
+    "run_workspace_command"
+  ]);
+  return [
+    ...langChainTools.filter((registeredTool) =>
+      !unsafeLocalToolNames.has(registeredTool.name)
+    ),
+    ...remoteSandboxTools
+  ];
+}

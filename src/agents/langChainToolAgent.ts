@@ -16,7 +16,7 @@ import {
 } from "langchain";
 import { Command } from "@langchain/langgraph";
 import { sqliteCheckpointer } from "../db/sqlite";
-import { langChainTools } from "../tools/langchain";
+import { getLangChainTools } from "../tools/langchain";
 import { AgentProgress, ProviderId, ReasoningEffort, UsageProfile } from "../types";
 import type { RoleWorkflowAgent } from "../workflows-agents";
 import { AgentContext, AgentContextSchema } from "./agentContext";
@@ -44,6 +44,7 @@ import {
   type McpToolMode
 } from "../mcp/mcpManager";
 import { agentErrorHandlingMiddleware } from "./agentErrorHandlingMiddleware";
+import { appConfig } from "../config";
 
 // 学习点：ToolAgentMessage 是项目自己的简单消息格式。
 // 进入 LangChain 前，会再转换成 HumanMessage / AIMessage。
@@ -195,6 +196,7 @@ export class LangChainToolAgent {
 
     // 学习点：只对会修改长期数据的工具启用人工审批。
     // 天气、计算、时间和文档检索都是只读操作，仍然自动执行。
+    const toolsForMode = getLangChainTools(options.mode);
     const approvalMiddleware = humanInTheLoopMiddleware({
       interruptOn: {
         remember_preference: {
@@ -217,6 +219,20 @@ export class LangChainToolAgent {
           allowedDecisions: ["approve", "reject"],
           description: "Agent 准备在工作区运行开发命令。"
         },
+        prepare_remote_sandbox: {
+          allowedDecisions: ["approve", "reject"],
+          description:
+            "Agent 准备把排除密钥和依赖目录后的项目快照传入独立 Sandbox 服务。"
+        },
+        run_sandbox_command: {
+          allowedDecisions: ["approve", "reject"],
+          description:
+            "Agent 准备在当前对话的独立 Sandbox 容器中运行命令。"
+        },
+        apply_sandbox_files: {
+          allowedDecisions: ["approve", "reject"],
+          description: "Agent 准备把远程环境中验证完成的文件应用回本机工作区，并创建回退快照。"
+        },
         ...mcpApprovalInterrupts,
         ...executionSubAgentInterrupts
       },
@@ -228,7 +244,7 @@ export class LangChainToolAgent {
     const roleSubAgentTools = createRoleSubAgentTools(
       model,
       options.roleWorkflow,
-      langChainTools
+      toolsForMode
     );
     // Skill 只在本轮命中时加载操作规范，不会作为普通消息写进对话历史。
     // 它位于审批中间件之前，但不拥有工具权限，因此不能绕过人工确认。
@@ -238,7 +254,7 @@ export class LangChainToolAgent {
 
     this.agent = createAgent({
       model,
-      tools: [...langChainTools, ...mcpTools, ...roleSubAgentTools],
+      tools: [...toolsForMode, ...mcpTools, ...roleSubAgentTools],
       systemPrompt: options.systemPrompt,
       stateSchema: ToolMemoryState,
       contextSchema: AgentContextSchema,

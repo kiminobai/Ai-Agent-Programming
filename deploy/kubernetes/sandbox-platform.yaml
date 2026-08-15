@@ -1,0 +1,179 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kimibai-sandbox
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: gvisor
+handler: runsc
+---
+# 可选高隔离 RuntimeClass。集群节点安装 Kata 后再保留，否则删除本段。
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: kata
+handler: kata
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sandbox-orchestrator
+  namespace: kimibai-sandbox
+automountServiceAccountToken: true
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: sandbox-job-manager
+  namespace: kimibai-sandbox
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch", "delete", "deletecollection"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: sandbox-orchestrator
+  namespace: kimibai-sandbox
+subjects:
+  - kind: ServiceAccount
+    name: sandbox-orchestrator
+    namespace: kimibai-sandbox
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: sandbox-job-manager
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: kimibai-sandbox-workspaces
+  namespace: kimibai-sandbox
+spec:
+  accessModes: ["ReadWriteMany"]
+  resources:
+    requests:
+      storage: 100Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sandbox-orchestrator
+  namespace: kimibai-sandbox
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: sandbox-orchestrator
+  template:
+    metadata:
+      labels:
+        app: sandbox-orchestrator
+    spec:
+      serviceAccountName: sandbox-orchestrator
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+      containers:
+        - name: orchestrator
+          image: ghcr.io/your-org/kimibai-sandbox-orchestrator:latest
+          ports:
+            - name: http
+              containerPort: 3010
+          env:
+            - name: SANDBOX_NAMESPACE
+              value: kimibai-sandbox
+            - name: SANDBOX_STORAGE_ROOT
+              value: /var/lib/kimibai-sandboxes
+            - name: SANDBOX_WORKSPACE_PVC
+              value: kimibai-sandbox-workspaces
+            - name: SANDBOX_RUNTIME_CLASS
+              value: gvisor
+            - name: SANDBOX_ALLOWED_IMAGES
+              value: node:22-bookworm-slim,python:3.12-slim
+            - name: SANDBOX_SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: sandbox-service-token
+                  key: token
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+            seccompProfile: { type: RuntimeDefault }
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: "1", memory: 512Mi }
+          volumeMounts:
+            - name: workspaces
+              mountPath: /var/lib/kimibai-sandboxes
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: workspaces
+          persistentVolumeClaim:
+            claimName: kimibai-sandbox-workspaces
+        - name: tmp
+          emptyDir: { sizeLimit: 128Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sandbox-orchestrator
+  namespace: kimibai-sandbox
+spec:
+  selector:
+    app: sandbox-orchestrator
+  ports:
+    - name: http
+      port: 3010
+      targetPort: http
+---
+# Sandbox Job 默认完全断网；后续按明确域名需求通过 egress proxy 单独放行。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-sandbox-job-network
+  namespace: kimibai-sandbox
+spec:
+  podSelector:
+    matchLabels:
+      app: kimibai-sandbox
+  policyTypes: ["Ingress", "Egress"]
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: sandbox-quota
+  namespace: kimibai-sandbox
+spec:
+  hard:
+    count/jobs.batch: "100"
+    requests.cpu: "20"
+    limits.cpu: "50"
+    requests.memory: 20Gi
+    limits.memory: 50Gi

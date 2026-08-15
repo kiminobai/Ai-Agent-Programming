@@ -104,6 +104,7 @@ import {
 import { installSkillFromPath } from "./skills/skillInstaller";
 import { clearSkillRegistryCache, listAgentSkills } from "./skills/skillRegistry";
 import { deleteThreadExtensions } from "./extensions/threadExtensionStorage";
+import { destroyThreadSandbox } from "./sandbox/sandboxManager";
 import {
   enqueueBackgroundTask,
   getBackgroundTask,
@@ -883,6 +884,10 @@ app.delete("/api/threads/:threadId", async (req: Request, res: Response) => {
 
   try {
     const thread = getThreadById(threadId, userId);
+    // 先销毁远程资源再删除本地映射；远程 TTL 已清理时该操作仍是幂等的。
+    if (thread?.mode === "work") {
+      await destroyThreadSandbox(threadId);
+    }
     const deleted = deleteThread(threadId, userId);
     if (!deleted) {
       res.status(404).json({ error: "Thread was not found." });

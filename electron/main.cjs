@@ -1,13 +1,19 @@
-const { app, BrowserWindow, dialog, ipcMain, shell } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } = require("electron");
 const { execFileSync, spawn } = require("child_process");
 const fs = require("fs");
+const crypto = require("crypto");
 const http = require("http");
 const path = require("path");
 
+// 开发环境允许从项目 .env 注入配置；安装包仍应由系统环境或部署平台注入密钥。
+require("dotenv").config({ path: path.join(__dirname, "..", ".env") });
+
 const SERVER_URL = "http://127.0.0.1:3000";
+const SANDBOX_URL = "http://127.0.0.1:3010";
 let mainWindow = null;
 let serverProcess = null;
 let workerProcess = null;
+let sandboxProcess = null;
 let serverStartupError = null;
 
 function getWorkspaceStatePath() {
@@ -16,6 +22,55 @@ function getWorkspaceStatePath() {
 
 function getKimiBaiDocumentsRoot() {
   return path.join(app.getPath("documents"), "KimiBai");
+}
+
+function getSandboxServiceToken() {
+  const configuredToken = String(process.env.SANDBOX_SERVICE_TOKEN || "").trim();
+  if (configuredToken) {
+    if (configuredToken.length < 32) {
+      throw new Error("SANDBOX_SERVICE_TOKEN 至少需要 32 个字符。");
+    }
+    return configuredToken;
+  }
+
+  const encryptedTokenPath = path.join(
+    app.getPath("userData"),
+    "sandbox-service-token.enc"
+  );
+  const legacyPlaintextPath = path.join(
+    app.getPath("userData"),
+    "sandbox-service.token"
+  );
+
+  if (!safeStorage.isEncryptionAvailable()) {
+    // 系统密钥服务不可用时仅使用本次进程内令牌，绝不降级为明文落盘。
+    fs.rmSync(legacyPlaintextPath, { force: true });
+    return crypto.randomBytes(48).toString("base64url");
+  }
+
+  try {
+    const token = safeStorage.decryptString(fs.readFileSync(encryptedTokenPath));
+    if (token.length >= 32) return token;
+  } catch {
+    // 首次启动或加密数据不可读时，在下面创建新的内部令牌。
+  }
+
+  let token = "";
+  try {
+    // 一次性迁移旧版本留下的明文令牌，迁移成功后立即删除旧文件。
+    const legacyToken = fs.readFileSync(legacyPlaintextPath, "utf8").trim();
+    if (legacyToken.length >= 32) token = legacyToken;
+  } catch {
+    // 没有旧文件属于正常情况。
+  }
+  if (!token) token = crypto.randomBytes(48).toString("base64url");
+
+  fs.mkdirSync(path.dirname(encryptedTokenPath), { recursive: true });
+  const temporaryPath = `${encryptedTokenPath}.tmp`;
+  fs.writeFileSync(temporaryPath, safeStorage.encryptString(token), { mode: 0o600 });
+  fs.renameSync(temporaryPath, encryptedTokenPath);
+  fs.rmSync(legacyPlaintextPath, { force: true });
+  return token;
 }
 
 function ensureDefaultWorkspace() {
@@ -157,6 +212,29 @@ async function waitForServer() {
   throw new Error("本地服务启动超时。");
 }
 
+function isSandboxReady() {
+  return new Promise((resolve) => {
+    const request = http.get(`${SANDBOX_URL}/healthz`, (response) => {
+      response.resume();
+      resolve(response.statusCode === 200);
+    });
+    request.setTimeout(700, () => {
+      request.destroy();
+      resolve(false);
+    });
+    request.on("error", () => resolve(false));
+  });
+}
+
+async function waitForSandbox() {
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    if (serverStartupError) throw serverStartupError;
+    if (await isSandboxReady()) return;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error("本地 Sandbox 服务启动超时。");
+}
+
 function findSystemNodeExecutable() {
   // Electron 的 process.execPath 指向 electron.exe，它使用自己的 Node ABI。
   // Express 后端必须继续使用 npm 安装依赖时的系统 node.exe，
@@ -194,15 +272,45 @@ async function ensureLocalServer() {
 
   serverStartupError = null;
   const nodeExecutable = findSystemNodeExecutable();
-  serverProcess = spawn(nodeExecutable, [serverEntry], {
+  const sandboxToken = getSandboxServiceToken();
+  const sandboxEntry = path.join(app.getAppPath(), "dist", "sandbox-orchestrator", "server.js");
+  if (!fs.existsSync(sandboxEntry)) {
+    throw new Error("缺少 Sandbox Orchestrator，请先执行 npm run build。");
+  }
+  sandboxProcess = spawn(nodeExecutable, [sandboxEntry], {
     cwd: app.getAppPath(),
     env: {
       ...process.env,
-      // Work 数据只保存在当前电脑的系统 Documents 目录。
-      // Chat 数据仍使用服务端原有 DATA 目录。
-      KIMIBAI_WORK_DATA_ROOT: getKimiBaiDocumentsRoot(),
-      KIMIBAI_EXTENSIONS_ROOT: path.join(getKimiBaiDocumentsRoot(), "extensions")
+      SANDBOX_ORCHESTRATOR_BACKEND: "docker",
+      SANDBOX_ORCHESTRATOR_PORT: "3010",
+      SANDBOX_SERVICE_TOKEN: sandboxToken,
+      SANDBOX_STORAGE_ROOT: path.join(getKimiBaiDocumentsRoot(), "sandboxes"),
+      SANDBOX_RUNTIME_CLASS: "docker"
     },
+    stdio: "inherit",
+    windowsHide: true
+  });
+  sandboxProcess.once("error", (error) => {
+    serverStartupError = error;
+  });
+  sandboxProcess.once("exit", (code) => {
+    if (code && code !== 0) {
+      serverStartupError = new Error(`Sandbox 服务异常退出，退出码：${code}。`);
+    }
+  });
+  await waitForSandbox();
+  const sharedEnvironment = {
+    ...process.env,
+    KIMIBAI_WORK_DATA_ROOT: getKimiBaiDocumentsRoot(),
+    KIMIBAI_EXTENSIONS_ROOT: path.join(getKimiBaiDocumentsRoot(), "extensions"),
+    SANDBOX_PROVIDER: "orchestrator",
+    SANDBOX_ORCHESTRATOR_URL: SANDBOX_URL,
+    SANDBOX_SERVICE_TOKEN: sandboxToken,
+    SANDBOX_RUNTIME_CLASS: "docker"
+  };
+  serverProcess = spawn(nodeExecutable, [serverEntry], {
+    cwd: app.getAppPath(),
+    env: sharedEnvironment,
     stdio: "inherit",
     windowsHide: true
   });
@@ -212,11 +320,7 @@ async function ensureLocalServer() {
   }
   workerProcess = spawn(nodeExecutable, [workerEntry], {
     cwd: app.getAppPath(),
-    env: {
-      ...process.env,
-      KIMIBAI_WORK_DATA_ROOT: getKimiBaiDocumentsRoot(),
-      KIMIBAI_EXTENSIONS_ROOT: path.join(getKimiBaiDocumentsRoot(), "extensions")
-    },
+    env: sharedEnvironment,
     stdio: "inherit",
     windowsHide: true
   });
@@ -288,5 +392,8 @@ app.on("before-quit", () => {
   }
   if (workerProcess && !workerProcess.killed) {
     workerProcess.kill();
+  }
+  if (sandboxProcess && !sandboxProcess.killed) {
+    sandboxProcess.kill();
   }
 });

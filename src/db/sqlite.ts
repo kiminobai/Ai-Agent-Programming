@@ -58,6 +58,22 @@ sqliteDb.exec(`
   CREATE INDEX IF NOT EXISTS idx_chat_threads_user_updated
   ON chat_threads(user_id, updated_at DESC);
 
+  -- 每个 Work 对话只绑定一个远程执行环境；这里仅保存生命周期元数据，不保存密钥或文件正文。
+  CREATE TABLE IF NOT EXISTS thread_sandboxes (
+    thread_id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    sandbox_name TEXT NOT NULL,
+    sandbox_id TEXT,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    last_used_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_thread_sandboxes_user_updated
+  ON thread_sandboxes(user_id, updated_at DESC);
+
   -- Coding Agent activity is persisted separately from chat text.
   -- The Work UI uses it to show changed files and command output after refresh.
   CREATE TABLE IF NOT EXISTS workspace_activity (

@@ -74,6 +74,26 @@ export const appConfig = {
       process.env.BULLMQ_FAILED_RETENTION_SECONDS || 7 * 24 * 60 * 60
     )
   },
+  sandbox: {
+    // 远程 Sandbox 采用“Sandbox as tool”：Agent 与密钥留在服务端，只有执行环境远程隔离。
+    provider:
+      (process.env.SANDBOX_PROVIDER as
+        | "disabled"
+        | "orchestrator"
+        | undefined) || "disabled",
+    orchestratorUrl:
+      process.env.SANDBOX_ORCHESTRATOR_URL || "http://sandbox-orchestrator:3010",
+    serviceToken: process.env.SANDBOX_SERVICE_TOKEN || "",
+    runtimeClass: process.env.SANDBOX_RUNTIME_CLASS || "gvisor",
+    image: process.env.SANDBOX_DEFAULT_IMAGE || "node:22-bookworm-slim",
+    idleTtlSeconds: Number(process.env.SANDBOX_IDLE_TTL_SECONDS || 600),
+    commandTimeoutSeconds: Number(
+      process.env.SANDBOX_COMMAND_TIMEOUT_SECONDS || 900
+    ),
+    maxTransferBytes: Number(
+      process.env.SANDBOX_MAX_TRANSFER_BYTES || 20 * 1024 * 1024
+    )
+  },
   graphRag: {
     entityExtractor:
       (process.env.GRAPH_RAG_ENTITY_EXTRACTOR as
